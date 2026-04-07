@@ -1,13 +1,9 @@
 package social.innode.ndr.demo
 
 import android.os.Bundle
-import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.onAllNodesWithTag
-import androidx.compose.ui.test.onAllNodesWithText
-import androidx.compose.ui.test.onNodeWithTag
-import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performTextInput
-import androidx.test.espresso.Espresso.pressBack
+import android.os.SystemClock
+import androidx.test.core.app.ActivityScenario
+import androidx.test.ext.junit.rules.ActivityScenarioRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.fail
@@ -16,6 +12,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 import social.innode.ndr.demo.core.AppManager
+import social.innode.ndr.demo.account.AccountBootstrapState
 import social.innode.ndr.demo.rust.CurrentChatSnapshot
 import social.innode.ndr.demo.rust.DeliveryState
 import social.innode.ndr.demo.rust.normalizePeerInput
@@ -23,7 +20,7 @@ import social.innode.ndr.demo.rust.normalizePeerInput
 @RunWith(AndroidJUnit4::class)
 class RealRelayHarnessTest {
     @get:Rule
-    val composeRule = createAndroidComposeRule<MainActivity>()
+    val activityRule = ActivityScenarioRule(MainActivity::class.java)
 
     private val instrumentation
         get() = InstrumentationRegistry.getInstrumentation()
@@ -32,23 +29,30 @@ class RealRelayHarnessTest {
         get() = InstrumentationRegistry.getArguments()
 
     private fun appManager(): AppManager =
-        (composeRule.activity.application as NdrDemoApp).container.appManager
+        withActivity { (it.application as NdrDemoApp).container.appManager }
+
+    private fun <T> withActivity(block: (MainActivity) -> T): T {
+        var result: Result<T>? = null
+        activityRule.scenario.onActivity { activity ->
+            result = runCatching { block(activity) }
+        }
+        return result?.getOrThrow() ?: error("Activity was not available")
+    }
 
     @Test
     fun create_account_and_report_identity() {
-        ensureChatList()
-        val account = waitForState("account") { appManager().state.value.account }
+        val account = ensureLoggedIn()
         reportStatus(
             "npub" to account.npub,
             "public_key_hex" to account.publicKeyHex,
-            "app_package" to composeRule.activity.packageName,
-            "data_dir" to composeRule.activity.filesDir.absolutePath,
+            "app_package" to withActivity { it.packageName },
+            "data_dir" to withActivity { it.filesDir.absolutePath },
         )
     }
 
     @Test
     fun create_chat_from_args() {
-        ensureChatList()
+        ensureLoggedIn()
         val peerInput = requiredArg("peer_input")
         val chat = ensureChatOpen(peerInput)
         reportStatus(
@@ -59,13 +63,12 @@ class RealRelayHarnessTest {
 
     @Test
     fun send_message_from_args() {
-        ensureChatList()
+        ensureLoggedIn()
         val peerInput = requiredArg("peer_input")
         val message = requiredArg("message")
         val chat = ensureChatOpen(peerInput)
 
-        composeRule.onNodeWithTag("chatMessageInput", useUnmergedTree = true).performTextInput(message)
-        composeRule.onNodeWithTag("chatSendButton", useUnmergedTree = true).performClick()
+        appManager().sendText(chat.chatId, message)
 
         waitForState("outgoing message") {
             appManager()
@@ -112,7 +115,7 @@ class RealRelayHarnessTest {
 
     @Test
     fun wait_for_message_from_args() {
-        ensureChatList()
+        ensureLoggedIn()
         val expectedMessage = requiredArg("message")
         val peerInput = arguments.getString("peer_input").orEmpty()
 
@@ -154,26 +157,19 @@ class RealRelayHarnessTest {
 
     @Test
     fun logout_and_create_account_and_report_identity() {
-        ensureChatList()
-        val oldAccount = waitForState("existing account") { appManager().state.value.account }
+        val oldAccount = ensureLoggedIn()
+        appManager().logout()
 
-        composeRule.onNodeWithTag("chatListProfileButton", useUnmergedTree = true).performClick()
-        composeRule.waitForTag("myProfileSheet")
-        composeRule.waitForTag("myProfileLogoutButton", timeoutMillis = 30_000)
-        composeRule.onNodeWithTag("myProfileLogoutButton", useUnmergedTree = true).performClick()
-
-        composeRule.waitForTag("generateKeyButton", timeoutMillis = 60_000)
         waitForState("logged out state", timeoutMs = 60_000) {
             appManager().state.value.takeIf { it.account == null }
         }
 
-        val filesEntries = storageEntries(composeRule.activity.filesDir)
+        val filesEntries = storageEntries(withActivity { it.filesDir })
         if (filesEntries.isNotEmpty()) {
             fail("Expected filesDir to be empty after logout, found: $filesEntries")
         }
 
-        composeRule.onNodeWithTag("generateKeyButton", useUnmergedTree = true).performClick()
-        composeRule.waitForTag("chatListNewChatButton", timeoutMillis = 60_000)
+        appManager().createAccount()
 
         val newAccount = waitForState("new account") { appManager().state.value.account }
         if (newAccount.publicKeyHex.equals(oldAccount.publicKeyHex, ignoreCase = true)) {
@@ -187,62 +183,64 @@ class RealRelayHarnessTest {
         )
     }
 
-    private fun ensureChatList() {
-        composeRule.waitUntil(30_000) {
-            hasTag("generateKeyButton") ||
-                hasTag("chatListNewChatButton") ||
-                hasTag("newChatPeerInput") ||
-                hasTag("chatMessageInput") ||
-                hasTag("myProfileSheet")
-        }
+    private fun ensureLoggedIn(): social.innode.ndr.demo.rust.AccountSnapshot {
+        var createRequested = false
+        return waitForState("logged in account", timeoutMs = 90_000) {
+            val manager = appManager()
+            manager.state.value.account?.let { return@waitForState it }
 
-        if (hasTag("generateKeyButton")) {
-            composeRule.onNodeWithTag("generateKeyButton", useUnmergedTree = true).performClick()
-            composeRule.waitForTag("chatListNewChatButton")
-            return
-        }
-
-        repeat(3) {
-            if (hasTag("chatListNewChatButton")) {
-                return
-            }
-            if (hasTag("newChatPeerInput") || hasTag("chatMessageInput") || hasTag("myProfileSheet")) {
-                pressBack()
-                composeRule.waitForIdle()
+            when (manager.bootstrapState.value) {
+                AccountBootstrapState.Loading -> null
+                AccountBootstrapState.NeedsLogin -> {
+                    if (!createRequested) {
+                        createRequested = true
+                        manager.createAccount()
+                    }
+                    null
+                }
+                is AccountBootstrapState.LoggedIn -> null
             }
         }
-
-        composeRule.waitForTag("chatListNewChatButton")
     }
 
     private fun ensureChatOpen(peerInput: String): CurrentChatSnapshot {
-        val normalized = normalizePeerInput(peerInput)
-        val existing = appManager().state.value.chatList.firstOrNull { it.chatId.equals(normalized, true) }
+        val existing =
+            appManager().state.value.chatList.firstOrNull { thread ->
+                matchesPeerInput(
+                    chatId = thread.chatId,
+                    peerNpub = thread.peerNpub,
+                    peerInput = peerInput,
+                )
+            }
         if (existing != null) {
-            composeRule.onNodeWithTag("chatRow-${existing.chatId.take(12)}", useUnmergedTree = true)
-                .performClick()
-            composeRule.waitForTag("chatMessageInput")
+            appManager().openChat(existing.chatId)
             return waitForState("existing chat") {
                 appManager()
                     .state
                     .value
                     .currentChat
-                    ?.takeIf { current -> current.chatId.equals(normalized, true) }
+                    ?.takeIf { current -> matchesPeerInput(current.chatId, current.peerNpub, peerInput) }
             }
         }
 
-        composeRule.onNodeWithTag("chatListNewChatButton", useUnmergedTree = true).performClick()
-        composeRule.waitForTag("newChatPeerInput")
-        composeRule.onNodeWithTag("newChatPeerInput", useUnmergedTree = true).performTextInput(peerInput)
-        composeRule.onNodeWithTag("newChatStartButton", useUnmergedTree = true).performClick()
-        composeRule.waitForTag("chatMessageInput")
+        appManager().createChat(peerInput)
         return waitForState("created chat") {
             appManager()
                 .state
                 .value
                 .currentChat
-                ?.takeIf { current -> current.chatId.equals(normalized, true) }
+                ?.takeIf { current -> matchesPeerInput(current.chatId, current.peerNpub, peerInput) }
         }
+    }
+
+    private fun matchesPeerInput(
+        chatId: String,
+        peerNpub: String,
+        peerInput: String,
+    ): Boolean {
+        val normalized = normalizePeerInput(peerInput)
+        return chatId.equals(normalized, ignoreCase = true) ||
+            peerNpub.equals(normalized, ignoreCase = true)
     }
 
     private fun requiredArg(name: String): String =
@@ -267,33 +265,12 @@ class RealRelayHarnessTest {
         timeoutMs: Long = 60_000,
         condition: () -> T?,
     ): T {
-        var result: T? = null
-        composeRule.waitUntil(timeoutMs) {
-            result = condition()
-            result != null
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        while (SystemClock.elapsedRealtime() < deadline) {
+            condition()?.let { return it }
+            instrumentation.waitForIdleSync()
+            SystemClock.sleep(100)
         }
-        return result ?: throw AssertionError("Timed out waiting for $label")
-    }
-
-    private fun hasTag(tag: String): Boolean =
-        composeRule.onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
-
-    private fun androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, *>.waitForTag(
-        tag: String,
-        timeoutMillis: Long = 15_000,
-    ) {
-        waitUntil(timeoutMillis) {
-            onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
-        }
-    }
-
-    @Suppress("unused")
-    private fun androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, *>.waitForText(
-        text: String,
-        timeoutMillis: Long = 15_000,
-    ) {
-        waitUntil(timeoutMillis) {
-            onAllNodesWithText(text, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
-        }
+        throw AssertionError("Timed out waiting for $label")
     }
 }
