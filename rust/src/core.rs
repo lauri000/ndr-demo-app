@@ -7,11 +7,11 @@ use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 use flume::Sender;
 use nostr_double_ratchet::{
     AuthorizedDevice, DeviceRoster, DomainError, Error, MessageEnvelope, OwnerPubkey,
-    ProtocolContext, SessionManager, SessionManagerSnapshot, SessionState, UnixSeconds,
+    ProtocolContext, RelayGap, SessionManager, SessionManagerSnapshot, SessionState, UnixSeconds,
 };
 use nostr_double_ratchet_nostr::nostr as codec;
 use nostr_sdk::prelude::{
-    Client, Event, Filter, Keys, Kind, PublicKey, RelayPoolNotification, ToBech32,
+    Client, Event, Filter, Keys, Kind, PublicKey, RelayPoolNotification, Timestamp, ToBech32,
 };
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -23,13 +23,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, Duration};
 
 const DEFAULT_RELAYS: &[&str] = &[
-    "ws://10.0.2.2:4848",
-    "ws://127.0.0.1:4848",
     "wss://relay.damus.io",
     "wss://nos.lol",
     "wss://relay.primal.net",
 ];
 const MAX_SEEN_EVENT_IDS: usize = 2048;
+const RECENT_HANDSHAKE_TTL_SECS: u64 = 10 * 60;
+const PENDING_RETRY_DELAY_SECS: u64 = 2;
+const FIRST_CONTACT_STAGE_DELAY_MS: u64 = 1500;
+const FIRST_CONTACT_RETRY_DELAY_SECS: u64 = 5;
+const CATCH_UP_LOOKBACK_SECS: u64 = 30;
+const RESUBSCRIBE_CATCH_UP_DELAY_SECS: u64 = 5;
 
 pub struct AppCore {
     update_tx: Sender<AppUpdate>,
@@ -45,6 +49,7 @@ pub struct AppCore {
     next_message_id: u64,
     pending_inbound: Vec<PendingInbound>,
     pending_outbound: Vec<PendingOutbound>,
+    recent_handshake_peers: BTreeMap<String, u64>,
     seen_event_ids: HashSet<String>,
     seen_event_order: VecDeque<String>,
 }
@@ -72,6 +77,27 @@ struct PendingOutbound {
     message_id: String,
     chat_id: String,
     body: String,
+    #[serde(default)]
+    reason: PendingSendReason,
+    #[serde(default)]
+    next_retry_at_secs: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+enum PendingSendReason {
+    #[default]
+    MissingRoster,
+    MissingDeviceInvite,
+    PublishingFirstContact,
+    PublishRetry,
+}
+
+#[derive(Debug, Clone)]
+struct StagedOutboundSend {
+    message_id: String,
+    chat_id: String,
+    invite_events: Vec<Event>,
+    message_events: Vec<Event>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -172,6 +198,7 @@ impl AppCore {
             next_message_id: 1,
             pending_inbound: Vec::new(),
             pending_outbound: Vec::new(),
+            recent_handshake_peers: BTreeMap::new(),
             seen_event_ids: HashSet::new(),
             seen_event_order: VecDeque::new(),
         }
@@ -202,6 +229,48 @@ impl AppCore {
         match event {
             InternalEvent::RelayEvent(event) => {
                 self.handle_relay_event(event);
+            }
+            InternalEvent::RetryPendingOutbound => {
+                let now = unix_now();
+                self.retry_pending_outbound(now);
+                self.rebuild_state();
+                self.persist_best_effort();
+                self.emit_state();
+            }
+            InternalEvent::FetchTrackedPeerCatchUp => {
+                let now = unix_now();
+                self.fetch_recent_messages_for_tracked_peers(now);
+            }
+            InternalEvent::FetchCatchUpEvents(events) => {
+                for event in events {
+                    self.handle_relay_event(event);
+                }
+            }
+            InternalEvent::StagedSendFinished {
+                message_id,
+                chat_id,
+                success,
+            } => {
+                if success {
+                    self.pending_outbound
+                        .retain(|pending| pending.message_id != message_id);
+                    self.update_message_delivery(&chat_id, &message_id, DeliveryState::Sent);
+                } else if let Some(pending) = self
+                    .pending_outbound
+                    .iter_mut()
+                    .find(|pending| pending.message_id == message_id)
+                {
+                    pending.reason = PendingSendReason::PublishRetry;
+                    pending.next_retry_at_secs =
+                        unix_now().get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS);
+                    self.schedule_pending_outbound_retry(Duration::from_secs(
+                        FIRST_CONTACT_RETRY_DELAY_SECS,
+                    ));
+                }
+                self.schedule_next_pending_retry(unix_now().get());
+                self.rebuild_state();
+                self.persist_best_effort();
+                self.emit_state();
             }
             InternalEvent::SyncComplete => {
                 self.state.busy.syncing_network = false;
@@ -271,6 +340,7 @@ impl AppCore {
         self.screen_stack.clear();
         self.pending_inbound.clear();
         self.pending_outbound.clear();
+        self.recent_handshake_peers.clear();
         self.seen_event_ids.clear();
         self.seen_event_order.clear();
         self.next_message_id = 1;
@@ -297,6 +367,7 @@ impl AppCore {
         };
 
         let now = unix_now().get();
+        self.prune_recent_handshake_peers(now);
         let thread = self
             .threads
             .entry(chat_id.clone())
@@ -319,6 +390,9 @@ impl AppCore {
         self.rebuild_state();
         self.persist_best_effort();
         self.resubscribe_to_protocol_events();
+        self.schedule_tracked_peer_catch_up(Duration::from_secs(
+            RESUBSCRIBE_CATCH_UP_DELAY_SECS,
+        ));
         self.state.busy.creating_chat = false;
         self.emit_state();
     }
@@ -331,6 +405,7 @@ impl AppCore {
         };
 
         let now = unix_now().get();
+        self.prune_recent_handshake_peers(now);
         self.threads
             .entry(chat_id.clone())
             .or_insert_with(|| ThreadRecord {
@@ -349,6 +424,9 @@ impl AppCore {
         self.rebuild_state();
         self.persist_best_effort();
         self.resubscribe_to_protocol_events();
+        self.schedule_tracked_peer_catch_up(Duration::from_secs(
+            RESUBSCRIBE_CATCH_UP_DELAY_SECS,
+        ));
         self.emit_state();
     }
 
@@ -371,6 +449,7 @@ impl AppCore {
         }
 
         let now = unix_now();
+        self.prune_recent_handshake_peers(now.get());
         self.active_chat_id = Some(chat_id.clone());
         self.screen_stack = vec![Screen::Chat {
             chat_id: chat_id.clone(),
@@ -399,53 +478,89 @@ impl AppCore {
 
         match prepared {
             Ok(prepared) => {
-                if prepared.deliveries.is_empty() && prepared.invite_responses.is_empty() {
+                if let Some(reason) = pending_reason_from_prepared(&prepared) {
+                    let republish_identity = matches!(reason, PendingSendReason::MissingRoster);
                     let message = self.push_outgoing_message(
                         &chat_id,
                         trimmed.to_string(),
                         now.get(),
                         DeliveryState::Pending,
                     );
-                    self.pending_outbound.push(PendingOutbound {
-                        message_id: message.id,
-                        chat_id,
-                        body: trimmed.to_string(),
-                    });
-                } else {
-                    let message = self.push_outgoing_message(
-                        &chat_id,
+                    self.queue_pending_outbound(
+                        message.id,
+                        chat_id.clone(),
                         trimmed.to_string(),
-                        now.get(),
-                        DeliveryState::Sent,
+                        reason,
+                        now.get().saturating_add(PENDING_RETRY_DELAY_SECS),
                     );
+                    if republish_identity {
+                        self.republish_local_identity_artifacts();
+                    }
                     self.resubscribe_to_protocol_events();
-                    let events = {
-                        let mut out = Vec::new();
-                        for response in &prepared.invite_responses {
-                            match codec::invite_response_event(response) {
-                                Ok(event) => out.push(event),
-                                Err(error) => {
-                                    self.state.toast = Some(error.to_string());
-                                }
-                            }
+                    self.schedule_pending_outbound_retry(Duration::from_secs(
+                        PENDING_RETRY_DELAY_SECS,
+                    ));
+                } else {
+                    let invite_events = prepared
+                        .invite_responses
+                        .iter()
+                        .map(codec::invite_response_event)
+                        .collect::<std::result::Result<Vec<_>, _>>();
+                    let message_events = prepared
+                        .deliveries
+                        .iter()
+                        .map(|delivery| codec::message_event(&delivery.envelope))
+                        .collect::<std::result::Result<Vec<_>, _>>();
+
+                    match (invite_events, message_events) {
+                        (Ok(invite_events), Ok(message_events))
+                            if !invite_events.is_empty() && !message_events.is_empty() =>
+                        {
+                            let message = self.push_outgoing_message(
+                                &chat_id,
+                                trimmed.to_string(),
+                                now.get(),
+                                DeliveryState::Pending,
+                            );
+                            self.queue_pending_outbound(
+                                message.id.clone(),
+                                chat_id.clone(),
+                                trimmed.to_string(),
+                                PendingSendReason::PublishingFirstContact,
+                                now.get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS),
+                            );
+                            self.start_staged_first_contact_send(StagedOutboundSend {
+                                message_id: message.id,
+                                chat_id,
+                                invite_events,
+                                message_events,
+                            });
                         }
-                        for delivery in &prepared.deliveries {
-                            match codec::message_event(&delivery.envelope) {
-                                Ok(event) => out.push(event),
-                                Err(error) => {
-                                    self.state.toast = Some(error.to_string());
-                                }
-                            }
+                        (Ok(_), Ok(message_events)) if !message_events.is_empty() => {
+                            let _message = self.push_outgoing_message(
+                                &chat_id,
+                                trimmed.to_string(),
+                                now.get(),
+                                DeliveryState::Sent,
+                            );
+                            self.resubscribe_to_protocol_events();
+                            self.publish_events(message_events, "message");
                         }
-                        out
-                    };
-                    if !events.is_empty() {
-                        self.publish_events(events, "message");
-                    } else if let Some(thread) = self.threads.get_mut(&chat_id) {
-                        if let Some(last) = thread.messages.last_mut() {
-                            if last.id == message.id {
-                                last.delivery = DeliveryState::Failed;
-                            }
+                        (Err(error), _) | (_, Err(error)) => {
+                            self.state.toast = Some(error.to_string());
+                        }
+                        _ => {
+                            let message = self.push_outgoing_message(
+                                &chat_id,
+                                trimmed.to_string(),
+                                now.get(),
+                                DeliveryState::Failed,
+                            );
+                            self.update_message_delivery(
+                                &chat_id,
+                                &message.id,
+                                DeliveryState::Failed,
+                            );
                         }
                     }
                 }
@@ -455,6 +570,7 @@ impl AppCore {
             }
         }
 
+        self.schedule_next_pending_retry(now.get());
         self.state.busy.sending_message = false;
         self.rebuild_state();
         self.persist_best_effort();
@@ -524,6 +640,7 @@ impl AppCore {
 
         let kind = event.kind.as_u16() as u32;
         let now = unix_now();
+        self.prune_recent_handshake_peers(now.get());
         match kind {
             codec::ROSTER_EVENT_KIND => {
                 if let Ok(decoded) = codec::parse_roster_event(&event) {
@@ -603,26 +720,33 @@ impl AppCore {
 
                 let mut rng = OsRng;
                 let mut ctx = ProtocolContext::new(now, &mut rng);
-                if let Err(error) = self
+                let invite_response = self
                     .logged_in
                     .as_mut()
                     .expect("checked above")
                     .session_manager
-                    .observe_invite_response(&mut ctx, &envelope)
-                {
-                    let should_ignore = matches!(
-                        error,
-                        Error::Domain(DomainError::InviteAlreadyUsed)
-                            | Error::Domain(DomainError::InviteExhausted)
-                    );
-                    if !should_ignore {
-                        self.state.toast = Some(error.to_string());
+                    .observe_invite_response(&mut ctx, &envelope);
+                match invite_response {
+                    Ok(Some(processed)) => {
+                        let owner_hex = processed.owner_pubkey.to_string();
+                        self.remember_recent_handshake_peer(owner_hex, now.get());
+                        self.retry_pending_inbound(now);
+                        self.retry_pending_outbound(now);
+                        self.resubscribe_to_protocol_events();
+                        self.fetch_recent_messages_for_owner(processed.owner_pubkey, now);
+                        self.persist_best_effort();
                     }
-                } else {
-                    self.retry_pending_inbound(now);
-                    self.retry_pending_outbound(now);
-                    self.resubscribe_to_protocol_events();
-                    self.persist_best_effort();
+                    Ok(None) => {}
+                    Err(error) => {
+                        let should_ignore = matches!(
+                            error,
+                            Error::Domain(DomainError::InviteAlreadyUsed)
+                                | Error::Domain(DomainError::InviteExhausted)
+                        );
+                        if !should_ignore {
+                            self.state.toast = Some(error.to_string());
+                        }
+                    }
                 }
                 self.remember_event(event_id);
                 self.rebuild_state();
@@ -654,8 +778,10 @@ impl AppCore {
                 {
                     Ok(Some(message)) => {
                         self.remember_event(event_id);
+                        let owner_hex = message.owner_pubkey.to_string();
+                        self.clear_recent_handshake_peer(&owner_hex);
                         self.push_incoming_message(
-                            &message.owner_pubkey.to_string(),
+                            &owner_hex,
                             String::from_utf8_lossy(&message.payload).into_owned(),
                             now.get(),
                         );
@@ -693,6 +819,7 @@ impl AppCore {
         self.active_chat_id = None;
         self.screen_stack.clear();
         self.pending_outbound.clear();
+        self.recent_handshake_peers.clear();
         self.seen_event_ids.clear();
         self.seen_event_order.clear();
         self.next_message_id = 1;
@@ -810,6 +937,9 @@ impl AppCore {
         self.rebuild_state();
         self.persist_best_effort();
         self.resubscribe_to_protocol_events();
+        self.schedule_tracked_peer_catch_up(Duration::from_secs(
+            RESUBSCRIBE_CATCH_UP_DELAY_SECS,
+        ));
         self.emit_state();
         Ok(())
     }
@@ -857,11 +987,16 @@ impl AppCore {
             return;
         }
 
+        self.prune_recent_handshake_peers(now.get());
         let pending = std::mem::take(&mut self.pending_outbound);
         let mut still_pending = Vec::new();
-        let mut events_to_publish = Vec::new();
 
-        for pending_message in pending {
+        for mut pending_message in pending {
+            if pending_message.next_retry_at_secs > now.get() {
+                still_pending.push(pending_message);
+                continue;
+            }
+
             let owner = match parse_peer_input(&pending_message.chat_id) {
                 Ok((_, peer_pubkey)) => OwnerPubkey::from_bytes(peer_pubkey.to_bytes()),
                 Err(_) => {
@@ -886,42 +1021,68 @@ impl AppCore {
             };
 
             match prepared {
-                Ok(prepared)
-                    if prepared.deliveries.is_empty() && prepared.invite_responses.is_empty() =>
-                {
-                    still_pending.push(pending_message);
-                }
                 Ok(prepared) => {
-                    let events = {
-                        let mut out = Vec::new();
-                        for response in &prepared.invite_responses {
-                            match codec::invite_response_event(response) {
-                                Ok(event) => out.push(event),
-                                Err(error) => self.state.toast = Some(error.to_string()),
-                            }
+                    if let Some(reason) = pending_reason_from_prepared(&prepared) {
+                        pending_message.reason = reason.clone();
+                        pending_message.next_retry_at_secs =
+                            now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
+                        if matches!(reason, PendingSendReason::MissingRoster) {
+                            self.republish_local_identity_artifacts();
                         }
-                        for delivery in &prepared.deliveries {
-                            match codec::message_event(&delivery.envelope) {
-                                Ok(event) => out.push(event),
-                                Err(error) => self.state.toast = Some(error.to_string()),
-                            }
-                        }
-                        out
-                    };
-
-                    if events.is_empty() {
-                        self.update_message_delivery(
-                            &pending_message.chat_id,
-                            &pending_message.message_id,
-                            DeliveryState::Failed,
-                        );
+                        still_pending.push(pending_message);
                     } else {
-                        self.update_message_delivery(
-                            &pending_message.chat_id,
-                            &pending_message.message_id,
-                            DeliveryState::Sent,
-                        );
-                        events_to_publish.extend(events);
+                        let invite_events = prepared
+                            .invite_responses
+                            .iter()
+                            .map(codec::invite_response_event)
+                            .collect::<std::result::Result<Vec<_>, _>>();
+                        let message_events = prepared
+                            .deliveries
+                            .iter()
+                            .map(|delivery| codec::message_event(&delivery.envelope))
+                            .collect::<std::result::Result<Vec<_>, _>>();
+
+                        match (invite_events, message_events) {
+                            (Ok(invite_events), Ok(message_events))
+                                if !invite_events.is_empty() && !message_events.is_empty() =>
+                            {
+                                pending_message.reason = PendingSendReason::PublishingFirstContact;
+                                pending_message.next_retry_at_secs =
+                                    now.get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS);
+                                self.start_staged_first_contact_send(StagedOutboundSend {
+                                    message_id: pending_message.message_id.clone(),
+                                    chat_id: pending_message.chat_id.clone(),
+                                    invite_events,
+                                    message_events,
+                                });
+                                still_pending.push(pending_message);
+                            }
+                            (Ok(_), Ok(message_events)) if !message_events.is_empty() => {
+                                pending_message.reason = PendingSendReason::PublishRetry;
+                                pending_message.next_retry_at_secs =
+                                    now.get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS);
+                                self.start_pending_message_publish(
+                                    pending_message.message_id.clone(),
+                                    pending_message.chat_id.clone(),
+                                    message_events,
+                                );
+                                still_pending.push(pending_message);
+                            }
+                            (Err(error), _) | (_, Err(error)) => {
+                                self.state.toast = Some(error.to_string());
+                                self.update_message_delivery(
+                                    &pending_message.chat_id,
+                                    &pending_message.message_id,
+                                    DeliveryState::Failed,
+                                );
+                            }
+                            _ => {
+                                pending_message.reason = PendingSendReason::MissingDeviceInvite;
+                                pending_message.next_retry_at_secs =
+                                    now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
+                                still_pending.push(pending_message);
+                            }
+                        }
                     }
                 }
                 Err(error) => {
@@ -936,11 +1097,271 @@ impl AppCore {
         }
 
         self.pending_outbound = still_pending;
+        self.schedule_next_pending_retry(now.get());
+    }
 
-        if !events_to_publish.is_empty() {
-            self.resubscribe_to_protocol_events();
-            self.publish_events(events_to_publish, "message");
+    fn queue_pending_outbound(
+        &mut self,
+        message_id: String,
+        chat_id: String,
+        body: String,
+        reason: PendingSendReason,
+        next_retry_at_secs: u64,
+    ) {
+        self.pending_outbound.push(PendingOutbound {
+            message_id,
+            chat_id,
+            body,
+            reason,
+            next_retry_at_secs,
+        });
+    }
+
+    fn prune_recent_handshake_peers(&mut self, now_secs: u64) {
+        self.recent_handshake_peers
+            .retain(|owner, observed_at_secs| {
+                let within_ttl =
+                    now_secs.saturating_sub(*observed_at_secs) <= RECENT_HANDSHAKE_TTL_SECS;
+                within_ttl && !self.threads.contains_key(owner)
+            });
+    }
+
+    fn remember_recent_handshake_peer(&mut self, owner_hex: String, now_secs: u64) {
+        if self.threads.contains_key(&owner_hex) {
+            self.recent_handshake_peers.remove(&owner_hex);
+            return;
         }
+        self.recent_handshake_peers.insert(owner_hex, now_secs);
+    }
+
+    fn clear_recent_handshake_peer(&mut self, owner_hex: &str) {
+        self.recent_handshake_peers.remove(owner_hex);
+    }
+
+    fn tracked_peer_owner_hexes(&self) -> HashSet<String> {
+        let mut owners = self.threads.keys().cloned().collect::<HashSet<_>>();
+        if let Some(chat_id) = self.active_chat_id.as_ref() {
+            owners.insert(chat_id.clone());
+        }
+        for pending in &self.pending_outbound {
+            owners.insert(pending.chat_id.clone());
+        }
+        owners
+    }
+
+    fn protocol_owner_hexes(&self) -> HashSet<String> {
+        let mut owners = self.tracked_peer_owner_hexes();
+        owners.extend(self.recent_handshake_peers.keys().cloned());
+        owners
+    }
+
+    fn schedule_pending_outbound_retry(&self, after: Duration) {
+        let tx = self.core_sender.clone();
+        self.runtime.spawn(async move {
+            sleep(after).await;
+            let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::RetryPendingOutbound)));
+        });
+    }
+
+    fn schedule_tracked_peer_catch_up(&self, after: Duration) {
+        let tx = self.core_sender.clone();
+        self.runtime.spawn(async move {
+            sleep(after).await;
+            let _ = tx.send(CoreMsg::Internal(Box::new(
+                InternalEvent::FetchTrackedPeerCatchUp,
+            )));
+        });
+    }
+
+    fn schedule_next_pending_retry(&self, now_secs: u64) {
+        let Some(next_retry_at_secs) = self
+            .pending_outbound
+            .iter()
+            .map(|pending| pending.next_retry_at_secs)
+            .min()
+        else {
+            return;
+        };
+        let delay_secs = next_retry_at_secs.saturating_sub(now_secs).max(1);
+        self.schedule_pending_outbound_retry(Duration::from_secs(delay_secs));
+    }
+
+    fn start_pending_message_publish(
+        &mut self,
+        message_id: String,
+        chat_id: String,
+        message_events: Vec<Event>,
+    ) {
+        self.resubscribe_to_protocol_events();
+        self.publish_message_batch(message_id, chat_id, message_events);
+    }
+
+    fn start_staged_first_contact_send(&mut self, staged: StagedOutboundSend) {
+        let Some(client) = self
+            .logged_in
+            .as_ref()
+            .map(|logged_in| logged_in.client.clone())
+        else {
+            return;
+        };
+
+        self.resubscribe_to_protocol_events();
+        for event in staged
+            .invite_events
+            .iter()
+            .chain(staged.message_events.iter())
+        {
+            self.remember_event(event.id.to_string());
+        }
+
+        let tx = self.core_sender.clone();
+        self.runtime.spawn(async move {
+            for relay in configured_relays() {
+                let _ = client.add_relay(relay).await;
+            }
+            client.connect_with_timeout(Duration::from_secs(5)).await;
+
+            let invite_publish = publish_events_with_retry(
+                &client,
+                staged.invite_events,
+                "invite response",
+            )
+            .await;
+            if invite_publish.is_err() {
+                let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::StagedSendFinished {
+                    message_id: staged.message_id,
+                    chat_id: staged.chat_id,
+                    success: false,
+                })));
+                return;
+            }
+
+            sleep(Duration::from_millis(FIRST_CONTACT_STAGE_DELAY_MS)).await;
+
+            let success = publish_events_with_retry(&client, staged.message_events, "message")
+                .await
+                .is_ok();
+            let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::StagedSendFinished {
+                message_id: staged.message_id,
+                chat_id: staged.chat_id,
+                success,
+            })));
+        });
+    }
+
+    fn publish_message_batch(&mut self, message_id: String, chat_id: String, events: Vec<Event>) {
+        let Some(client) = self
+            .logged_in
+            .as_ref()
+            .map(|logged_in| logged_in.client.clone())
+        else {
+            return;
+        };
+
+        for event in &events {
+            self.remember_event(event.id.to_string());
+        }
+
+        let tx = self.core_sender.clone();
+        self.runtime.spawn(async move {
+            for relay in configured_relays() {
+                let _ = client.add_relay(relay).await;
+            }
+            client.connect_with_timeout(Duration::from_secs(5)).await;
+            let success = publish_events_with_retry(&client, events, "message")
+                .await
+                .is_ok();
+            let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::StagedSendFinished {
+                message_id,
+                chat_id,
+                success,
+            })));
+        });
+    }
+
+    fn fetch_recent_messages_for_owner(&self, owner_pubkey: OwnerPubkey, now: UnixSeconds) {
+        let Some(client) = self
+            .logged_in
+            .as_ref()
+            .map(|logged_in| logged_in.client.clone())
+        else {
+            return;
+        };
+
+        let filters = self.message_filters_for_owner(owner_pubkey, now);
+        if filters.is_empty() {
+            return;
+        }
+
+        let tx = self.core_sender.clone();
+        self.runtime.spawn(async move {
+            client.connect_with_timeout(Duration::from_secs(5)).await;
+            if let Ok(events) = client
+                .fetch_events(filters, Some(Duration::from_secs(5)))
+                .await
+            {
+                let collected = events.into_iter().collect::<Vec<_>>();
+                if !collected.is_empty() {
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::FetchCatchUpEvents(collected),
+                    )));
+                }
+            }
+        });
+    }
+
+    fn fetch_recent_messages_for_tracked_peers(&self, now: UnixSeconds) {
+        for owner_hex in self.tracked_peer_owner_hexes() {
+            let Ok(pubkey) = PublicKey::parse(&owner_hex) else {
+                continue;
+            };
+            self.fetch_recent_messages_for_owner(OwnerPubkey::from_bytes(pubkey.to_bytes()), now);
+        }
+    }
+
+    fn message_filters_for_owner(&self, owner_pubkey: OwnerPubkey, now: UnixSeconds) -> Vec<Filter> {
+        let Some(logged_in) = self.logged_in.as_ref() else {
+            return Vec::new();
+        };
+
+        let Some(user) = logged_in
+            .session_manager
+            .snapshot()
+            .users
+            .into_iter()
+            .find(|user| user.owner_pubkey == owner_pubkey)
+        else {
+            return Vec::new();
+        };
+
+        let authors = user
+            .devices
+            .into_iter()
+            .flat_map(|device| {
+                let mut senders = HashSet::new();
+                if let Some(session) = device.active_session.as_ref() {
+                    collect_expected_senders(session, &mut senders);
+                }
+                for session in &device.inactive_sessions {
+                    collect_expected_senders(session, &mut senders);
+                }
+                senders.into_iter().collect::<Vec<_>>()
+            })
+            .filter_map(|hex| PublicKey::parse(&hex).ok())
+            .collect::<Vec<_>>();
+
+        if authors.is_empty() {
+            return Vec::new();
+        }
+
+        vec![
+            Filter::new()
+                .kind(Kind::from(codec::MESSAGE_EVENT_KIND as u16))
+                .authors(authors)
+                .since(Timestamp::from(
+                    now.get().saturating_sub(CATCH_UP_LOOKBACK_SECS),
+                )),
+        ]
     }
 
     fn update_message_delivery(
@@ -1098,7 +1519,7 @@ impl AppCore {
         };
 
         let persisted = PersistedState {
-            version: 2,
+            version: 3,
             active_chat_id: self.active_chat_id.clone(),
             next_message_id: self.next_message_id,
             session_manager: Some(logged_in.session_manager.snapshot()),
@@ -1338,19 +1759,20 @@ impl AppCore {
     }
 
     fn known_peer_owner_hexes(&self) -> HashSet<String> {
-        let mut owners = self.threads.keys().cloned().collect::<HashSet<_>>();
-        if let Some(logged_in) = self.logged_in.as_ref() {
-            for user in logged_in.session_manager.snapshot().users {
-                owners.insert(user.owner_pubkey.to_string());
-            }
-        }
-        owners
+        self.protocol_owner_hexes()
     }
 
     fn known_message_author_hexes(&self) -> HashSet<String> {
         let mut authors = HashSet::new();
         if let Some(logged_in) = self.logged_in.as_ref() {
-            for user in logged_in.session_manager.snapshot().users {
+            let selected_owners = self.protocol_owner_hexes();
+            for user in logged_in
+                .session_manager
+                .snapshot()
+                .users
+                .into_iter()
+                .filter(|user| selected_owners.contains(&user.owner_pubkey.to_string()))
+            {
                 for device in user.devices {
                     if let Some(session) = device.active_session.as_ref() {
                         collect_expected_senders(session, &mut authors);
@@ -1457,6 +1879,29 @@ fn collect_expected_senders(session: &SessionState, out: &mut HashSet<String>) {
     out.extend(session.skipped_keys.keys().map(ToString::to_string));
 }
 
+fn pending_reason_from_prepared(
+    prepared: &nostr_double_ratchet::PreparedSend,
+) -> Option<PendingSendReason> {
+    if prepared
+        .relay_gaps
+        .iter()
+        .any(|gap| matches!(gap, RelayGap::MissingRoster { .. }))
+    {
+        return Some(PendingSendReason::MissingRoster);
+    }
+    if prepared
+        .relay_gaps
+        .iter()
+        .any(|gap| matches!(gap, RelayGap::MissingDeviceInvite { .. }))
+    {
+        return Some(PendingSendReason::MissingDeviceInvite);
+    }
+    if prepared.deliveries.is_empty() && prepared.invite_responses.is_empty() {
+        return Some(PendingSendReason::MissingDeviceInvite);
+    }
+    None
+}
+
 pub(crate) fn parse_peer_input(input: &str) -> anyhow::Result<(String, PublicKey)> {
     let mut normalized = input.trim().to_ascii_lowercase();
     if let Some(stripped) = normalized.strip_prefix("nostr:") {
@@ -1552,6 +1997,17 @@ async fn publish_event_with_retry(
     }
 
     Err(anyhow::anyhow!("{label}: {last_error}"))
+}
+
+async fn publish_events_with_retry(
+    client: &Client,
+    events: Vec<Event>,
+    label: &str,
+) -> anyhow::Result<()> {
+    for event in events {
+        publish_event_with_retry(client, event, label).await?;
+    }
+    Ok(())
 }
 
 async fn wait_for_connected_relays(client: &Client, timeout: Duration) -> bool {
@@ -1922,6 +2378,58 @@ mod tests {
             }
         }
 
+        if let Some(since) = filter_object.get("since").and_then(Value::as_u64) {
+            let Some(created_at) = event.get("created_at").and_then(Value::as_u64) else {
+                return false;
+            };
+            if created_at < since {
+                return false;
+            }
+        }
+
+        if let Some(until) = filter_object.get("until").and_then(Value::as_u64) {
+            let Some(created_at) = event.get("created_at").and_then(Value::as_u64) else {
+                return false;
+            };
+            if created_at > until {
+                return false;
+            }
+        }
+
+        for (key, value) in filter_object {
+            let Some(tag_name) = key.strip_prefix('#') else {
+                continue;
+            };
+
+            let Some(expected_values) = value.as_array() else {
+                return false;
+            };
+            if expected_values.is_empty() {
+                continue;
+            }
+
+            let Some(tags) = event.get("tags").and_then(Value::as_array) else {
+                return false;
+            };
+            let matched = tags.iter().any(|tag| {
+                let Some(tag_values) = tag.as_array() else {
+                    return false;
+                };
+                if tag_values.first().and_then(Value::as_str) != Some(tag_name) {
+                    return false;
+                }
+                tag_values.iter().skip(1).filter_map(Value::as_str).any(|tag_value| {
+                    expected_values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .any(|expected| expected == tag_value)
+                })
+            });
+            if !matched {
+                return false;
+            }
+        }
+
         true
     }
 
@@ -1985,6 +2493,88 @@ mod tests {
             data_dir.to_string_lossy().into_owned(),
             shared_state,
         )
+    }
+
+    fn persisted_state(data_dir: &Path) -> PersistedState {
+        let bytes = fs::read(data_dir.join("ndr_demo_core_state.json"))
+            .expect("read persisted state");
+        serde_json::from_slice(&bytes).expect("parse persisted state")
+    }
+
+    fn wait_for_persisted_state(
+        data_dir: &Path,
+        label: &str,
+        predicate: impl Fn(&PersistedState) -> bool,
+    ) -> PersistedState {
+        let deadline = Instant::now() + StdDuration::from_secs(15);
+        while Instant::now() < deadline {
+            if data_dir.join("ndr_demo_core_state.json").exists() {
+                let state = persisted_state(data_dir);
+                if predicate(&state) {
+                    return state;
+                }
+            }
+            thread::sleep(StdDuration::from_millis(100));
+        }
+        panic!("timed out waiting for persisted state: {label}");
+    }
+
+    fn keys_for_fill(secret_fill: u8) -> Keys {
+        Keys::new(SecretKey::from_slice(&[secret_fill; 32]).expect("secret key"))
+    }
+
+    fn publish_local_relay_event(keys: &Keys, event: Event) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("publish runtime");
+        runtime.block_on(async {
+            let client = Client::new(keys.clone());
+            client
+                .add_relay("ws://127.0.0.1:4848")
+                .await
+                .expect("add relay");
+            client.connect_with_timeout(Duration::from_secs(5)).await;
+            publish_event_with_retry(&client, event, "test publish")
+                .await
+                .expect("publish event");
+            let _ = client.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn relay_filter_matches_pubkey_tags_and_time_bounds() {
+        let event = json!({
+            "pubkey": "aaaaaaaa",
+            "kind": codec::INVITE_RESPONSE_KIND,
+            "created_at": 100,
+            "tags": [["p", "deadbeef"], ["d", "double-ratchet/invites/test"]],
+        });
+
+        assert!(matches_filter(
+            &event,
+            &json!({
+                "kinds": [codec::INVITE_RESPONSE_KIND],
+                "#p": ["deadbeef"],
+                "since": 90,
+                "until": 110,
+            }),
+        ));
+        assert!(!matches_filter(
+            &event,
+            &json!({
+                "kinds": [codec::INVITE_RESPONSE_KIND],
+                "#p": ["cafebabe"],
+            }),
+        ));
+        assert!(!matches_filter(
+            &event,
+            &json!({
+                "kinds": [codec::INVITE_RESPONSE_KIND],
+                "#p": ["deadbeef"],
+                "since": 101,
+            }),
+        ));
     }
 
     #[test]
@@ -2171,6 +2761,190 @@ mod tests {
                 .expect("current chat")
                 .chat_id,
             chat_id
+        );
+    }
+
+    #[test]
+    fn invite_response_delivery_requires_matching_pubkey_tag() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::local_only();
+        let _relay = TestRelay::start();
+        let (_alice_dir, alice) = app(71);
+        let (_bob_dir, bob) = app(72);
+        let (charlie_dir, _charlie) = app(73);
+
+        alice.dispatch(AppAction::CreateChat {
+            peer_input: npub_for_fill(72),
+        });
+        let alice_chat_id = wait_for_state(&alice, "alice chat create", |state| {
+            state.current_chat.is_some()
+        })
+        .current_chat
+        .expect("alice chat")
+        .chat_id;
+
+        alice.dispatch(AppAction::SendMessage {
+            chat_id: alice_chat_id,
+            text: "hello bob".to_string(),
+        });
+
+        wait_for_state(&bob, "bob receives hello", |state| {
+            state
+                .chat_list
+                .iter()
+                .any(|chat| chat.last_message_preview.as_deref() == Some("hello bob"))
+        });
+
+        let charlie_persisted = wait_for_persisted_state(
+            charlie_dir.path(),
+            "charlie stays scoped to local invite responses",
+            |persisted| {
+                persisted
+                    .session_manager
+                    .as_ref()
+                    .map(|snapshot| snapshot.users.len() == 1)
+                    .unwrap_or(false)
+            },
+        );
+        assert_eq!(
+            charlie_persisted
+                .session_manager
+                .expect("charlie session manager")
+                .users
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn pending_send_waits_for_missing_roster_then_delivers() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::local_only();
+        let _relay = TestRelay::start();
+        let (alice_dir, alice) = app(81);
+
+        alice.dispatch(AppAction::CreateChat {
+            peer_input: npub_for_fill(82),
+        });
+        let chat_id = wait_for_state(&alice, "alice chat create", |state| {
+            state.current_chat.is_some()
+        })
+        .current_chat
+        .expect("alice chat")
+        .chat_id;
+
+        alice.dispatch(AppAction::SendMessage {
+            chat_id,
+            text: "waiting on roster".to_string(),
+        });
+
+        let alice_pending = wait_for_persisted_state(
+            alice_dir.path(),
+            "alice waits for missing roster",
+            |persisted| {
+                persisted.pending_outbound.len() == 1
+                    && persisted.pending_outbound[0].reason == PendingSendReason::MissingRoster
+            },
+        );
+        assert_eq!(alice_pending.pending_outbound.len(), 1);
+
+        let (_bob_dir, bob) = app(82);
+        wait_for_state(&bob, "bob receives queued first message", |state| {
+            state.chat_list.iter().any(|chat| {
+                chat.last_message_preview.as_deref() == Some("waiting on roster")
+            })
+        });
+        let alice_cleared = wait_for_persisted_state(
+            alice_dir.path(),
+            "alice clears pending outbound after roster arrives",
+            |persisted| persisted.pending_outbound.is_empty(),
+        );
+        assert!(alice_cleared.pending_outbound.is_empty());
+    }
+
+    #[test]
+    fn pending_send_waits_for_missing_device_invite_then_publishes() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::local_only();
+        let _relay = TestRelay::start();
+
+        let bob_keys = keys_for_fill(92);
+        let bob_owner = local_owner_from_keys(&bob_keys);
+        let now = unix_now();
+        let bob_roster = DeviceRoster::new(
+            now,
+            vec![AuthorizedDevice::new(bob_owner.as_device(), now)],
+        );
+        let roster_event = codec::roster_unsigned_event(bob_owner, &bob_roster)
+            .expect("bob roster event")
+            .sign_with_keys(&bob_keys)
+            .expect("sign bob roster");
+        publish_local_relay_event(&bob_keys, roster_event);
+
+        let (_alice_dir, alice) = app(91);
+        alice.dispatch(AppAction::CreateChat {
+            peer_input: npub_for_fill(92),
+        });
+        let chat_id = wait_for_state(&alice, "alice chat create", |state| {
+            state.current_chat.is_some()
+        })
+        .current_chat
+        .expect("alice chat")
+        .chat_id;
+
+        alice.dispatch(AppAction::SendMessage {
+            chat_id: chat_id.clone(),
+            text: "waiting on invite".to_string(),
+        });
+
+        wait_for_state(&alice, "alice send pending on missing invite", |state| {
+            state
+                .current_chat
+                .as_ref()
+                .and_then(|chat| chat.messages.last())
+                .map(|message| matches!(message.delivery, DeliveryState::Pending))
+                .unwrap_or(false)
+        });
+
+        let mut session_manager =
+            SessionManager::new(bob_owner, bob_keys.secret_key().to_secret_bytes());
+        session_manager.apply_local_roster(bob_roster);
+        let mut rng = OsRng;
+        let mut ctx = ProtocolContext::new(unix_now(), &mut rng);
+        let invite = session_manager
+            .ensure_local_invite(&mut ctx)
+            .expect("ensure bob invite")
+            .clone();
+        let invite_event = codec::invite_unsigned_event(&invite)
+            .expect("bob invite event")
+            .sign_with_keys(&bob_keys)
+            .expect("sign bob invite");
+        publish_local_relay_event(&bob_keys, invite_event);
+
+        let alice_after_invite =
+            wait_for_state(&alice, "alice publishes after invite appears", |state| {
+                state
+                    .current_chat
+                    .as_ref()
+                    .and_then(|chat| chat.messages.last())
+                    .map(|message| matches!(message.delivery, DeliveryState::Sent))
+                    .unwrap_or(false)
+            });
+        assert_eq!(
+            alice_after_invite
+                .current_chat
+                .expect("alice current chat")
+                .messages
+                .last()
+                .expect("alice last message")
+                .body,
+            "waiting on invite"
         );
     }
 

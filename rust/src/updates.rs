@@ -23,6 +23,14 @@ pub enum CoreMsg {
 #[derive(Debug)]
 pub enum InternalEvent {
     RelayEvent(Event),
+    RetryPendingOutbound,
+    FetchTrackedPeerCatchUp,
+    FetchCatchUpEvents(Vec<Event>),
+    StagedSendFinished {
+        message_id: String,
+        chat_id: String,
+        success: bool,
+    },
     SyncComplete,
     Toast(String),
 }
