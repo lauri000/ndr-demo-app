@@ -1,8 +1,9 @@
 #[derive(uniffi::Enum, Clone, Debug)]
 pub enum Screen {
     Welcome,
-    Account,
-    Chat,
+    ChatList,
+    NewChat,
+    Chat { chat_id: String },
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
@@ -15,6 +16,7 @@ pub struct Router {
 pub struct BusyState {
     pub creating_account: bool,
     pub restoring_session: bool,
+    pub creating_chat: bool,
     pub sending_message: bool,
     pub syncing_network: bool,
 }
@@ -37,7 +39,7 @@ pub enum DeliveryState {
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct ChatMessageSnapshot {
     pub id: String,
-    pub peer_input: String,
+    pub chat_id: String,
     pub author: String,
     pub body: String,
     pub is_outgoing: bool,
@@ -47,16 +49,18 @@ pub struct ChatMessageSnapshot {
 
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct ChatThreadSnapshot {
-    pub peer_input: String,
-    pub title: String,
-    pub last_message: Option<String>,
+    pub chat_id: String,
+    pub display_name: String,
+    pub peer_npub: String,
+    pub last_message_preview: Option<String>,
     pub unread_count: u64,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct CurrentChatSnapshot {
-    pub peer_input: String,
-    pub title: String,
+    pub chat_id: String,
+    pub display_name: String,
+    pub peer_npub: String,
     pub messages: Vec<ChatMessageSnapshot>,
 }
 

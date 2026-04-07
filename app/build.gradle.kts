@@ -48,6 +48,7 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunnerArguments["clearPackageData"] = "true"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -188,8 +189,13 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.material3)
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.google.mlkit.barcode.scanning)
     implementation(libs.okhttp)
+    implementation(libs.zxing.core)
     implementation("net.java.dev.jna:jna:5.12.0@aar")
 
     testImplementation(libs.junit)

@@ -29,6 +29,7 @@ import social.innode.ndr.demo.rust.AppReconciler
 import social.innode.ndr.demo.rust.AppState
 import social.innode.ndr.demo.rust.AppUpdate
 import social.innode.ndr.demo.rust.FfiApp
+import social.innode.ndr.demo.rust.Screen
 
 class AppManager(
     context: Context,
@@ -81,29 +82,40 @@ class AppManager(
         rust.dispatch(AppAction.RestoreSession(trimmed))
     }
 
-    fun openChat(peerInput: String) {
+    fun dispatch(action: AppAction) {
+        rust.dispatch(action)
+    }
+
+    fun createChat(peerInput: String) {
         val trimmed = peerInput.trim()
+        if (trimmed.isEmpty()) {
+            return
+        }
+        rust.dispatch(AppAction.CreateChat(trimmed))
+    }
+
+    fun openChat(chatId: String) {
+        val trimmed = chatId.trim()
         if (trimmed.isEmpty()) {
             return
         }
         rust.dispatch(AppAction.OpenChat(trimmed))
     }
 
-    fun closeChat() {
-        rust.dispatch(AppAction.CloseChat)
+    fun pushScreen(screen: Screen) {
+        rust.dispatch(AppAction.PushScreen(screen))
     }
 
     fun sendText(
-        peerInput: String,
+        chatId: String,
         text: String,
     ) {
-        val trimmedPeer = peerInput.trim()
+        val trimmedChatId = chatId.trim()
         val trimmedText = text.trim()
-        if (trimmedPeer.isEmpty() || trimmedText.isEmpty()) {
+        if (trimmedChatId.isEmpty() || trimmedText.isEmpty()) {
             return
         }
-        rust.dispatch(AppAction.OpenChat(trimmedPeer))
-        rust.dispatch(AppAction.SendMessage(trimmedPeer, trimmedText))
+        rust.dispatch(AppAction.SendMessage(trimmedChatId, trimmedText))
     }
 
     fun logout() {

@@ -83,3 +83,13 @@ impl FfiApp {
         });
     }
 }
+
+#[uniffi::export]
+pub fn normalize_peer_input(input: String) -> String {
+    crate::core::normalize_peer_input_for_display(&input)
+}
+
+#[uniffi::export]
+pub fn is_valid_peer_input(input: String) -> bool {
+    crate::core::parse_peer_input(&input).is_ok()
+}

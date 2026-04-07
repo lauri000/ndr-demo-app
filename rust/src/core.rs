@@ -7,25 +7,29 @@ use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 use flume::Sender;
 use nostr_double_ratchet::{
     AuthorizedDevice, DeviceRoster, DomainError, Error, MessageEnvelope, OwnerPubkey,
-    ProtocolContext, SessionManager, SessionManagerSnapshot, UnixSeconds,
+    ProtocolContext, SessionManager, SessionManagerSnapshot, SessionState, UnixSeconds,
 };
 use nostr_double_ratchet_nostr::nostr as codec;
-use nostr_sdk::prelude::{Client, Event, Filter, Keys, Kind, PublicKey, RelayPoolNotification, ToBech32};
+use nostr_sdk::prelude::{
+    Client, Event, Filter, Keys, Kind, PublicKey, RelayPoolNotification, ToBech32,
+};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, Duration};
 
-const RELAYS: &[&str] = &[
+const DEFAULT_RELAYS: &[&str] = &[
+    "ws://10.0.2.2:4848",
     "ws://127.0.0.1:4848",
     "wss://relay.damus.io",
     "wss://nos.lol",
     "wss://relay.primal.net",
 ];
+const MAX_SEEN_EVENT_IDS: usize = 2048;
 
 pub struct AppCore {
     update_tx: Sender<AppUpdate>,
@@ -36,9 +40,13 @@ pub struct AppCore {
     state: AppState,
     logged_in: Option<LoggedInState>,
     threads: BTreeMap<String, ThreadRecord>,
-    active_peer_hex: Option<String>,
+    active_chat_id: Option<String>,
+    screen_stack: Vec<Screen>,
     next_message_id: u64,
     pending_inbound: Vec<PendingInbound>,
+    pending_outbound: Vec<PendingOutbound>,
+    seen_event_ids: HashSet<String>,
+    seen_event_order: VecDeque<String>,
 }
 
 struct LoggedInState {
@@ -49,36 +57,52 @@ struct LoggedInState {
 
 #[derive(Clone)]
 struct ThreadRecord {
-    peer_hex: String,
+    chat_id: String,
     unread_count: u64,
+    updated_at_secs: u64,
     messages: Vec<ChatMessageSnapshot>,
 }
 
 struct PendingInbound {
-    sender_owner_hex: String,
     envelope: MessageEnvelope,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PendingOutbound {
+    message_id: String,
+    chat_id: String,
+    body: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedState {
     version: u32,
-    active_peer_hex: Option<String>,
+    #[serde(alias = "active_peer_hex")]
+    active_chat_id: Option<String>,
     next_message_id: u64,
     session_manager: Option<SessionManagerSnapshot>,
     threads: Vec<PersistedThread>,
+    #[serde(default)]
+    pending_outbound: Vec<PendingOutbound>,
+    #[serde(default)]
+    seen_event_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedThread {
-    peer_hex: String,
+    #[serde(alias = "peer_hex")]
+    chat_id: String,
     unread_count: u64,
+    #[serde(default)]
+    updated_at_secs: u64,
     messages: Vec<PersistedMessage>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedMessage {
     id: String,
-    peer_input: String,
+    #[serde(alias = "peer_input")]
+    chat_id: String,
     author: String,
     body: String,
     is_outgoing: bool,
@@ -143,9 +167,13 @@ impl AppCore {
             state,
             logged_in: None,
             threads: BTreeMap::new(),
-            active_peer_hex: None,
+            active_chat_id: None,
+            screen_stack: Vec::new(),
             next_message_id: 1,
             pending_inbound: Vec::new(),
+            pending_outbound: Vec::new(),
+            seen_event_ids: HashSet::new(),
+            seen_event_order: VecDeque::new(),
         }
     }
 
@@ -162,15 +190,11 @@ impl AppCore {
             AppAction::CreateAccount => self.create_account(),
             AppAction::RestoreSession { nsec } => self.restore_session(&nsec),
             AppAction::Logout => self.logout(),
-            AppAction::OpenChat { peer_input } => self.open_chat(&peer_input),
-            AppAction::CloseChat => {
-                self.active_peer_hex = None;
-                self.rebuild_state();
-                self.persist_best_effort();
-                self.resubscribe_for_active_peer();
-                self.emit_state();
-            }
-            AppAction::SendMessage { peer_input, text } => self.send_message(&peer_input, &text),
+            AppAction::CreateChat { peer_input } => self.create_chat(&peer_input),
+            AppAction::OpenChat { chat_id } => self.open_chat(&chat_id),
+            AppAction::SendMessage { chat_id, text } => self.send_message(&chat_id, &text),
+            AppAction::PushScreen { screen } => self.push_screen(screen),
+            AppAction::UpdateScreenStack { stack } => self.update_screen_stack(stack),
         }
     }
 
@@ -200,7 +224,7 @@ impl AppCore {
             .to_bech32()
             .unwrap_or_else(|_| keys.secret_key().to_secret_hex());
 
-        if let Err(error) = self.start_session(keys, true) {
+        if let Err(error) = self.start_session(keys, false) {
             self.state.toast = Some(error.to_string());
         } else if let Some(account) = self.state.account.clone() {
             let _ = self.update_tx.send(AppUpdate::AccountCreated {
@@ -222,7 +246,7 @@ impl AppCore {
 
         let result = Keys::parse(nsec.trim())
             .map_err(|error| anyhow::anyhow!(error.to_string()))
-            .and_then(|keys| self.start_session(keys, false));
+            .and_then(|keys| self.start_session(keys, true));
 
         if let Err(error) = result {
             self.state.toast = Some(error.to_string());
@@ -243,45 +267,98 @@ impl AppCore {
         }
 
         self.threads.clear();
-        self.active_peer_hex = None;
+        self.active_chat_id = None;
+        self.screen_stack.clear();
         self.pending_inbound.clear();
+        self.pending_outbound.clear();
+        self.seen_event_ids.clear();
+        self.seen_event_order.clear();
         self.next_message_id = 1;
         self.state = AppState::empty();
         self.clear_persistence_best_effort();
         self.emit_state();
     }
 
-    fn open_chat(&mut self, peer_input: &str) {
-        let Ok((peer_hex, _pubkey)) = normalize_peer_input(peer_input) else {
+    fn create_chat(&mut self, peer_input: &str) {
+        if self.logged_in.is_none() {
+            self.state.toast = Some("Create or restore an account first.".to_string());
+            self.emit_state();
+            return;
+        }
+
+        self.state.busy.creating_chat = true;
+        self.emit_state();
+
+        let Ok((chat_id, _pubkey)) = parse_peer_input(peer_input) else {
+            self.state.toast = Some("Invalid peer key.".to_string());
+            self.state.busy.creating_chat = false;
+            self.emit_state();
+            return;
+        };
+
+        let now = unix_now().get();
+        let thread = self
+            .threads
+            .entry(chat_id.clone())
+            .or_insert_with(|| ThreadRecord {
+                chat_id: chat_id.clone(),
+                unread_count: 0,
+                updated_at_secs: now,
+                messages: Vec::new(),
+            });
+        if thread.updated_at_secs == 0 {
+            thread.updated_at_secs = now;
+        }
+        thread.unread_count = 0;
+
+        self.active_chat_id = Some(chat_id.clone());
+        self.screen_stack = vec![Screen::Chat {
+            chat_id: chat_id.clone(),
+        }];
+        self.republish_local_identity_artifacts();
+        self.rebuild_state();
+        self.persist_best_effort();
+        self.resubscribe_to_protocol_events();
+        self.state.busy.creating_chat = false;
+        self.emit_state();
+    }
+
+    fn open_chat(&mut self, chat_id: &str) {
+        let Ok((chat_id, _pubkey)) = parse_peer_input(chat_id) else {
             self.state.toast = Some("Invalid peer key.".to_string());
             self.emit_state();
             return;
         };
 
+        let now = unix_now().get();
         self.threads
-            .entry(peer_hex.clone())
+            .entry(chat_id.clone())
             .or_insert_with(|| ThreadRecord {
-                peer_hex: peer_hex.clone(),
+                chat_id: chat_id.clone(),
                 unread_count: 0,
+                updated_at_secs: now,
                 messages: Vec::new(),
             })
             .unread_count = 0;
 
-        self.active_peer_hex = Some(peer_hex);
+        self.active_chat_id = Some(chat_id.clone());
+        self.screen_stack = vec![Screen::Chat {
+            chat_id: chat_id.clone(),
+        }];
         self.republish_local_identity_artifacts();
         self.rebuild_state();
         self.persist_best_effort();
-        self.resubscribe_for_active_peer();
+        self.resubscribe_to_protocol_events();
         self.emit_state();
     }
 
-    fn send_message(&mut self, peer_input: &str, text: &str) {
+    fn send_message(&mut self, chat_id: &str, text: &str) {
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return;
         }
 
-        let Ok((peer_hex, peer_pubkey)) = normalize_peer_input(peer_input) else {
+        let Ok((chat_id, peer_pubkey)) = parse_peer_input(chat_id) else {
             self.state.toast = Some("Invalid peer key.".to_string());
             self.emit_state();
             return;
@@ -293,18 +370,24 @@ impl AppCore {
             return;
         }
 
-        self.active_peer_hex = Some(peer_hex.clone());
-        self.threads.entry(peer_hex.clone()).or_insert_with(|| ThreadRecord {
-            peer_hex: peer_hex.clone(),
-            unread_count: 0,
-            messages: Vec::new(),
-        });
+        let now = unix_now();
+        self.active_chat_id = Some(chat_id.clone());
+        self.screen_stack = vec![Screen::Chat {
+            chat_id: chat_id.clone(),
+        }];
+        self.threads
+            .entry(chat_id.clone())
+            .or_insert_with(|| ThreadRecord {
+                chat_id: chat_id.clone(),
+                unread_count: 0,
+                updated_at_secs: now.get(),
+                messages: Vec::new(),
+            });
         self.state.busy.sending_message = true;
         self.rebuild_state();
         self.emit_state();
 
         let owner = OwnerPubkey::from_bytes(peer_pubkey.to_bytes());
-        let now = unix_now();
         let prepared = {
             let logged_in = self.logged_in.as_mut().expect("logged in checked above");
             let mut rng = OsRng;
@@ -317,10 +400,25 @@ impl AppCore {
         match prepared {
             Ok(prepared) => {
                 if prepared.deliveries.is_empty() && prepared.invite_responses.is_empty() {
-                    self.state.toast =
-                        Some("Waiting for the peer roster and invite on relays.".to_string());
+                    let message = self.push_outgoing_message(
+                        &chat_id,
+                        trimmed.to_string(),
+                        now.get(),
+                        DeliveryState::Pending,
+                    );
+                    self.pending_outbound.push(PendingOutbound {
+                        message_id: message.id,
+                        chat_id,
+                        body: trimmed.to_string(),
+                    });
                 } else {
-                    let message = self.push_outgoing_message(&peer_hex, trimmed.to_string(), now.get());
+                    let message = self.push_outgoing_message(
+                        &chat_id,
+                        trimmed.to_string(),
+                        now.get(),
+                        DeliveryState::Sent,
+                    );
+                    self.resubscribe_to_protocol_events();
                     let events = {
                         let mut out = Vec::new();
                         for response in &prepared.invite_responses {
@@ -342,29 +440,8 @@ impl AppCore {
                         out
                     };
                     if !events.is_empty() {
-                        let client = self
-                            .logged_in
-                            .as_ref()
-                            .expect("logged in checked above")
-                            .client
-                            .clone();
-                        let tx = self.core_sender.clone();
-                        self.runtime.spawn(async move {
-                            for relay in RELAYS {
-                                let _ = client.add_relay(*relay).await;
-                            }
-                            client.connect_with_timeout(Duration::from_secs(5)).await;
-                            for event in events {
-                                if let Err(error) =
-                                    publish_event_with_retry(&client, event, "message").await
-                                {
-                                    let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
-                                        format!("Publish failed: {error}"),
-                                    ))));
-                                }
-                            }
-                        });
-                    } else if let Some(thread) = self.threads.get_mut(&peer_hex) {
+                        self.publish_events(events, "message");
+                    } else if let Some(thread) = self.threads.get_mut(&chat_id) {
                         if let Some(last) = thread.messages.last_mut() {
                             if last.id == message.id {
                                 last.delivery = DeliveryState::Failed;
@@ -384,21 +461,86 @@ impl AppCore {
         self.emit_state();
     }
 
-    fn handle_relay_event(&mut self, event: Event) {
-        let Some(logged_in) = self.logged_in.as_mut() else {
+    fn push_screen(&mut self, screen: Screen) {
+        if self.state.account.is_none() {
             return;
-        };
+        }
+
+        match screen {
+            Screen::ChatList => {
+                self.screen_stack.clear();
+                self.active_chat_id = None;
+            }
+            Screen::NewChat => {
+                self.screen_stack = vec![Screen::NewChat];
+                self.active_chat_id = None;
+            }
+            Screen::Chat { chat_id } => {
+                self.open_chat(&chat_id);
+                return;
+            }
+            Screen::Welcome => return,
+        }
+
+        self.rebuild_state();
+        self.persist_best_effort();
+        self.emit_state();
+    }
+
+    fn update_screen_stack(&mut self, stack: Vec<Screen>) {
+        if self.state.account.is_none() {
+            return;
+        }
+
+        let mut normalized_stack = Vec::new();
+        for screen in stack {
+            match screen {
+                Screen::Welcome | Screen::ChatList => {}
+                Screen::NewChat => normalized_stack.push(Screen::NewChat),
+                Screen::Chat { chat_id } => {
+                    if let Ok((chat_id, _)) = parse_peer_input(&chat_id) {
+                        normalized_stack.push(Screen::Chat { chat_id });
+                    }
+                }
+            }
+        }
+
+        self.screen_stack = normalized_stack;
+        self.sync_active_chat_from_router();
+        self.rebuild_state();
+        self.persist_best_effort();
+        self.emit_state();
+    }
+
+    fn handle_relay_event(&mut self, event: Event) {
+        let event_id = event.id.to_string();
+        if self.has_seen_event(&event_id) {
+            return;
+        }
+
+        if self.logged_in.is_none() {
+            return;
+        }
 
         let kind = event.kind.as_u16() as u32;
         let now = unix_now();
         match kind {
             codec::ROSTER_EVENT_KIND => {
                 if let Ok(decoded) = codec::parse_roster_event(&event) {
-                    if decoded.owner_pubkey != local_owner_from_keys(&logged_in.keys) {
-                        logged_in
+                    let is_foreign_roster = {
+                        let logged_in = self.logged_in.as_ref().expect("checked above");
+                        decoded.owner_pubkey != local_owner_from_keys(&logged_in.keys)
+                    };
+                    if is_foreign_roster {
+                        self.logged_in
+                            .as_mut()
+                            .expect("checked above")
                             .session_manager
                             .observe_peer_roster(decoded.owner_pubkey, decoded.roster);
+                        self.remember_event(event_id);
                         self.retry_pending_inbound(now);
+                        self.retry_pending_outbound(now);
+                        self.resubscribe_to_protocol_events();
                         self.persist_best_effort();
                         self.rebuild_state();
                         self.emit_state();
@@ -408,39 +550,63 @@ impl AppCore {
 
                 if let Ok(invite) = codec::parse_invite_event(&event) {
                     let owner = invite.owner_public_key.unwrap_or(invite.inviter);
-                    if owner != local_owner_from_keys(&logged_in.keys) {
-                        if let Err(error) = logged_in.session_manager.observe_device_invite(owner, invite) {
+                    let is_foreign_invite = {
+                        let logged_in = self.logged_in.as_ref().expect("checked above");
+                        owner != local_owner_from_keys(&logged_in.keys)
+                    };
+                    if is_foreign_invite {
+                        if let Err(error) = self
+                            .logged_in
+                            .as_mut()
+                            .expect("checked above")
+                            .session_manager
+                            .observe_device_invite(owner, invite)
+                        {
                             self.state.toast = Some(error.to_string());
                         } else {
+                            self.remember_event(event_id.clone());
                             self.retry_pending_inbound(now);
+                            self.retry_pending_outbound(now);
+                            self.resubscribe_to_protocol_events();
                             self.persist_best_effort();
                         }
                         self.rebuild_state();
                         self.emit_state();
+                        return;
                     }
                 }
+                self.remember_event(event_id);
             }
             codec::INVITE_RESPONSE_KIND => {
-                let Some(local_invite_recipient) = logged_in
+                let Some(local_invite_recipient) = self
+                    .logged_in
+                    .as_ref()
+                    .expect("checked above")
                     .session_manager
                     .snapshot()
                     .local_invite
                     .as_ref()
                     .map(|invite| invite.inviter_ephemeral_public_key)
                 else {
+                    self.remember_event(event_id);
                     return;
                 };
 
                 let Ok(envelope) = codec::parse_invite_response_event(&event) else {
+                    self.remember_event(event_id);
                     return;
                 };
                 if envelope.recipient != local_invite_recipient {
+                    self.remember_event(event_id);
                     return;
                 }
 
                 let mut rng = OsRng;
                 let mut ctx = ProtocolContext::new(now, &mut rng);
-                if let Err(error) = logged_in
+                if let Err(error) = self
+                    .logged_in
+                    .as_mut()
+                    .expect("checked above")
                     .session_manager
                     .observe_invite_response(&mut ctx, &envelope)
                 {
@@ -454,37 +620,58 @@ impl AppCore {
                     }
                 } else {
                     self.retry_pending_inbound(now);
+                    self.retry_pending_outbound(now);
+                    self.resubscribe_to_protocol_events();
                     self.persist_best_effort();
                 }
+                self.remember_event(event_id);
                 self.rebuild_state();
                 self.emit_state();
             }
             codec::MESSAGE_EVENT_KIND => {
-                if let Ok(envelope) = codec::parse_message_event(&event) {
-                    let sender_owner = envelope.sender.as_owner();
-                    let mut rng = OsRng;
-                    let mut ctx = ProtocolContext::new(now, &mut rng);
-                    match logged_in.session_manager.receive(&mut ctx, sender_owner, &envelope) {
-                        Ok(Some(message)) => {
-                            self.push_incoming_message(
-                                &message.owner_pubkey.to_string(),
-                                String::from_utf8_lossy(&message.payload).into_owned(),
-                                now.get(),
-                            );
-                            self.persist_best_effort();
-                            self.rebuild_state();
-                            self.emit_state();
-                        }
-                        Ok(None) => {
-                            self.pending_inbound.push(PendingInbound {
-                                sender_owner_hex: sender_owner.to_string(),
-                                envelope,
-                            });
-                        }
-                        Err(error) => {
-                            self.state.toast = Some(error.to_string());
-                            self.emit_state();
-                        }
+                let Ok(envelope) = codec::parse_message_event(&event) else {
+                    self.remember_event(event_id);
+                    return;
+                };
+
+                let sender_owner = self.logged_in.as_ref().and_then(|logged_in| {
+                    resolve_message_sender_owner(&logged_in.session_manager, &envelope, now)
+                });
+                let Some(sender_owner) = sender_owner else {
+                    self.remember_event(event_id.clone());
+                    self.pending_inbound.push(PendingInbound { envelope });
+                    return;
+                };
+
+                let mut rng = OsRng;
+                let mut ctx = ProtocolContext::new(now, &mut rng);
+                match self
+                    .logged_in
+                    .as_mut()
+                    .expect("checked above")
+                    .session_manager
+                    .receive(&mut ctx, sender_owner, &envelope)
+                {
+                    Ok(Some(message)) => {
+                        self.remember_event(event_id);
+                        self.push_incoming_message(
+                            &message.owner_pubkey.to_string(),
+                            String::from_utf8_lossy(&message.payload).into_owned(),
+                            now.get(),
+                        );
+                        self.resubscribe_to_protocol_events();
+                        self.persist_best_effort();
+                        self.rebuild_state();
+                        self.emit_state();
+                    }
+                    Ok(None) => {
+                        self.remember_event(event_id.clone());
+                        self.pending_inbound.push(PendingInbound { envelope });
+                    }
+                    Err(error) => {
+                        self.remember_event(event_id);
+                        self.state.toast = Some(error.to_string());
+                        self.emit_state();
                     }
                 }
             }
@@ -503,7 +690,11 @@ impl AppCore {
 
         self.threads.clear();
         self.pending_inbound.clear();
-        self.active_peer_hex = None;
+        self.active_chat_id = None;
+        self.screen_stack.clear();
+        self.pending_outbound.clear();
+        self.seen_event_ids.clear();
+        self.seen_event_order.clear();
         self.next_message_id = 1;
 
         let secret_bytes = keys.secret_key().to_secret_bytes();
@@ -518,23 +709,44 @@ impl AppCore {
         };
 
         if let Some(persisted) = &persisted {
-            self.active_peer_hex = persisted.active_peer_hex.clone();
+            self.active_chat_id = persisted.active_chat_id.clone();
             self.next_message_id = persisted.next_message_id.max(1);
+            self.pending_outbound = persisted.pending_outbound.clone();
+            self.seen_event_order = persisted
+                .seen_event_ids
+                .iter()
+                .rev()
+                .take(MAX_SEEN_EVENT_IDS)
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            self.seen_event_ids = self.seen_event_order.iter().cloned().collect();
             self.threads = persisted
                 .threads
                 .iter()
                 .map(|thread| {
+                    let updated_at_secs = thread.updated_at_secs.max(
+                        thread
+                            .messages
+                            .iter()
+                            .map(|message| message.created_at_secs)
+                            .max()
+                            .unwrap_or(0),
+                    );
                     (
-                        thread.peer_hex.clone(),
+                        thread.chat_id.clone(),
                         ThreadRecord {
-                            peer_hex: thread.peer_hex.clone(),
+                            chat_id: thread.chat_id.clone(),
                             unread_count: thread.unread_count,
+                            updated_at_secs,
                             messages: thread
                                 .messages
                                 .iter()
                                 .map(|message| ChatMessageSnapshot {
                                     id: message.id.clone(),
-                                    peer_input: message.peer_input.clone(),
+                                    chat_id: message.chat_id.clone(),
                                     author: message.author.clone(),
                                     body: message.body.clone(),
                                     is_outgoing: message.is_outgoing,
@@ -548,18 +760,17 @@ impl AppCore {
                 .collect();
         }
 
+        if let Some(chat_id) = self.active_chat_id.clone() {
+            self.screen_stack = vec![Screen::Chat { chat_id }];
+        }
+
         let mut session_manager = persisted
             .and_then(|persisted| persisted.session_manager)
             .map(|snapshot| SessionManager::from_snapshot(snapshot, secret_bytes))
             .transpose()?
-            .unwrap_or_else(|| {
-                SessionManager::new(local_owner, secret_bytes)
-            });
+            .unwrap_or_else(|| SessionManager::new(local_owner, secret_bytes));
 
-        let local_roster = DeviceRoster::new(
-            now,
-            vec![AuthorizedDevice::new(local_device, now)],
-        );
+        let local_roster = DeviceRoster::new(now, vec![AuthorizedDevice::new(local_device, now)]);
         session_manager.apply_local_roster(local_roster.clone());
 
         let invite_url = {
@@ -585,6 +796,8 @@ impl AppCore {
             session_manager,
         });
 
+        self.retry_pending_outbound(now);
+
         self.state.account = Some(AccountSnapshot {
             public_key_hex: keys.public_key().to_hex(),
             npub: keys
@@ -596,7 +809,7 @@ impl AppCore {
         self.state.busy.syncing_network = true;
         self.rebuild_state();
         self.persist_best_effort();
-        self.resubscribe_for_active_peer();
+        self.resubscribe_to_protocol_events();
         self.emit_state();
         Ok(())
     }
@@ -609,12 +822,12 @@ impl AppCore {
         let pending = std::mem::take(&mut self.pending_inbound);
         let mut still_pending = Vec::new();
         for item in pending {
-            let sender_owner = match normalize_peer_input(&item.sender_owner_hex) {
-                Ok((_, sender_pubkey)) => OwnerPubkey::from_bytes(sender_pubkey.to_bytes()),
-                Err(_) => {
-                    still_pending.push(item);
-                    continue;
-                }
+            let sender_owner = self.logged_in.as_ref().and_then(|logged_in| {
+                resolve_message_sender_owner(&logged_in.session_manager, &item.envelope, now)
+            });
+            let Some(sender_owner) = sender_owner else {
+                still_pending.push(item);
+                continue;
             };
             let receive_result = {
                 let logged_in = self.logged_in.as_mut().expect("checked above");
@@ -639,15 +852,125 @@ impl AppCore {
         self.pending_inbound = still_pending;
     }
 
+    fn retry_pending_outbound(&mut self, now: UnixSeconds) {
+        if self.logged_in.is_none() || self.pending_outbound.is_empty() {
+            return;
+        }
+
+        let pending = std::mem::take(&mut self.pending_outbound);
+        let mut still_pending = Vec::new();
+        let mut events_to_publish = Vec::new();
+
+        for pending_message in pending {
+            let owner = match parse_peer_input(&pending_message.chat_id) {
+                Ok((_, peer_pubkey)) => OwnerPubkey::from_bytes(peer_pubkey.to_bytes()),
+                Err(_) => {
+                    self.update_message_delivery(
+                        &pending_message.chat_id,
+                        &pending_message.message_id,
+                        DeliveryState::Failed,
+                    );
+                    continue;
+                }
+            };
+
+            let prepared = {
+                let logged_in = self.logged_in.as_mut().expect("checked above");
+                let mut rng = OsRng;
+                let mut ctx = ProtocolContext::new(now, &mut rng);
+                logged_in.session_manager.prepare_send(
+                    &mut ctx,
+                    owner,
+                    pending_message.body.as_bytes().to_vec(),
+                )
+            };
+
+            match prepared {
+                Ok(prepared)
+                    if prepared.deliveries.is_empty() && prepared.invite_responses.is_empty() =>
+                {
+                    still_pending.push(pending_message);
+                }
+                Ok(prepared) => {
+                    let events = {
+                        let mut out = Vec::new();
+                        for response in &prepared.invite_responses {
+                            match codec::invite_response_event(response) {
+                                Ok(event) => out.push(event),
+                                Err(error) => self.state.toast = Some(error.to_string()),
+                            }
+                        }
+                        for delivery in &prepared.deliveries {
+                            match codec::message_event(&delivery.envelope) {
+                                Ok(event) => out.push(event),
+                                Err(error) => self.state.toast = Some(error.to_string()),
+                            }
+                        }
+                        out
+                    };
+
+                    if events.is_empty() {
+                        self.update_message_delivery(
+                            &pending_message.chat_id,
+                            &pending_message.message_id,
+                            DeliveryState::Failed,
+                        );
+                    } else {
+                        self.update_message_delivery(
+                            &pending_message.chat_id,
+                            &pending_message.message_id,
+                            DeliveryState::Sent,
+                        );
+                        events_to_publish.extend(events);
+                    }
+                }
+                Err(error) => {
+                    self.state.toast = Some(error.to_string());
+                    self.update_message_delivery(
+                        &pending_message.chat_id,
+                        &pending_message.message_id,
+                        DeliveryState::Failed,
+                    );
+                }
+            }
+        }
+
+        self.pending_outbound = still_pending;
+
+        if !events_to_publish.is_empty() {
+            self.resubscribe_to_protocol_events();
+            self.publish_events(events_to_publish, "message");
+        }
+    }
+
+    fn update_message_delivery(
+        &mut self,
+        chat_id: &str,
+        message_id: &str,
+        delivery: DeliveryState,
+    ) {
+        let Some(thread) = self.threads.get_mut(chat_id) else {
+            return;
+        };
+        if let Some(message) = thread
+            .messages
+            .iter_mut()
+            .find(|message| message.id == message_id)
+        {
+            message.delivery = delivery;
+        }
+    }
+
     fn push_outgoing_message(
         &mut self,
-        peer_hex: &str,
+        chat_id: &str,
         body: String,
         created_at_secs: u64,
+        delivery: DeliveryState,
     ) -> ChatMessageSnapshot {
         let message = ChatMessageSnapshot {
             id: self.allocate_message_id(),
-            peer_input: peer_hex.to_string(),
+            chat_id: chat_id.to_string(),
             author: self
                 .state
                 .account
@@ -657,37 +980,43 @@ impl AppCore {
             body,
             is_outgoing: true,
             created_at_secs,
-            delivery: DeliveryState::Sent,
+            delivery,
         };
         self.threads
-            .entry(peer_hex.to_string())
+            .entry(chat_id.to_string())
             .or_insert_with(|| ThreadRecord {
-                peer_hex: peer_hex.to_string(),
+                chat_id: chat_id.to_string(),
                 unread_count: 0,
+                updated_at_secs: created_at_secs,
                 messages: Vec::new(),
             })
             .messages
             .push(message.clone());
+        if let Some(thread) = self.threads.get_mut(chat_id) {
+            thread.updated_at_secs = created_at_secs;
+        }
         message
     }
 
-    fn push_incoming_message(&mut self, peer_hex: &str, body: String, created_at_secs: u64) {
+    fn push_incoming_message(&mut self, chat_id: &str, body: String, created_at_secs: u64) {
         let message_id = self.allocate_message_id();
-        let author = owner_npub(peer_hex).unwrap_or_else(|| peer_hex.to_string());
+        let author = owner_npub(chat_id).unwrap_or_else(|| chat_id.to_string());
         let thread = self
             .threads
-            .entry(peer_hex.to_string())
+            .entry(chat_id.to_string())
             .or_insert_with(|| ThreadRecord {
-                peer_hex: peer_hex.to_string(),
+                chat_id: chat_id.to_string(),
                 unread_count: 0,
+                updated_at_secs: created_at_secs,
                 messages: Vec::new(),
             });
-        if self.active_peer_hex.as_deref() != Some(peer_hex) {
+        if self.active_chat_id.as_deref() != Some(chat_id) {
             thread.unread_count = thread.unread_count.saturating_add(1);
         }
+        thread.updated_at_secs = created_at_secs;
         thread.messages.push(ChatMessageSnapshot {
             id: message_id,
-            peer_input: peer_hex.to_string(),
+            chat_id: chat_id.to_string(),
             author,
             body,
             is_outgoing: false,
@@ -704,47 +1033,39 @@ impl AppCore {
 
     fn rebuild_state(&mut self) {
         let default_screen = if self.state.account.is_some() {
-            Screen::Account
+            Screen::ChatList
         } else {
             Screen::Welcome
         };
 
         let mut threads: Vec<&ThreadRecord> = self.threads.values().collect();
-        threads.sort_by_key(|thread| {
-            thread
-                .messages
-                .last()
-                .map(|message| std::cmp::Reverse(message.created_at_secs))
-                .unwrap_or(std::cmp::Reverse(0))
-        });
+        threads.sort_by_key(|thread| std::cmp::Reverse(thread.updated_at_secs));
 
         self.state.chat_list = threads
             .iter()
             .map(|thread| ChatThreadSnapshot {
-                peer_input: owner_npub(&thread.peer_hex).unwrap_or_else(|| thread.peer_hex.clone()),
-                title: owner_npub(&thread.peer_hex).unwrap_or_else(|| thread.peer_hex.clone()),
-                last_message: thread.messages.last().map(|message| message.body.clone()),
+                chat_id: thread.chat_id.clone(),
+                display_name: owner_npub(&thread.chat_id).unwrap_or_else(|| thread.chat_id.clone()),
+                peer_npub: owner_npub(&thread.chat_id).unwrap_or_else(|| thread.chat_id.clone()),
+                last_message_preview: thread.messages.last().map(|message| message.body.clone()),
                 unread_count: thread.unread_count,
             })
             .collect();
 
         self.state.current_chat = self
-            .active_peer_hex
+            .active_chat_id
             .as_ref()
-            .and_then(|peer_hex| self.threads.get(peer_hex))
+            .and_then(|chat_id| self.threads.get(chat_id))
             .map(|thread| CurrentChatSnapshot {
-                peer_input: owner_npub(&thread.peer_hex).unwrap_or_else(|| thread.peer_hex.clone()),
-                title: owner_npub(&thread.peer_hex).unwrap_or_else(|| thread.peer_hex.clone()),
+                chat_id: thread.chat_id.clone(),
+                display_name: owner_npub(&thread.chat_id).unwrap_or_else(|| thread.chat_id.clone()),
+                peer_npub: owner_npub(&thread.chat_id).unwrap_or_else(|| thread.chat_id.clone()),
                 messages: thread.messages.clone(),
             });
 
         self.state.router = Router {
             default_screen,
-            screen_stack: if self.state.current_chat.is_some() {
-                vec![Screen::Chat]
-            } else {
-                Vec::new()
-            },
+            screen_stack: self.screen_stack.clone(),
         };
     }
 
@@ -777,22 +1098,23 @@ impl AppCore {
         };
 
         let persisted = PersistedState {
-            version: 1,
-            active_peer_hex: self.active_peer_hex.clone(),
+            version: 2,
+            active_chat_id: self.active_chat_id.clone(),
             next_message_id: self.next_message_id,
             session_manager: Some(logged_in.session_manager.snapshot()),
             threads: self
                 .threads
                 .values()
                 .map(|thread| PersistedThread {
-                    peer_hex: thread.peer_hex.clone(),
+                    chat_id: thread.chat_id.clone(),
                     unread_count: thread.unread_count,
+                    updated_at_secs: thread.updated_at_secs,
                     messages: thread
                         .messages
                         .iter()
                         .map(|message| PersistedMessage {
                             id: message.id.clone(),
-                            peer_input: message.peer_input.clone(),
+                            chat_id: message.chat_id.clone(),
                             author: message.author.clone(),
                             body: message.body.clone(),
                             is_outgoing: message.is_outgoing,
@@ -802,6 +1124,8 @@ impl AppCore {
                         .collect(),
                 })
                 .collect(),
+            pending_outbound: self.pending_outbound.clone(),
+            seen_event_ids: self.seen_event_order.iter().cloned().collect(),
         };
 
         if let Ok(bytes) = serde_json::to_vec_pretty(&persisted) {
@@ -836,6 +1160,35 @@ impl AppCore {
         });
     }
 
+    fn publish_events(&mut self, events: Vec<Event>, label: &'static str) {
+        let Some(client) = self
+            .logged_in
+            .as_ref()
+            .map(|logged_in| logged_in.client.clone())
+        else {
+            return;
+        };
+
+        for event in &events {
+            self.remember_event(event.id.to_string());
+        }
+
+        let tx = self.core_sender.clone();
+        self.runtime.spawn(async move {
+            for relay in configured_relays() {
+                let _ = client.add_relay(relay).await;
+            }
+            client.connect_with_timeout(Duration::from_secs(5)).await;
+            for event in events {
+                if let Err(error) = publish_event_with_retry(&client, event, label).await {
+                    let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(format!(
+                        "Publish failed: {error}"
+                    )))));
+                }
+            }
+        });
+    }
+
     fn publish_local_identity_artifacts(
         &self,
         client: Client,
@@ -849,14 +1202,16 @@ impl AppCore {
             Err(error) => {
                 let _ = self
                     .core_sender
-                    .send(CoreMsg::Internal(Box::new(InternalEvent::Toast(error.to_string()))));
+                    .send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
+                        error.to_string(),
+                    ))));
                 return;
             }
         };
         let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
-            for relay in RELAYS {
-                let _ = client.add_relay(*relay).await;
+            for relay in configured_relays() {
+                let _ = client.add_relay(relay).await;
             }
             client.connect_with_timeout(Duration::from_secs(5)).await;
 
@@ -920,46 +1275,210 @@ impl AppCore {
         );
     }
 
-    fn resubscribe_for_active_peer(&self) {
+    fn resubscribe_to_protocol_events(&self) {
         let Some(logged_in) = self.logged_in.as_ref() else {
             return;
         };
+        let filters = self.protocol_filters();
         let client = logged_in.client.clone();
-        let peer_hex = self.active_peer_hex.clone();
         self.runtime.spawn(async move {
             client.unsubscribe_all().await;
-            let Some(peer_hex) = peer_hex else {
-                return;
-            };
-            let Ok(peer_pubkey) = PublicKey::parse(&peer_hex) else {
-                return;
-            };
-
-            let roster_or_invite = Filter::new()
-                .author(peer_pubkey)
-                .kind(Kind::from(codec::ROSTER_EVENT_KIND as u16));
-            // Invite responses are authored by a random one-time sender key, so
-            // filtering by the peer owner pubkey would drop the bootstrap event.
-            let invite_responses = Filter::new().kind(Kind::from(codec::INVITE_RESPONSE_KIND as u16));
-            let messages = Filter::new()
-                .author(peer_pubkey)
-                .kind(Kind::from(codec::MESSAGE_EVENT_KIND as u16));
-
             client.connect_with_timeout(Duration::from_secs(5)).await;
-            let _ = client.subscribe(vec![roster_or_invite], None).await;
-            let _ = client.subscribe(vec![invite_responses], None).await;
-            let _ = client.subscribe(vec![messages], None).await;
+            if !filters.is_empty() {
+                let _ = client.subscribe(filters, None).await;
+            }
         });
+    }
+
+    fn protocol_filters(&self) -> Vec<Filter> {
+        let mut filters = Vec::new();
+
+        let peer_authors = self
+            .known_peer_owner_hexes()
+            .into_iter()
+            .filter_map(|hex| PublicKey::parse(&hex).ok())
+            .collect::<Vec<_>>();
+        if !peer_authors.is_empty() {
+            filters.push(
+                Filter::new()
+                    .kind(Kind::from(codec::ROSTER_EVENT_KIND as u16))
+                    .authors(peer_authors),
+            );
+        }
+
+        let invite_response_filter = self
+            .logged_in
+            .as_ref()
+            .and_then(|logged_in| logged_in.session_manager.snapshot().local_invite)
+            .and_then(|invite| {
+                PublicKey::parse(invite.inviter_ephemeral_public_key.to_string()).ok()
+            })
+            .map(|recipient| {
+                Filter::new()
+                    .kind(Kind::from(codec::INVITE_RESPONSE_KIND as u16))
+                    .pubkey(recipient)
+            })
+            .unwrap_or_else(|| Filter::new().kind(Kind::from(codec::INVITE_RESPONSE_KIND as u16)));
+        filters.push(invite_response_filter);
+
+        let message_authors = self
+            .known_message_author_hexes()
+            .into_iter()
+            .filter_map(|hex| PublicKey::parse(&hex).ok())
+            .collect::<Vec<_>>();
+        if !message_authors.is_empty() {
+            filters.push(
+                Filter::new()
+                    .kind(Kind::from(codec::MESSAGE_EVENT_KIND as u16))
+                    .authors(message_authors),
+            );
+        }
+
+        filters
+    }
+
+    fn known_peer_owner_hexes(&self) -> HashSet<String> {
+        let mut owners = self.threads.keys().cloned().collect::<HashSet<_>>();
+        if let Some(logged_in) = self.logged_in.as_ref() {
+            for user in logged_in.session_manager.snapshot().users {
+                owners.insert(user.owner_pubkey.to_string());
+            }
+        }
+        owners
+    }
+
+    fn known_message_author_hexes(&self) -> HashSet<String> {
+        let mut authors = HashSet::new();
+        if let Some(logged_in) = self.logged_in.as_ref() {
+            for user in logged_in.session_manager.snapshot().users {
+                for device in user.devices {
+                    if let Some(session) = device.active_session.as_ref() {
+                        collect_expected_senders(session, &mut authors);
+                    }
+                    for session in &device.inactive_sessions {
+                        collect_expected_senders(session, &mut authors);
+                    }
+                }
+            }
+        }
+        authors
+    }
+
+    fn sync_active_chat_from_router(&mut self) {
+        match self.screen_stack.last() {
+            Some(Screen::Chat { chat_id }) => {
+                self.active_chat_id = Some(chat_id.clone());
+                if let Some(thread) = self.threads.get_mut(chat_id) {
+                    thread.unread_count = 0;
+                }
+            }
+            _ => {
+                self.active_chat_id = None;
+            }
+        }
+    }
+
+    fn has_seen_event(&self, event_id: &str) -> bool {
+        self.seen_event_ids.contains(event_id)
+    }
+
+    fn remember_event(&mut self, event_id: String) {
+        if !self.seen_event_ids.insert(event_id.clone()) {
+            return;
+        }
+
+        self.seen_event_order.push_back(event_id);
+        while self.seen_event_order.len() > MAX_SEEN_EVENT_IDS {
+            if let Some(expired) = self.seen_event_order.pop_front() {
+                self.seen_event_ids.remove(&expired);
+            }
+        }
     }
 }
 
-fn normalize_peer_input(input: &str) -> anyhow::Result<(String, PublicKey)> {
+fn configured_relays() -> Vec<String> {
+    match std::env::var("NDR_DEMO_RELAYS") {
+        Ok(value) => {
+            let custom: Vec<String> = value
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(ToOwned::to_owned)
+                .collect();
+            if custom.is_empty() {
+                DEFAULT_RELAYS
+                    .iter()
+                    .map(|relay| (*relay).to_string())
+                    .collect()
+            } else {
+                custom
+            }
+        }
+        Err(_) => DEFAULT_RELAYS
+            .iter()
+            .map(|relay| (*relay).to_string())
+            .collect(),
+    }
+}
+
+fn resolve_message_sender_owner(
+    session_manager: &SessionManager,
+    envelope: &MessageEnvelope,
+    now: UnixSeconds,
+) -> Option<OwnerPubkey> {
+    let owners: Vec<OwnerPubkey> = session_manager
+        .snapshot()
+        .users
+        .into_iter()
+        .map(|user| user.owner_pubkey)
+        .collect();
+
+    for owner in owners {
+        let mut candidate = session_manager.clone();
+        let mut rng = OsRng;
+        let mut ctx = ProtocolContext::new(now, &mut rng);
+        match candidate.receive(&mut ctx, owner, envelope) {
+            Ok(Some(_)) => return Some(owner),
+            Ok(None) => {}
+            Err(_) => {}
+        }
+    }
+
+    None
+}
+
+fn collect_expected_senders(session: &SessionState, out: &mut HashSet<String>) {
+    if let Some(current) = session.their_current_nostr_public_key {
+        out.insert(current.to_string());
+    }
+    if let Some(next) = session.their_next_nostr_public_key {
+        out.insert(next.to_string());
+    }
+    out.extend(session.skipped_keys.keys().map(ToString::to_string));
+}
+
+pub(crate) fn parse_peer_input(input: &str) -> anyhow::Result<(String, PublicKey)> {
     let mut normalized = input.trim().to_ascii_lowercase();
     if let Some(stripped) = normalized.strip_prefix("nostr:") {
         normalized = stripped.to_string();
     }
     let pubkey = PublicKey::parse(&normalized)?;
     Ok((pubkey.to_hex(), pubkey))
+}
+
+pub(crate) fn normalize_peer_input_for_display(input: &str) -> String {
+    let mut normalized = input.trim().to_ascii_lowercase();
+    if let Some(stripped) = normalized.strip_prefix("nostr:") {
+        normalized = stripped.to_string();
+    }
+
+    match PublicKey::parse(&normalized) {
+        Ok(pubkey) if normalized.starts_with("npub1") => {
+            pubkey.to_bech32().unwrap_or_else(|_| normalized.clone())
+        }
+        Ok(pubkey) => pubkey.to_hex(),
+        Err(_) => normalized,
+    }
 }
 
 fn local_owner_from_keys(keys: &Keys) -> OwnerPubkey {
@@ -983,7 +1502,11 @@ fn unix_now() -> UnixSeconds {
     )
 }
 
-async fn publish_event_with_retry(client: &Client, event: Event, label: &str) -> anyhow::Result<()> {
+async fn publish_event_with_retry(
+    client: &Client,
+    event: Event,
+    label: &str,
+) -> anyhow::Result<()> {
     let mut last_error = "no relays available".to_string();
 
     for attempt in 0..5 {
@@ -1013,7 +1536,10 @@ async fn publish_event_with_retry(client: &Client, event: Event, label: &str) ->
         }
 
         last_error = if connected == 0 {
-            format!("no connected relays ({})", relay_status_summary(client).await)
+            format!(
+                "no connected relays ({})",
+                relay_status_summary(client).await
+            )
         } else if failures.is_empty() {
             "connected relays did not accept event".to_string()
         } else {
@@ -1055,4 +1581,785 @@ async fn relay_status_summary(client: &Client) -> String {
         .collect();
     states.sort();
     states.join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::FfiApp;
+    use futures_util::{SinkExt, StreamExt};
+    use nostr_sdk::prelude::SecretKey;
+    use serde_json::{json, Value};
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::sync::mpsc as std_mpsc;
+    use std::sync::{Mutex, OnceLock};
+    use std::thread;
+    use std::time::{Duration as StdDuration, Instant};
+    use tempfile::TempDir;
+    use tokio::net::TcpListener;
+    use tokio::sync::mpsc;
+    use tokio_tungstenite::accept_async;
+    use tokio_tungstenite::tungstenite::Message;
+
+    fn relay_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct RelayEnvGuard {
+        previous: Option<String>,
+    }
+
+    impl RelayEnvGuard {
+        fn local_only() -> Self {
+            let previous = std::env::var("NDR_DEMO_RELAYS").ok();
+            std::env::set_var("NDR_DEMO_RELAYS", "ws://127.0.0.1:4848");
+            Self { previous }
+        }
+    }
+
+    impl Drop for RelayEnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var("NDR_DEMO_RELAYS", previous);
+            } else {
+                std::env::remove_var("NDR_DEMO_RELAYS");
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct RelayState {
+        events_by_id: BTreeMap<String, Value>,
+        subscriptions: HashMap<usize, HashMap<String, Vec<Value>>>,
+        clients: HashMap<usize, mpsc::UnboundedSender<Message>>,
+    }
+
+    enum RelayControl {
+        ReplayStored,
+        Shutdown,
+    }
+
+    struct TestRelay {
+        control_tx: mpsc::UnboundedSender<RelayControl>,
+        join: Option<thread::JoinHandle<()>>,
+    }
+
+    impl TestRelay {
+        fn start() -> Self {
+            let (control_tx, mut control_rx) = mpsc::unbounded_channel();
+            let (ready_tx, ready_rx) = std_mpsc::channel();
+
+            let join = thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .expect("relay runtime");
+
+                runtime.block_on(async move {
+                    let listener = TcpListener::bind("127.0.0.1:4848")
+                        .await
+                        .expect("bind relay listener");
+                    let state = Arc::new(Mutex::new(RelayState::default()));
+                    let next_client_id = Arc::new(std::sync::atomic::AtomicUsize::new(1));
+                    ready_tx.send(()).expect("signal relay ready");
+
+                    loop {
+                        tokio::select! {
+                            Some(control) = control_rx.recv() => {
+                                match control {
+                                    RelayControl::ReplayStored => replay_stored_events(&state),
+                                    RelayControl::Shutdown => break,
+                                }
+                            }
+                            accept_result = listener.accept() => {
+                                let (stream, _) = accept_result.expect("accept relay client");
+                                let websocket = accept_async(stream).await.expect("accept websocket");
+                                let state = state.clone();
+                                let client_id = next_client_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                tokio::spawn(async move {
+                                    handle_connection(client_id, websocket, state).await;
+                                });
+                            }
+                        }
+                    }
+                });
+            });
+
+            ready_rx
+                .recv_timeout(StdDuration::from_secs(5))
+                .expect("relay ready");
+
+            Self {
+                control_tx,
+                join: Some(join),
+            }
+        }
+
+        fn replay_stored(&self) {
+            let _ = self.control_tx.send(RelayControl::ReplayStored);
+        }
+    }
+
+    impl Drop for TestRelay {
+        fn drop(&mut self) {
+            let _ = self.control_tx.send(RelayControl::Shutdown);
+            if let Some(join) = self.join.take() {
+                let _ = join.join();
+            }
+        }
+    }
+
+    async fn handle_connection(
+        client_id: usize,
+        websocket: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        state: Arc<Mutex<RelayState>>,
+    ) {
+        let (mut sink, mut stream) = websocket.split();
+        let (client_tx, mut client_rx) = mpsc::unbounded_channel::<Message>();
+
+        {
+            let mut relay = state.lock().expect("relay state lock");
+            relay.clients.insert(client_id, client_tx);
+        }
+
+        let writer = tokio::spawn(async move {
+            while let Some(message) = client_rx.recv().await {
+                if sink.send(message).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        while let Some(message) = stream.next().await {
+            let Ok(message) = message else {
+                break;
+            };
+            match message {
+                Message::Text(text) => handle_client_message(client_id, &text, &state),
+                Message::Ping(payload) => {
+                    let sender = {
+                        let relay = state.lock().expect("relay state lock");
+                        relay.clients.get(&client_id).cloned()
+                    };
+                    if let Some(sender) = sender {
+                        let _ = sender.send(Message::Pong(payload));
+                    }
+                }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+
+        {
+            let mut relay = state.lock().expect("relay state lock");
+            relay.clients.remove(&client_id);
+            relay.subscriptions.remove(&client_id);
+        }
+
+        writer.abort();
+    }
+
+    fn handle_client_message(client_id: usize, raw_message: &str, state: &Arc<Mutex<RelayState>>) {
+        let Ok(message) = serde_json::from_str::<Value>(raw_message) else {
+            return;
+        };
+        let Some(parts) = message.as_array() else {
+            return;
+        };
+        let Some(kind) = parts.first().and_then(Value::as_str) else {
+            return;
+        };
+
+        match kind {
+            "REQ" if parts.len() >= 2 => {
+                let Some(subscription_id) = parts[1].as_str() else {
+                    return;
+                };
+                let filters: Vec<Value> = parts
+                    .iter()
+                    .skip(2)
+                    .filter(|value| value.is_object())
+                    .cloned()
+                    .collect();
+                let (sender, events) = {
+                    let mut relay = state.lock().expect("relay state lock");
+                    relay
+                        .subscriptions
+                        .entry(client_id)
+                        .or_default()
+                        .insert(subscription_id.to_string(), filters.clone());
+                    (
+                        relay.clients.get(&client_id).cloned(),
+                        relay.events_by_id.values().cloned().collect::<Vec<_>>(),
+                    )
+                };
+
+                if let Some(sender) = sender {
+                    for event in events {
+                        if matches_any_filter(&event, &filters) {
+                            let payload = Message::Text(
+                                json!(["EVENT", subscription_id, event]).to_string().into(),
+                            );
+                            let _ = sender.send(payload);
+                        }
+                    }
+                    let _ = sender.send(Message::Text(
+                        json!(["EOSE", subscription_id]).to_string().into(),
+                    ));
+                }
+            }
+            "CLOSE" if parts.len() >= 2 => {
+                let Some(subscription_id) = parts[1].as_str() else {
+                    return;
+                };
+                let mut relay = state.lock().expect("relay state lock");
+                if let Some(subscriptions) = relay.subscriptions.get_mut(&client_id) {
+                    subscriptions.remove(subscription_id);
+                }
+            }
+            "EVENT" if parts.len() >= 2 && parts[1].is_object() => {
+                let event = parts[1].clone();
+                let Some(event_id) = event.get("id").and_then(Value::as_str) else {
+                    return;
+                };
+                let (sender, deliveries) = {
+                    let mut relay = state.lock().expect("relay state lock");
+                    relay
+                        .events_by_id
+                        .insert(event_id.to_string(), event.clone());
+                    let sender = relay.clients.get(&client_id).cloned();
+                    let deliveries = matching_deliveries(&relay, &event);
+                    (sender, deliveries)
+                };
+                if let Some(sender) = sender {
+                    let _ = sender.send(Message::Text(
+                        json!(["OK", event_id, true, ""]).to_string().into(),
+                    ));
+                }
+
+                for (target, payload) in deliveries {
+                    let _ = target.send(payload);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn replay_stored_events(state: &Arc<Mutex<RelayState>>) {
+        let deliveries = {
+            let relay = state.lock().expect("relay state lock");
+            relay
+                .events_by_id
+                .values()
+                .flat_map(|event| matching_deliveries(&relay, event))
+                .collect::<Vec<_>>()
+        };
+
+        for (target, payload) in deliveries {
+            let _ = target.send(payload);
+        }
+    }
+
+    fn matching_deliveries(
+        relay: &RelayState,
+        event: &Value,
+    ) -> Vec<(mpsc::UnboundedSender<Message>, Message)> {
+        let mut deliveries = Vec::new();
+        for (client_id, subscriptions) in &relay.subscriptions {
+            let Some(target) = relay.clients.get(client_id).cloned() else {
+                continue;
+            };
+            for (subscription_id, filters) in subscriptions {
+                if matches_any_filter(event, filters) {
+                    deliveries.push((
+                        target.clone(),
+                        Message::Text(json!(["EVENT", subscription_id, event]).to_string().into()),
+                    ));
+                }
+            }
+        }
+        deliveries
+    }
+
+    fn matches_any_filter(event: &Value, filters: &[Value]) -> bool {
+        if filters.is_empty() {
+            return true;
+        }
+
+        filters.iter().any(|filter| matches_filter(event, filter))
+    }
+
+    fn matches_filter(event: &Value, filter: &Value) -> bool {
+        let Some(filter_object) = filter.as_object() else {
+            return false;
+        };
+
+        if let Some(authors) = filter_object.get("authors").and_then(Value::as_array) {
+            let Some(pubkey) = event.get("pubkey").and_then(Value::as_str) else {
+                return false;
+            };
+            if !authors
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|author| author == pubkey)
+            {
+                return false;
+            }
+        }
+
+        if let Some(kinds) = filter_object.get("kinds").and_then(Value::as_array) {
+            let Some(kind) = event.get("kind").and_then(Value::as_u64) else {
+                return false;
+            };
+            if !kinds
+                .iter()
+                .filter_map(Value::as_u64)
+                .any(|value| value == kind)
+            {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn nsec_for_fill(secret_fill: u8) -> String {
+        let keys = Keys::new(SecretKey::from_slice(&[secret_fill; 32]).expect("secret key"));
+        keys.secret_key().to_bech32().expect("nsec")
+    }
+
+    fn npub_for_fill(secret_fill: u8) -> String {
+        let keys = Keys::new(SecretKey::from_slice(&[secret_fill; 32]).expect("secret key"));
+        keys.public_key().to_bech32().expect("npub")
+    }
+
+    fn wait_for_state(
+        app: &Arc<FfiApp>,
+        label: &str,
+        predicate: impl Fn(&AppState) -> bool,
+    ) -> AppState {
+        let deadline = Instant::now() + StdDuration::from_secs(15);
+        let mut last = app.state();
+
+        while Instant::now() < deadline {
+            last = app.state();
+            if predicate(&last) {
+                return last;
+            }
+            thread::sleep(StdDuration::from_millis(100));
+        }
+
+        panic!("timed out waiting for {label}: last state = {:?}", last);
+    }
+
+    fn app_with_dir(data_dir: &Path, secret_fill: u8) -> Arc<FfiApp> {
+        let app = FfiApp::new(
+            data_dir.to_string_lossy().into_owned(),
+            String::new(),
+            "test".to_string(),
+        );
+        app.dispatch(AppAction::RestoreSession {
+            nsec: nsec_for_fill(secret_fill),
+        });
+        wait_for_state(&app, "account restore", |state| {
+            state.account.is_some() && !state.busy.restoring_session
+        });
+        app
+    }
+
+    fn app(secret_fill: u8) -> (TempDir, Arc<FfiApp>) {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let app = app_with_dir(temp_dir.path(), secret_fill);
+        (temp_dir, app)
+    }
+
+    fn test_core(data_dir: &Path) -> AppCore {
+        let (update_tx, _update_rx) = flume::unbounded();
+        let (core_tx, _core_rx) = flume::unbounded();
+        let shared_state = Arc::new(RwLock::new(AppState::empty()));
+        AppCore::new(
+            update_tx,
+            core_tx,
+            data_dir.to_string_lossy().into_owned(),
+            shared_state,
+        )
+    }
+
+    #[test]
+    fn normalize_and_validate_peer_input_accepts_expected_forms() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let npub = npub_for_fill(11);
+        let (hex, _) = parse_peer_input(&npub).expect("parse npub");
+
+        assert_eq!(normalize_peer_input_for_display(&npub), npub);
+        assert_eq!(
+            normalize_peer_input_for_display(&format!("nostr:{npub}")),
+            npub
+        );
+        assert_eq!(normalize_peer_input_for_display(&hex), hex);
+        assert!(parse_peer_input(&format!("nostr:{hex}")).is_ok());
+        assert!(parse_peer_input("not-a-key").is_err());
+    }
+
+    #[test]
+    fn start_session_restores_persisted_threads_only_when_enabled() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::local_only();
+        let data_dir = TempDir::new().expect("temp dir");
+        let chat_id = parse_peer_input(&npub_for_fill(22))
+            .expect("peer chat id")
+            .0;
+        let keys = Keys::new(SecretKey::from_slice(&[21; 32]).expect("secret key"));
+
+        let mut seeded = test_core(data_dir.path());
+        seeded
+            .start_session(keys.clone(), false)
+            .expect("start session");
+        seeded.remember_event("event-1".to_string());
+        seeded.threads.insert(
+            chat_id.clone(),
+            ThreadRecord {
+                chat_id: chat_id.clone(),
+                unread_count: 2,
+                updated_at_secs: 55,
+                messages: vec![ChatMessageSnapshot {
+                    id: "1".to_string(),
+                    chat_id: chat_id.clone(),
+                    author: "peer".to_string(),
+                    body: "restored".to_string(),
+                    is_outgoing: false,
+                    created_at_secs: 55,
+                    delivery: DeliveryState::Received,
+                }],
+            },
+        );
+        seeded.active_chat_id = Some(chat_id.clone());
+        seeded.screen_stack = vec![Screen::Chat {
+            chat_id: chat_id.clone(),
+        }];
+        seeded.rebuild_state();
+        seeded.persist_best_effort();
+
+        let mut restored = test_core(data_dir.path());
+        restored
+            .start_session(keys.clone(), true)
+            .expect("restore session");
+        assert_eq!(restored.active_chat_id.as_deref(), Some(chat_id.as_str()));
+        assert_eq!(restored.state.chat_list.len(), 1);
+        assert_eq!(
+            restored
+                .state
+                .current_chat
+                .as_ref()
+                .expect("current chat")
+                .messages[0]
+                .body,
+            "restored"
+        );
+        assert!(restored.has_seen_event("event-1"));
+
+        let mut fresh = test_core(data_dir.path());
+        fresh.start_session(keys, false).expect("fresh session");
+        assert!(fresh.state.chat_list.is_empty());
+        assert!(fresh.active_chat_id.is_none());
+        assert!(!fresh.has_seen_event("event-1"));
+    }
+
+    #[test]
+    fn legacy_peer_hex_persistence_migrates_to_chat_ids() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::local_only();
+        let data_dir = TempDir::new().expect("temp dir");
+        let keys = Keys::new(SecretKey::from_slice(&[31; 32]).expect("secret key"));
+        let peer_npub = npub_for_fill(32);
+        let peer_hex = parse_peer_input(&peer_npub).expect("peer hex").0;
+
+        let legacy = json!({
+            "version": 1,
+            "active_peer_hex": peer_hex,
+            "next_message_id": 2,
+            "session_manager": null,
+            "threads": [{
+                "peer_hex": peer_hex,
+                "unread_count": 1,
+                "messages": [{
+                    "id": "1",
+                    "peer_input": peer_hex,
+                    "author": peer_npub,
+                    "body": "legacy",
+                    "is_outgoing": false,
+                    "created_at_secs": 7,
+                    "delivery": "Received"
+                }]
+            }]
+        });
+        fs::write(
+            data_dir.path().join("ndr_demo_core_state.json"),
+            serde_json::to_vec(&legacy).expect("legacy json"),
+        )
+        .expect("write legacy persistence");
+
+        let mut core = test_core(data_dir.path());
+        core.start_session(keys, true)
+            .expect("restore legacy state");
+
+        assert_eq!(core.active_chat_id.as_deref(), Some(peer_hex.as_str()));
+        assert_eq!(core.state.chat_list[0].chat_id, peer_hex);
+        assert_eq!(
+            core.state
+                .current_chat
+                .as_ref()
+                .expect("current chat")
+                .messages[0]
+                .chat_id,
+            core.state.chat_list[0].chat_id
+        );
+    }
+
+    #[test]
+    fn update_screen_stack_opens_chat_and_clears_unread() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let data_dir = TempDir::new().expect("temp dir");
+        let mut core = test_core(data_dir.path());
+        let chat_id = parse_peer_input(&npub_for_fill(41))
+            .expect("peer chat id")
+            .0;
+
+        core.state.account = Some(AccountSnapshot {
+            public_key_hex: parse_peer_input(&npub_for_fill(40)).expect("account hex").0,
+            npub: npub_for_fill(40),
+            invite_url: "https://chat.iris.to".to_string(),
+        });
+        core.threads.insert(
+            chat_id.clone(),
+            ThreadRecord {
+                chat_id: chat_id.clone(),
+                unread_count: 3,
+                updated_at_secs: 100,
+                messages: vec![ChatMessageSnapshot {
+                    id: "1".to_string(),
+                    chat_id: chat_id.clone(),
+                    author: "peer".to_string(),
+                    body: "hello".to_string(),
+                    is_outgoing: false,
+                    created_at_secs: 100,
+                    delivery: DeliveryState::Received,
+                }],
+            },
+        );
+
+        core.update_screen_stack(vec![Screen::Chat {
+            chat_id: chat_id.clone(),
+        }]);
+
+        assert_eq!(core.active_chat_id.as_deref(), Some(chat_id.as_str()));
+        assert_eq!(core.threads.get(&chat_id).expect("thread").unread_count, 0);
+        assert_eq!(
+            core.state
+                .current_chat
+                .as_ref()
+                .expect("current chat")
+                .chat_id,
+            chat_id
+        );
+    }
+
+    #[test]
+    fn local_relay_round_trip_and_reverse_initiation_work() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::local_only();
+        let _relay = TestRelay::start();
+        let (_alice_dir, alice) = app(51);
+        let (_bob_dir, bob) = app(52);
+
+        alice.dispatch(AppAction::CreateChat {
+            peer_input: npub_for_fill(52),
+        });
+        let alice_state = wait_for_state(&alice, "alice chat create", |state| {
+            state.current_chat.is_some() && state.chat_list.len() == 1
+        });
+        let alice_chat_id = alice_state
+            .current_chat
+            .as_ref()
+            .expect("alice chat")
+            .chat_id
+            .clone();
+
+        alice.dispatch(AppAction::SendMessage {
+            chat_id: alice_chat_id.clone(),
+            text: "hello bob".to_string(),
+        });
+        let _alice_after_send = wait_for_state(&alice, "alice outbound queued", |state| {
+            state
+                .current_chat
+                .as_ref()
+                .map(|chat| !chat.messages.is_empty())
+                .unwrap_or(false)
+        });
+
+        let bob_state = wait_for_state(&bob, "bob receives first message", |state| {
+            state.chat_list.iter().any(|chat| {
+                chat.last_message_preview.as_deref() == Some("hello bob") && chat.unread_count == 1
+            })
+        });
+        let bob_chat_id = bob_state.chat_list[0].chat_id.clone();
+        bob.dispatch(AppAction::OpenChat {
+            chat_id: bob_chat_id.clone(),
+        });
+        let bob_open = wait_for_state(&bob, "bob opens chat", |state| {
+            state
+                .current_chat
+                .as_ref()
+                .map(|chat| chat.messages.len() == 1)
+                .unwrap_or(false)
+                && state
+                    .chat_list
+                    .first()
+                    .map(|chat| chat.unread_count == 0)
+                    .unwrap_or(false)
+        });
+        assert_eq!(
+            bob_open
+                .current_chat
+                .as_ref()
+                .expect("bob current chat")
+                .messages[0]
+                .body,
+            "hello bob"
+        );
+
+        bob.dispatch(AppAction::SendMessage {
+            chat_id: bob_chat_id.clone(),
+            text: "hi alice".to_string(),
+        });
+        let alice_with_reply = wait_for_state(&alice, "alice receives reply", |state| {
+            state
+                .current_chat
+                .as_ref()
+                .map(|chat| chat.messages.len() >= 2)
+                .unwrap_or(false)
+        });
+        assert_eq!(
+            alice_with_reply
+                .current_chat
+                .as_ref()
+                .expect("alice current chat")
+                .messages
+                .last()
+                .expect("alice last message")
+                .body,
+            "hi alice"
+        );
+        assert!(alice_with_reply.toast.is_none());
+
+        let (_charlie_dir, charlie) = app(53);
+        let (_dana_dir, dana) = app(54);
+        dana.dispatch(AppAction::CreateChat {
+            peer_input: npub_for_fill(53),
+        });
+        let dana_chat_id = wait_for_state(&dana, "dana chat create", |state| {
+            state.current_chat.is_some()
+        })
+        .current_chat
+        .expect("dana chat")
+        .chat_id;
+        dana.dispatch(AppAction::SendMessage {
+            chat_id: dana_chat_id,
+            text: "reverse first".to_string(),
+        });
+        let charlie_state = wait_for_state(&charlie, "charlie receives reverse message", |state| {
+            state
+                .chat_list
+                .iter()
+                .any(|chat| chat.last_message_preview.as_deref() == Some("reverse first"))
+        });
+        assert_eq!(
+            charlie_state.chat_list[0].last_message_preview.as_deref(),
+            Some("reverse first")
+        );
+    }
+
+    #[test]
+    fn local_relay_duplicate_replay_is_ignored_and_state_restores() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::local_only();
+        let relay = TestRelay::start();
+        let alice_dir = TempDir::new().expect("alice dir");
+        let bob_dir = TempDir::new().expect("bob dir");
+        let alice = app_with_dir(alice_dir.path(), 61);
+        let bob = app_with_dir(bob_dir.path(), 62);
+
+        alice.dispatch(AppAction::CreateChat {
+            peer_input: npub_for_fill(62),
+        });
+        let chat_id = wait_for_state(&alice, "alice chat create", |state| {
+            state.current_chat.is_some()
+        })
+        .current_chat
+        .expect("alice chat")
+        .chat_id;
+        alice.dispatch(AppAction::SendMessage {
+            chat_id: chat_id.clone(),
+            text: "dedupe".to_string(),
+        });
+
+        let bob_chat_id = wait_for_state(&bob, "bob first delivery", |state| {
+            state
+                .chat_list
+                .iter()
+                .any(|chat| chat.last_message_preview.as_deref() == Some("dedupe"))
+        })
+        .chat_list[0]
+            .chat_id
+            .clone();
+        bob.dispatch(AppAction::OpenChat {
+            chat_id: bob_chat_id.clone(),
+        });
+        wait_for_state(&bob, "bob chat open", |state| {
+            state
+                .current_chat
+                .as_ref()
+                .map(|chat| chat.messages.len() == 1)
+                .unwrap_or(false)
+        });
+
+        relay.replay_stored();
+        thread::sleep(StdDuration::from_secs(1));
+        let bob_after_replay = bob.state();
+        assert_eq!(
+            bob_after_replay
+                .current_chat
+                .as_ref()
+                .expect("bob current chat")
+                .messages
+                .len(),
+            1
+        );
+        assert!(bob_after_replay.toast.is_none());
+
+        drop(bob);
+        let restored_bob = app_with_dir(bob_dir.path(), 62);
+        let restored_state = wait_for_state(&restored_bob, "restored bob thread", |state| {
+            !state.chat_list.is_empty()
+        });
+        assert_eq!(
+            restored_state.chat_list[0].last_message_preview.as_deref(),
+            Some("dedupe")
+        );
+        assert!(restored_state.toast.is_none());
+    }
 }

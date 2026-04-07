@@ -1,102 +1,92 @@
 package social.innode.ndr.demo.ui.navigation
 
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.rememberNavController
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import social.innode.ndr.demo.account.AccountBootstrapState
 import social.innode.ndr.demo.core.AppContainer
-import social.innode.ndr.demo.ui.screens.AccountScreen
-import social.innode.ndr.demo.ui.screens.AccountViewModel
-import social.innode.ndr.demo.ui.screens.DummyChatScreen
-import social.innode.ndr.demo.ui.screens.DummyChatViewModel
+import social.innode.ndr.demo.rust.AppAction
+import social.innode.ndr.demo.rust.Screen
+import social.innode.ndr.demo.ui.screens.ChatListScreen
+import social.innode.ndr.demo.ui.screens.ChatScreen
+import social.innode.ndr.demo.ui.screens.NewChatScreen
 import social.innode.ndr.demo.ui.screens.SplashScreen
 import social.innode.ndr.demo.ui.screens.SplashViewModel
 import social.innode.ndr.demo.ui.screens.WelcomeScreen
 import social.innode.ndr.demo.ui.screens.WelcomeViewModel
 
-private object Routes {
-    const val Splash = "splash"
-    const val Welcome = "welcome"
-    const val Account = "account"
-    const val DummyChat = "dummyChat"
-}
-
 @Composable
 fun NdrApp(container: AppContainer) {
-    val navController = rememberNavController()
+    val appManager = container.appManager
+    val splashViewModel = remember { SplashViewModel(appManager) }
+    val welcomeViewModel = remember { WelcomeViewModel(appManager) }
+    val bootstrapState by splashViewModel.bootstrapState.collectAsStateWithLifecycle()
+    val appState by appManager.state.collectAsStateWithLifecycle()
+    val welcomeUiState by welcomeViewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
 
-    NavHost(
-        navController = navController,
-        startDestination = Routes.Splash,
-    ) {
-        composable(Routes.Splash) {
-            val viewModel = remember { SplashViewModel(container.appManager) }
-            val bootstrapState by viewModel.bootstrapState.collectAsStateWithLifecycle()
+    LaunchedEffect(appState.toast) {
+        val message = appState.toast ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+    }
+
+    when (bootstrapState) {
+        AccountBootstrapState.Loading -> {
             SplashScreen(
                 bootstrapState = bootstrapState,
-                onNeedsLogin = {
-                    navController.navigate(Routes.Welcome) {
-                        popUpTo(Routes.Splash) { inclusive = true }
-                    }
-                },
-                onLoggedIn = {
-                    navController.navigate(Routes.Account) {
-                        popUpTo(Routes.Splash) { inclusive = true }
-                    }
-                },
+                onNeedsLogin = {},
+                onLoggedIn = {},
             )
         }
 
-        composable(Routes.Welcome) {
-            val viewModel = remember { WelcomeViewModel(container.appManager) }
-            val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+        AccountBootstrapState.NeedsLogin -> {
             WelcomeScreen(
-                uiState = uiState,
-                onImportValueChanged = viewModel::onImportValueChanged,
-                onGenerateClick = {
-                    viewModel.generate()
-                },
-                onImportClick = {
-                    viewModel.import()
-                },
-                onLoggedIn = {
-                    navController.navigate(Routes.Account) {
-                        popUpTo(Routes.Welcome) { inclusive = true }
-                    }
-                },
+                uiState = welcomeUiState,
+                onImportValueChanged = welcomeViewModel::onImportValueChanged,
+                onGenerateClick = welcomeViewModel::generate,
+                onImportClick = welcomeViewModel::import,
+                onLoggedIn = {},
             )
         }
 
-        composable(Routes.Account) {
-            val viewModel = remember { AccountViewModel(container.appManager) }
-            val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-            AccountScreen(
-                uiState = uiState,
-                onRevealClick = viewModel::revealNsec,
-                onHideSecret = viewModel::hideNsec,
-                onOpenChat = { navController.navigate(Routes.DummyChat) },
-                onLogout = {
-                    viewModel.logout()
-                    navController.navigate(Routes.Welcome) {
-                        popUpTo(Routes.Account) { inclusive = true }
-                    }
-                },
-            )
-        }
+        is AccountBootstrapState.LoggedIn -> {
+            val router = appState.router
+            BackHandler(enabled = router.screenStack.isNotEmpty()) {
+                appManager.dispatch(AppAction.UpdateScreenStack(router.screenStack.dropLast(1)))
+            }
 
-        composable(Routes.DummyChat) {
-            val viewModel = remember { DummyChatViewModel(container.appManager) }
-            val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-            DummyChatScreen(
-                uiState = uiState,
-                onPeerChanged = viewModel::updatePeer,
-                onDraftChanged = viewModel::updateDraft,
-                onSendClick = viewModel::send,
-                onBack = { navController.popBackStack() },
-            )
+            when (val screen = router.screenStack.lastOrNull() ?: router.defaultScreen) {
+                Screen.Welcome -> {
+                    WelcomeScreen(
+                        uiState = welcomeUiState,
+                        onImportValueChanged = welcomeViewModel::onImportValueChanged,
+                        onGenerateClick = welcomeViewModel::generate,
+                        onImportClick = welcomeViewModel::import,
+                        onLoggedIn = {},
+                    )
+                }
+
+                Screen.ChatList -> {
+                    ChatListScreen(appManager = appManager, appState = appState)
+                }
+
+                Screen.NewChat -> {
+                    NewChatScreen(appManager = appManager, appState = appState)
+                }
+
+                is Screen.Chat -> {
+                    ChatScreen(
+                        appManager = appManager,
+                        appState = appState,
+                        chatId = screen.chatId,
+                    )
+                }
+            }
         }
     }
 }
