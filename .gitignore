@@ -1,0 +1,10 @@
+.gradle/
+.kotlin/
+.idea/
+.relay-venv/
+local.properties
+build/
+app/build/
+rust/target/
+*.iml
+.DS_Store
