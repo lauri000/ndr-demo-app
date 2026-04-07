@@ -41,11 +41,32 @@ import social.innode.ndr.demo.rust.normalizePeerInput
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
+internal object QrScannerTestOverrides {
+    @Volatile
+    var nextScannedValue: String? = null
+
+    fun consume(): String? {
+        val value = nextScannedValue
+        nextScannedValue = null
+        return value
+    }
+}
+
 @Composable
 fun QrScannerDialog(
     onDismiss: () -> Unit,
     onScanned: (String) -> Unit,
 ) {
+    val injectedScan = remember { QrScannerTestOverrides.consume() }
+    LaunchedEffect(injectedScan) {
+        if (!injectedScan.isNullOrBlank()) {
+            onScanned(normalizePeerInput(injectedScan))
+        }
+    }
+    if (!injectedScan.isNullOrBlank()) {
+        return
+    }
+
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var error by remember { mutableStateOf<String?>(null) }

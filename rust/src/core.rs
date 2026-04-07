@@ -11,7 +11,8 @@ use nostr_double_ratchet::{
 };
 use nostr_double_ratchet_nostr::nostr as codec;
 use nostr_sdk::prelude::{
-    Client, Event, Filter, Keys, Kind, PublicKey, RelayPoolNotification, Timestamp, ToBech32,
+    Client, Event, Filter, Keys, Kind, PublicKey, RelayPoolNotification, SubscriptionId, Timestamp,
+    ToBech32,
 };
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -34,6 +35,7 @@ const FIRST_CONTACT_STAGE_DELAY_MS: u64 = 1500;
 const FIRST_CONTACT_RETRY_DELAY_SECS: u64 = 5;
 const CATCH_UP_LOOKBACK_SECS: u64 = 30;
 const RESUBSCRIBE_CATCH_UP_DELAY_SECS: u64 = 5;
+const PROTOCOL_SUBSCRIPTION_ID: &str = "ndr-protocol";
 
 pub struct AppCore {
     update_tx: Sender<AppUpdate>,
@@ -52,6 +54,7 @@ pub struct AppCore {
     recent_handshake_peers: BTreeMap<String, u64>,
     seen_event_ids: HashSet<String>,
     seen_event_order: VecDeque<String>,
+    protocol_subscription_filters: Option<Vec<Filter>>,
 }
 
 struct LoggedInState {
@@ -68,6 +71,7 @@ struct ThreadRecord {
     messages: Vec<ChatMessageSnapshot>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct PendingInbound {
     envelope: MessageEnvelope,
 }
@@ -110,6 +114,8 @@ struct PersistedState {
     next_message_id: u64,
     session_manager: Option<SessionManagerSnapshot>,
     threads: Vec<PersistedThread>,
+    #[serde(default)]
+    pending_inbound: Vec<PendingInbound>,
     #[serde(default)]
     pending_outbound: Vec<PendingOutbound>,
     #[serde(default)]
@@ -203,6 +209,7 @@ impl AppCore {
             recent_handshake_peers: BTreeMap::new(),
             seen_event_ids: HashSet::new(),
             seen_event_order: VecDeque::new(),
+            protocol_subscription_filters: None,
         }
     }
 
@@ -264,8 +271,9 @@ impl AppCore {
                 {
                     pending.in_flight = false;
                     pending.reason = PendingSendReason::PublishRetry;
-                    pending.next_retry_at_secs =
-                        unix_now().get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS);
+                    pending.next_retry_at_secs = unix_now()
+                        .get()
+                        .saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS);
                     self.schedule_pending_outbound_retry(Duration::from_secs(
                         FIRST_CONTACT_RETRY_DELAY_SECS,
                     ));
@@ -346,6 +354,7 @@ impl AppCore {
         self.recent_handshake_peers.clear();
         self.seen_event_ids.clear();
         self.seen_event_order.clear();
+        self.protocol_subscription_filters = None;
         self.next_message_id = 1;
         self.state = AppState::empty();
         self.clear_persistence_best_effort();
@@ -393,9 +402,7 @@ impl AppCore {
         self.rebuild_state();
         self.persist_best_effort();
         self.resubscribe_to_protocol_events();
-        self.schedule_tracked_peer_catch_up(Duration::from_secs(
-            RESUBSCRIBE_CATCH_UP_DELAY_SECS,
-        ));
+        self.schedule_tracked_peer_catch_up(Duration::from_secs(RESUBSCRIBE_CATCH_UP_DELAY_SECS));
         self.state.busy.creating_chat = false;
         self.emit_state();
     }
@@ -427,9 +434,7 @@ impl AppCore {
         self.rebuild_state();
         self.persist_best_effort();
         self.resubscribe_to_protocol_events();
-        self.schedule_tracked_peer_catch_up(Duration::from_secs(
-            RESUBSCRIBE_CATCH_UP_DELAY_SECS,
-        ));
+        self.schedule_tracked_peer_catch_up(Duration::from_secs(RESUBSCRIBE_CATCH_UP_DELAY_SECS));
         self.emit_state();
     }
 
@@ -541,14 +546,21 @@ impl AppCore {
                             });
                         }
                         (Ok(_), Ok(message_events)) if !message_events.is_empty() => {
-                            let _message = self.push_outgoing_message(
+                            let message = self.push_outgoing_message(
                                 &chat_id,
                                 trimmed.to_string(),
                                 now.get(),
-                                DeliveryState::Sent,
+                                DeliveryState::Pending,
                             );
-                            self.resubscribe_to_protocol_events();
-                            self.publish_events(message_events, "message");
+                            self.queue_pending_outbound(
+                                message.id.clone(),
+                                chat_id.clone(),
+                                trimmed.to_string(),
+                                PendingSendReason::PublishRetry,
+                                now.get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS),
+                            );
+                            self.set_pending_outbound_in_flight(&message.id, true);
+                            self.start_pending_message_publish(message.id, chat_id, message_events);
                         }
                         (Err(error), _) | (_, Err(error)) => {
                             self.state.toast = Some(error.to_string());
@@ -768,6 +780,7 @@ impl AppCore {
                 let Some(sender_owner) = sender_owner else {
                     self.remember_event(event_id.clone());
                     self.pending_inbound.push(PendingInbound { envelope });
+                    self.persist_best_effort();
                     return;
                 };
 
@@ -797,6 +810,7 @@ impl AppCore {
                     Ok(None) => {
                         self.remember_event(event_id.clone());
                         self.pending_inbound.push(PendingInbound { envelope });
+                        self.persist_best_effort();
                     }
                     Err(error) => {
                         self.remember_event(event_id);
@@ -826,6 +840,7 @@ impl AppCore {
         self.recent_handshake_peers.clear();
         self.seen_event_ids.clear();
         self.seen_event_order.clear();
+        self.protocol_subscription_filters = None;
         self.next_message_id = 1;
 
         let secret_bytes = keys.secret_key().to_secret_bytes();
@@ -843,6 +858,7 @@ impl AppCore {
             self.active_chat_id = persisted.active_chat_id.clone();
             self.next_message_id = persisted.next_message_id.max(1);
             self.pending_outbound = persisted.pending_outbound.clone();
+            self.pending_inbound = persisted.pending_inbound.clone();
             self.seen_event_order = persisted
                 .seen_event_ids
                 .iter()
@@ -927,6 +943,7 @@ impl AppCore {
             session_manager,
         });
 
+        self.retry_pending_inbound(now);
         self.retry_pending_outbound(now);
 
         self.state.account = Some(AccountSnapshot {
@@ -941,9 +958,7 @@ impl AppCore {
         self.rebuild_state();
         self.persist_best_effort();
         self.resubscribe_to_protocol_events();
-        self.schedule_tracked_peer_catch_up(Duration::from_secs(
-            RESUBSCRIBE_CATCH_UP_DELAY_SECS,
-        ));
+        self.schedule_tracked_peer_catch_up(Duration::from_secs(RESUBSCRIBE_CATCH_UP_DELAY_SECS));
         self.emit_state();
         Ok(())
     }
@@ -1181,7 +1196,9 @@ impl AppCore {
         let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
             sleep(after).await;
-            let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::RetryPendingOutbound)));
+            let _ = tx.send(CoreMsg::Internal(Box::new(
+                InternalEvent::RetryPendingOutbound,
+            )));
         });
     }
 
@@ -1243,18 +1260,16 @@ impl AppCore {
             }
             client.connect_with_timeout(Duration::from_secs(5)).await;
 
-            let invite_publish = publish_events_with_retry(
-                &client,
-                staged.invite_events,
-                "invite response",
-            )
-            .await;
+            let invite_publish =
+                publish_events_with_retry(&client, staged.invite_events, "invite response").await;
             if invite_publish.is_err() {
-                let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::StagedSendFinished {
-                    message_id: staged.message_id,
-                    chat_id: staged.chat_id,
-                    success: false,
-                })));
+                let _ = tx.send(CoreMsg::Internal(Box::new(
+                    InternalEvent::StagedSendFinished {
+                        message_id: staged.message_id,
+                        chat_id: staged.chat_id,
+                        success: false,
+                    },
+                )));
                 return;
             }
 
@@ -1263,11 +1278,13 @@ impl AppCore {
             let success = publish_events_with_retry(&client, staged.message_events, "message")
                 .await
                 .is_ok();
-            let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::StagedSendFinished {
-                message_id: staged.message_id,
-                chat_id: staged.chat_id,
-                success,
-            })));
+            let _ = tx.send(CoreMsg::Internal(Box::new(
+                InternalEvent::StagedSendFinished {
+                    message_id: staged.message_id,
+                    chat_id: staged.chat_id,
+                    success,
+                },
+            )));
         });
     }
 
@@ -1293,11 +1310,13 @@ impl AppCore {
             let success = publish_events_with_retry(&client, events, "message")
                 .await
                 .is_ok();
-            let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::StagedSendFinished {
-                message_id,
-                chat_id,
-                success,
-            })));
+            let _ = tx.send(CoreMsg::Internal(Box::new(
+                InternalEvent::StagedSendFinished {
+                    message_id,
+                    chat_id,
+                    success,
+                },
+            )));
         });
     }
 
@@ -1341,7 +1360,11 @@ impl AppCore {
         }
     }
 
-    fn message_filters_for_owner(&self, owner_pubkey: OwnerPubkey, now: UnixSeconds) -> Vec<Filter> {
+    fn message_filters_for_owner(
+        &self,
+        owner_pubkey: OwnerPubkey,
+        now: UnixSeconds,
+    ) -> Vec<Filter> {
         let Some(logged_in) = self.logged_in.as_ref() else {
             return Vec::new();
         };
@@ -1376,14 +1399,12 @@ impl AppCore {
             return Vec::new();
         }
 
-        vec![
-            Filter::new()
-                .kind(Kind::from(codec::MESSAGE_EVENT_KIND as u16))
-                .authors(authors)
-                .since(Timestamp::from(
-                    now.get().saturating_sub(CATCH_UP_LOOKBACK_SECS),
-                )),
-        ]
+        vec![Filter::new()
+            .kind(Kind::from(codec::MESSAGE_EVENT_KIND as u16))
+            .authors(authors)
+            .since(Timestamp::from(
+                now.get().saturating_sub(CATCH_UP_LOOKBACK_SECS),
+            ))]
     }
 
     fn update_message_delivery(
@@ -1541,7 +1562,7 @@ impl AppCore {
         };
 
         let persisted = PersistedState {
-            version: 3,
+            version: 4,
             active_chat_id: self.active_chat_id.clone(),
             next_message_id: self.next_message_id,
             session_manager: Some(logged_in.session_manager.snapshot()),
@@ -1567,6 +1588,7 @@ impl AppCore {
                         .collect(),
                 })
                 .collect(),
+            pending_inbound: self.pending_inbound.clone(),
             pending_outbound: self.pending_outbound.clone(),
             seen_event_ids: self.seen_event_order.iter().cloned().collect(),
         };
@@ -1598,35 +1620,6 @@ impl AppCore {
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
-    }
-
-    fn publish_events(&mut self, events: Vec<Event>, label: &'static str) {
-        let Some(client) = self
-            .logged_in
-            .as_ref()
-            .map(|logged_in| logged_in.client.clone())
-        else {
-            return;
-        };
-
-        for event in &events {
-            self.remember_event(event.id.to_string());
-        }
-
-        let tx = self.core_sender.clone();
-        self.runtime.spawn(async move {
-            for relay in configured_relays() {
-                let _ = client.add_relay(relay).await;
-            }
-            client.connect_with_timeout(Duration::from_secs(5)).await;
-            for event in events {
-                if let Err(error) = publish_event_with_retry(&client, event, label).await {
-                    let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(format!(
-                        "Publish failed: {error}"
-                    )))));
                 }
             }
         });
@@ -1718,17 +1711,28 @@ impl AppCore {
         );
     }
 
-    fn resubscribe_to_protocol_events(&self) {
+    fn resubscribe_to_protocol_events(&mut self) {
         let Some(logged_in) = self.logged_in.as_ref() else {
+            self.protocol_subscription_filters = None;
             return;
         };
         let filters = self.protocol_filters();
+        if self.protocol_subscription_filters.as_ref() == Some(&filters) {
+            return;
+        }
+
         let client = logged_in.client.clone();
+        let subscription_id = SubscriptionId::new(PROTOCOL_SUBSCRIPTION_ID);
+        let previous_filters = self.protocol_subscription_filters.replace(filters.clone());
         self.runtime.spawn(async move {
-            client.unsubscribe_all().await;
             client.connect_with_timeout(Duration::from_secs(5)).await;
+            if previous_filters.is_some() {
+                client.unsubscribe(subscription_id.clone()).await;
+            }
             if !filters.is_empty() {
-                let _ = client.subscribe(filters, None).await;
+                let _ = client
+                    .subscribe_with_id(subscription_id, filters, None)
+                    .await;
             }
         });
     }
@@ -2091,8 +2095,12 @@ mod tests {
 
     impl RelayEnvGuard {
         fn local_only() -> Self {
+            Self::custom("ws://127.0.0.1:4848")
+        }
+
+        fn custom(value: &str) -> Self {
             let previous = std::env::var("NDR_DEMO_RELAYS").ok();
-            std::env::set_var("NDR_DEMO_RELAYS", "ws://127.0.0.1:4848");
+            std::env::set_var("NDR_DEMO_RELAYS", value);
             Self { previous }
         }
     }
@@ -2440,12 +2448,16 @@ mod tests {
                 if tag_values.first().and_then(Value::as_str) != Some(tag_name) {
                     return false;
                 }
-                tag_values.iter().skip(1).filter_map(Value::as_str).any(|tag_value| {
-                    expected_values
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .any(|expected| expected == tag_value)
-                })
+                tag_values
+                    .iter()
+                    .skip(1)
+                    .filter_map(Value::as_str)
+                    .any(|tag_value| {
+                        expected_values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .any(|expected| expected == tag_value)
+                    })
             });
             if !matched {
                 return false;
@@ -2518,8 +2530,8 @@ mod tests {
     }
 
     fn persisted_state(data_dir: &Path) -> PersistedState {
-        let bytes = fs::read(data_dir.join("ndr_demo_core_state.json"))
-            .expect("read persisted state");
+        let bytes =
+            fs::read(data_dir.join("ndr_demo_core_state.json")).expect("read persisted state");
         serde_json::from_slice(&bytes).expect("parse persisted state")
     }
 
@@ -2543,6 +2555,96 @@ mod tests {
 
     fn keys_for_fill(secret_fill: u8) -> Keys {
         Keys::new(SecretKey::from_slice(&[secret_fill; 32]).expect("secret key"))
+    }
+
+    fn established_session_manager_pair(
+        alice_fill: u8,
+        bob_fill: u8,
+        base_secs: u64,
+    ) -> (SessionManager, SessionManager, String) {
+        let alice_keys = keys_for_fill(alice_fill);
+        let bob_keys = keys_for_fill(bob_fill);
+        let alice_owner = local_owner_from_keys(&alice_keys);
+        let bob_owner = local_owner_from_keys(&bob_keys);
+        let now = UnixSeconds(base_secs);
+
+        let mut alice_manager =
+            SessionManager::new(alice_owner, alice_keys.secret_key().to_secret_bytes());
+        let mut bob_manager =
+            SessionManager::new(bob_owner, bob_keys.secret_key().to_secret_bytes());
+
+        let alice_roster = DeviceRoster::new(
+            now,
+            vec![AuthorizedDevice::new(alice_owner.as_device(), now)],
+        );
+        let bob_roster =
+            DeviceRoster::new(now, vec![AuthorizedDevice::new(bob_owner.as_device(), now)]);
+        alice_manager.apply_local_roster(alice_roster.clone());
+        bob_manager.apply_local_roster(bob_roster.clone());
+        alice_manager.observe_peer_roster(bob_owner, bob_roster.clone());
+        bob_manager.observe_peer_roster(alice_owner, alice_roster);
+
+        let bob_invite = {
+            let mut rng = OsRng;
+            let mut ctx = ProtocolContext::new(UnixSeconds(base_secs + 1), &mut rng);
+            bob_manager
+                .ensure_local_invite(&mut ctx)
+                .expect("ensure bob invite")
+                .clone()
+        };
+        alice_manager
+            .observe_device_invite(bob_owner, bob_invite)
+            .expect("observe bob invite");
+
+        let prepared = {
+            let mut rng = OsRng;
+            let mut ctx = ProtocolContext::new(UnixSeconds(base_secs + 2), &mut rng);
+            alice_manager
+                .prepare_send(&mut ctx, bob_owner, b"bootstrap".to_vec())
+                .expect("prepare bootstrap message")
+        };
+        assert_eq!(prepared.invite_responses.len(), 1);
+        assert_eq!(prepared.deliveries.len(), 1);
+
+        {
+            let mut rng = OsRng;
+            let mut ctx = ProtocolContext::new(UnixSeconds(base_secs + 3), &mut rng);
+            bob_manager
+                .observe_invite_response(&mut ctx, &prepared.invite_responses[0])
+                .expect("observe invite response")
+                .expect("processed invite response");
+        }
+        {
+            let mut rng = OsRng;
+            let mut ctx = ProtocolContext::new(UnixSeconds(base_secs + 4), &mut rng);
+            bob_manager
+                .receive(&mut ctx, alice_owner, &prepared.deliveries[0].envelope)
+                .expect("receive bootstrap delivery")
+                .expect("bootstrap message");
+        }
+
+        (alice_manager, bob_manager, bob_owner.to_string())
+    }
+
+    fn logged_in_core_with_manager(
+        data_dir: &Path,
+        secret_fill: u8,
+        session_manager: SessionManager,
+    ) -> AppCore {
+        let keys = keys_for_fill(secret_fill);
+        let mut core = test_core(data_dir);
+        core.state.account = Some(AccountSnapshot {
+            public_key_hex: keys.public_key().to_hex(),
+            npub: keys.public_key().to_bech32().expect("npub"),
+            invite_url: "https://chat.iris.to".to_string(),
+        });
+        core.logged_in = Some(LoggedInState {
+            keys: keys.clone(),
+            client: Client::new(keys),
+            session_manager,
+        });
+        core.rebuild_state();
+        core
     }
 
     fn publish_local_relay_event(keys: &Keys, event: Event) {
@@ -2787,6 +2889,121 @@ mod tests {
     }
 
     #[test]
+    fn protocol_subscription_uses_stable_id() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::local_only();
+        let data_dir = TempDir::new().expect("temp dir");
+        let mut core = test_core(data_dir.path());
+        core.start_session(keys_for_fill(69), false)
+            .expect("start session");
+
+        let client = core.logged_in.as_ref().expect("logged in").client.clone();
+        let protocol_id = SubscriptionId::new(PROTOCOL_SUBSCRIPTION_ID);
+
+        let wait_for_subscription =
+            |runtime: &tokio::runtime::Runtime, client: &Client, protocol_id: &SubscriptionId| {
+                let deadline = Instant::now() + StdDuration::from_secs(5);
+                while Instant::now() < deadline {
+                    let subscriptions = runtime.block_on(client.subscriptions());
+                    if subscriptions.contains_key(&protocol_id) {
+                        return subscriptions;
+                    }
+                    thread::sleep(StdDuration::from_millis(50));
+                }
+                runtime.block_on(client.subscriptions())
+            };
+
+        let initial = wait_for_subscription(&core.runtime, &client, &protocol_id);
+        assert_eq!(initial.len(), 1);
+        assert!(initial.contains_key(&protocol_id));
+
+        core.create_chat(&npub_for_fill(70));
+
+        let after_create = wait_for_subscription(&core.runtime, &client, &protocol_id);
+        assert_eq!(after_create.len(), 1);
+        assert!(after_create.contains_key(&protocol_id));
+    }
+
+    #[test]
+    fn established_send_stays_pending_until_publish_ack() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::custom("ws://127.0.0.1:59999");
+        let data_dir = TempDir::new().expect("temp dir");
+        let (alice_manager, _bob_manager, chat_id) =
+            established_session_manager_pair(73, 74, 1_900_000_000);
+        let mut core = logged_in_core_with_manager(data_dir.path(), 73, alice_manager);
+
+        core.send_message(&chat_id, "offline direct send");
+
+        let last_message = core
+            .state
+            .current_chat
+            .as_ref()
+            .expect("current chat")
+            .messages
+            .last()
+            .expect("outgoing message");
+        assert_eq!(last_message.body, "offline direct send");
+        assert!(matches!(last_message.delivery, DeliveryState::Pending));
+        assert_eq!(core.pending_outbound.len(), 1);
+        assert_eq!(
+            core.pending_outbound[0].reason,
+            PendingSendReason::PublishRetry
+        );
+    }
+
+    #[test]
+    fn pending_inbound_persists_across_restore() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let data_dir = TempDir::new().expect("temp dir");
+        let keys = keys_for_fill(75);
+        let owner = local_owner_from_keys(&keys);
+        let now = UnixSeconds(500);
+
+        let mut session_manager = SessionManager::new(owner, keys.secret_key().to_secret_bytes());
+        session_manager.apply_local_roster(DeviceRoster::new(
+            now,
+            vec![AuthorizedDevice::new(owner.as_device(), now)],
+        ));
+
+        let mut core = logged_in_core_with_manager(data_dir.path(), 75, session_manager);
+        core.pending_inbound.push(PendingInbound {
+            envelope: MessageEnvelope {
+                sender: local_owner_from_keys(&keys_for_fill(76)).as_device(),
+                signer_secret_key: [9; 32],
+                created_at: UnixSeconds(501),
+                encrypted_header: "header".to_string(),
+                ciphertext: "ciphertext".to_string(),
+            },
+        });
+        core.persist_best_effort();
+
+        let persisted = persisted_state(data_dir.path());
+        assert_eq!(persisted.pending_inbound.len(), 1);
+        assert_eq!(
+            persisted.pending_inbound[0].envelope.ciphertext,
+            "ciphertext"
+        );
+
+        let mut restored = test_core(data_dir.path());
+        restored
+            .start_session(keys, true)
+            .expect("restore session with pending inbound");
+
+        assert_eq!(restored.pending_inbound.len(), 1);
+        assert_eq!(
+            restored.pending_inbound[0].envelope.encrypted_header,
+            "header"
+        );
+    }
+
+    #[test]
     fn invite_response_delivery_requires_matching_pubkey_tag() {
         let _guard = relay_test_lock()
             .lock()
@@ -2876,9 +3093,10 @@ mod tests {
 
         let (_bob_dir, bob) = app(82);
         wait_for_state(&bob, "bob receives queued first message", |state| {
-            state.chat_list.iter().any(|chat| {
-                chat.last_message_preview.as_deref() == Some("waiting on roster")
-            })
+            state
+                .chat_list
+                .iter()
+                .any(|chat| chat.last_message_preview.as_deref() == Some("waiting on roster"))
         });
         let alice_cleared = wait_for_persisted_state(
             alice_dir.path(),
@@ -2899,10 +3117,8 @@ mod tests {
         let bob_keys = keys_for_fill(92);
         let bob_owner = local_owner_from_keys(&bob_keys);
         let now = unix_now();
-        let bob_roster = DeviceRoster::new(
-            now,
-            vec![AuthorizedDevice::new(bob_owner.as_device(), now)],
-        );
+        let bob_roster =
+            DeviceRoster::new(now, vec![AuthorizedDevice::new(bob_owner.as_device(), now)]);
         let roster_event = codec::roster_unsigned_event(bob_owner, &bob_roster)
             .expect("bob roster event")
             .sign_with_keys(&bob_keys)

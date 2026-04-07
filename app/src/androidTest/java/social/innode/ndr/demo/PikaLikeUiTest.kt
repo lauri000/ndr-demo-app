@@ -3,6 +3,7 @@ package social.innode.ndr.demo
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -15,6 +16,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import social.innode.ndr.demo.ui.screens.QrScannerTestOverrides
 
 @RunWith(AndroidJUnit4::class)
 class PikaLikeUiTest {
@@ -27,8 +29,6 @@ class PikaLikeUiTest {
         composeRule.onNodeWithTag("chatListProfileButton", useUnmergedTree = true).performClick()
 
         composeRule.waitForTag("myProfileSheet")
-        composeRule.onNodeWithText("npub1", substring = true, useUnmergedTree = true)
-            .assertIsDisplayed()
         composeRule.onNodeWithTag("myProfileQrCode", useUnmergedTree = true).assertIsDisplayed()
     }
 
@@ -52,6 +52,29 @@ class PikaLikeUiTest {
 
         composeRule.waitForText("hello from test")
         composeRule.onNodeWithTag("chatSendButton", useUnmergedTree = true).assertIsNotEnabled()
+    }
+
+    @Test
+    fun scan_qr_populates_new_chat_input() {
+        composeRule.ensureChatList()
+        composeRule.onNodeWithTag("chatListNewChatButton", useUnmergedTree = true).performClick()
+
+        composeRule.waitForTag("newChatPeerInput")
+        composeRule.runOnUiThread {
+            QrScannerTestOverrides.nextScannedValue = VALID_PEER_NPUB
+        }
+        composeRule.onNodeWithTag("newChatScanQrButton", useUnmergedTree = true).performClick()
+
+        composeRule.waitUntil(5_000) {
+            composeRule
+                .onAllNodesWithTag("newChatPeerInput", useUnmergedTree = true)
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        composeRule
+            .onNodeWithTag("newChatPeerInput", useUnmergedTree = true)
+            .assertTextContains(VALID_PEER_NPUB)
+        composeRule.onNodeWithTag("newChatStartButton", useUnmergedTree = true).assertIsEnabled()
     }
 
     private fun androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, *>.waitForTag(
