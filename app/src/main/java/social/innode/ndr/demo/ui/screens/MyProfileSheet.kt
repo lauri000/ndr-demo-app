@@ -31,6 +31,7 @@ import com.google.zxing.qrcode.QRCodeWriter
 fun MyProfileSheet(
     npub: String,
     publicKeyHex: String,
+    onLogout: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
@@ -81,6 +82,13 @@ fun MyProfileSheet(
 
             TextButton(onClick = { clipboard.setText(AnnotatedString(npub)) }) {
                 Text("Copy npub")
+            }
+
+            TextButton(
+                onClick = onLogout,
+                modifier = Modifier.testTag("myProfileLogoutButton"),
+            ) {
+                Text("Logout")
             }
         }
     }

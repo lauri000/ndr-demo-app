@@ -14,6 +14,7 @@ import org.junit.Assert.fail
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.File
 import social.innode.ndr.demo.core.AppManager
 import social.innode.ndr.demo.rust.CurrentChatSnapshot
 import social.innode.ndr.demo.rust.DeliveryState
@@ -151,6 +152,41 @@ class RealRelayHarnessTest {
         )
     }
 
+    @Test
+    fun logout_and_create_account_and_report_identity() {
+        ensureChatList()
+        val oldAccount = waitForState("existing account") { appManager().state.value.account }
+
+        composeRule.onNodeWithTag("chatListProfileButton", useUnmergedTree = true).performClick()
+        composeRule.waitForTag("myProfileSheet")
+        composeRule.waitForTag("myProfileLogoutButton", timeoutMillis = 30_000)
+        composeRule.onNodeWithTag("myProfileLogoutButton", useUnmergedTree = true).performClick()
+
+        composeRule.waitForTag("generateKeyButton", timeoutMillis = 60_000)
+        waitForState("logged out state", timeoutMs = 60_000) {
+            appManager().state.value.takeIf { it.account == null }
+        }
+
+        val filesEntries = storageEntries(composeRule.activity.filesDir)
+        if (filesEntries.isNotEmpty()) {
+            fail("Expected filesDir to be empty after logout, found: $filesEntries")
+        }
+
+        composeRule.onNodeWithTag("generateKeyButton", useUnmergedTree = true).performClick()
+        composeRule.waitForTag("chatListNewChatButton", timeoutMillis = 60_000)
+
+        val newAccount = waitForState("new account") { appManager().state.value.account }
+        if (newAccount.publicKeyHex.equals(oldAccount.publicKeyHex, ignoreCase = true)) {
+            fail("Expected a fresh identity after logout")
+        }
+
+        reportStatus(
+            "old_public_key_hex" to oldAccount.publicKeyHex,
+            "new_public_key_hex" to newAccount.publicKeyHex,
+            "new_npub" to newAccount.npub,
+        )
+    }
+
     private fun ensureChatList() {
         composeRule.waitUntil(30_000) {
             hasTag("generateKeyButton") ||
@@ -212,6 +248,13 @@ class RealRelayHarnessTest {
     private fun requiredArg(name: String): String =
         arguments.getString(name)?.trim()?.takeIf { it.isNotEmpty() }
             ?: throw AssertionError("Missing instrumentation argument: $name")
+
+    private fun storageEntries(root: File): List<String> =
+        root
+            .listFiles()
+            ?.sortedBy { it.name }
+            ?.map { it.relativeTo(root).path.ifBlank { it.name } }
+            ?: emptyList()
 
     private fun reportStatus(vararg fields: Pair<String, String>) {
         val bundle = Bundle()

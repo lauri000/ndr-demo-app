@@ -9,9 +9,11 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStoreFile
 import java.io.IOException
+import java.io.File
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,7 +30,9 @@ import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.AppReconciler
 import social.innode.ndr.demo.rust.AppState
 import social.innode.ndr.demo.rust.AppUpdate
+import social.innode.ndr.demo.rust.BusyState
 import social.innode.ndr.demo.rust.FfiApp
+import social.innode.ndr.demo.rust.Router
 import social.innode.ndr.demo.rust.Screen
 
 class AppManager(
@@ -120,8 +124,13 @@ class AppManager(
 
     fun logout() {
         applicationScope.launch(ioDispatcher) {
-            clearPersistedSecret()
             rust.dispatch(AppAction.Logout)
+            clearPersistedSecret()
+            secureSecretStore.clear()
+            wipeAppStorage()
+            publishState(waitForLoggedOutSnapshot())
+            restoreCheckComplete = true
+            publishBootstrapNeedsLogin()
         }
     }
 
@@ -200,6 +209,60 @@ class AppManager(
             preferences.remove(SECRET_CIPHERTEXT)
             preferences.remove(SECRET_IV)
         }
+    }
+
+    private fun wipeAppStorage() {
+        wipeDirectoryContents(appContext.filesDir)
+        wipeDirectoryContents(appContext.noBackupFilesDir)
+        appContext.getExternalFilesDirs(null).forEach { dir ->
+            if (dir != null) {
+                wipeDirectoryContents(dir)
+            }
+        }
+        appContext.filesDir.mkdirs()
+        appContext.noBackupFilesDir.mkdirs()
+    }
+
+    private fun wipeDirectoryContents(directory: File?) {
+        val dir = directory ?: return
+        if (!dir.exists()) {
+            return
+        }
+        dir.listFiles()?.forEach { child ->
+            runCatching { child.deleteRecursively() }
+        }
+    }
+
+    private suspend fun waitForLoggedOutSnapshot(): AppState {
+        repeat(40) {
+            val snapshot = rust.state()
+            if (snapshot.account == null) {
+                return snapshot
+            }
+            delay(100)
+        }
+
+        return rust
+            .state()
+            .apply {
+                account = null
+                router =
+                    Router(
+                        defaultScreen = Screen.ChatList,
+                        screenStack = emptyList(),
+                    )
+                busy =
+                    BusyState(
+                        creatingAccount = false,
+                        restoringSession = false,
+                        creatingChat = false,
+                        sendingMessage = false,
+                        syncingNetwork = false,
+                    )
+                chatList = emptyList()
+                currentChat = null
+                toast = null
+            }
     }
 
     private fun publishState(snapshot: AppState) {

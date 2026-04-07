@@ -25,6 +25,16 @@ class AndroidKeystoreSecretStore : SecureSecretStore {
         return cipher.doFinal(encryptedSecret.cipherText)
     }
 
+    override fun clear() {
+        val keyStore =
+            KeyStore.getInstance(ANDROID_KEY_STORE).apply {
+                load(null)
+            }
+        if (keyStore.containsAlias(KEY_ALIAS)) {
+            keyStore.deleteEntry(KEY_ALIAS)
+        }
+    }
+
     private fun getOrCreateKey(): SecretKey {
         val keyStore =
             KeyStore.getInstance(ANDROID_KEY_STORE).apply {

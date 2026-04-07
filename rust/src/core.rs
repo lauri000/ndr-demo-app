@@ -81,6 +81,8 @@ struct PendingOutbound {
     reason: PendingSendReason,
     #[serde(default)]
     next_retry_at_secs: u64,
+    #[serde(default)]
+    in_flight: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -260,6 +262,7 @@ impl AppCore {
                     .iter_mut()
                     .find(|pending| pending.message_id == message_id)
                 {
+                    pending.in_flight = false;
                     pending.reason = PendingSendReason::PublishRetry;
                     pending.next_retry_at_secs =
                         unix_now().get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS);
@@ -529,6 +532,7 @@ impl AppCore {
                                 PendingSendReason::PublishingFirstContact,
                                 now.get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS),
                             );
+                            self.set_pending_outbound_in_flight(&message.id, true);
                             self.start_staged_first_contact_send(StagedOutboundSend {
                                 message_id: message.id,
                                 chat_id,
@@ -997,6 +1001,11 @@ impl AppCore {
                 continue;
             }
 
+            if pending_message.in_flight {
+                still_pending.push(pending_message);
+                continue;
+            }
+
             let owner = match parse_peer_input(&pending_message.chat_id) {
                 Ok((_, peer_pubkey)) => OwnerPubkey::from_bytes(peer_pubkey.to_bytes()),
                 Err(_) => {
@@ -1049,6 +1058,7 @@ impl AppCore {
                                 pending_message.reason = PendingSendReason::PublishingFirstContact;
                                 pending_message.next_retry_at_secs =
                                     now.get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS);
+                                pending_message.in_flight = true;
                                 self.start_staged_first_contact_send(StagedOutboundSend {
                                     message_id: pending_message.message_id.clone(),
                                     chat_id: pending_message.chat_id.clone(),
@@ -1061,6 +1071,7 @@ impl AppCore {
                                 pending_message.reason = PendingSendReason::PublishRetry;
                                 pending_message.next_retry_at_secs =
                                     now.get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS);
+                                pending_message.in_flight = true;
                                 self.start_pending_message_publish(
                                     pending_message.message_id.clone(),
                                     pending_message.chat_id.clone(),
@@ -1114,7 +1125,18 @@ impl AppCore {
             body,
             reason,
             next_retry_at_secs,
+            in_flight: false,
         });
+    }
+
+    fn set_pending_outbound_in_flight(&mut self, message_id: &str, in_flight: bool) {
+        if let Some(pending) = self
+            .pending_outbound
+            .iter_mut()
+            .find(|pending| pending.message_id == message_id)
+        {
+            pending.in_flight = in_flight;
+        }
     }
 
     fn prune_recent_handshake_peers(&mut self, now_secs: u64) {

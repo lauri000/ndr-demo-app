@@ -180,6 +180,10 @@ fun ChatListScreen(
         MyProfileSheet(
             npub = account.npub,
             publicKeyHex = account.publicKeyHex,
+            onLogout = {
+                showProfile = false
+                appManager.logout()
+            },
             onDismiss = { showProfile = false },
         )
     }
