@@ -26,6 +26,7 @@ import social.innode.ndr.demo.account.AccountState
 import social.innode.ndr.demo.account.AndroidKeystoreSecretStore
 import social.innode.ndr.demo.account.EncryptedSecret
 import social.innode.ndr.demo.account.SecureSecretStore
+import social.innode.ndr.demo.account.StoredAccountBundle
 import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.AppReconciler
 import social.innode.ndr.demo.rust.AppState
@@ -86,6 +87,30 @@ class AppManager(
         rust.dispatch(AppAction.RestoreSession(trimmed))
     }
 
+    fun startLinkedDevice(ownerInput: String) {
+        val trimmed = ownerInput.trim()
+        if (trimmed.isEmpty()) {
+            return
+        }
+        rust.dispatch(AppAction.StartLinkedDevice(trimmed))
+    }
+
+    fun addAuthorizedDevice(deviceInput: String) {
+        val trimmed = deviceInput.trim()
+        if (trimmed.isEmpty()) {
+            return
+        }
+        rust.dispatch(AppAction.AddAuthorizedDevice(trimmed))
+    }
+
+    fun removeAuthorizedDevice(devicePubkeyHex: String) {
+        val trimmed = devicePubkeyHex.trim()
+        if (trimmed.isEmpty()) {
+            return
+        }
+        rust.dispatch(AppAction.RemoveAuthorizedDevice(trimmed))
+    }
+
     fun dispatch(action: AppAction) {
         rust.dispatch(action)
     }
@@ -136,15 +161,20 @@ class AppManager(
 
     suspend fun exportNsec(): String? =
         withContext(ioDispatcher) {
-            val encrypted = loadPersistedSecret() ?: return@withContext null
-            secureSecretStore.decrypt(encrypted).decodeToString()
+            loadPersistedBundle()?.ownerNsec
         }
 
     override fun reconcile(update: AppUpdate) {
         when (update) {
-            is AppUpdate.AccountCreated -> {
+            is AppUpdate.PersistAccountBundle -> {
                 applicationScope.launch(ioDispatcher) {
-                    persistSecret(update.nsec)
+                    persistBundle(
+                        StoredAccountBundle(
+                            ownerNsec = update.ownerNsec,
+                            ownerPubkeyHex = update.ownerPubkeyHex,
+                            deviceNsec = update.deviceNsec,
+                        ),
+                    )
                 }
             }
             is AppUpdate.FullState -> {
@@ -165,8 +195,8 @@ class AppManager(
             return
         }
 
-        val nsec = runCatching { secureSecretStore.decrypt(encrypted).decodeToString() }.getOrNull()
-        if (nsec.isNullOrBlank()) {
+        val decrypted = runCatching { secureSecretStore.decrypt(encrypted).decodeToString() }.getOrNull()
+        if (decrypted.isNullOrBlank()) {
             clearPersistedSecret()
             restoreCheckComplete = true
             publishBootstrapNeedsLogin()
@@ -174,15 +204,33 @@ class AppManager(
         }
 
         restoreCheckComplete = true
-        rust.dispatch(AppAction.RestoreSession(nsec))
+        val bundle = StoredAccountBundle.fromJson(decrypted)
+        if (bundle != null) {
+            rust.dispatch(
+                AppAction.RestoreAccountBundle(
+                    ownerNsec = bundle.ownerNsec,
+                    ownerPubkeyHex = bundle.ownerPubkeyHex,
+                    deviceNsec = bundle.deviceNsec,
+                ),
+            )
+        } else {
+            rust.dispatch(AppAction.RestoreSession(decrypted))
+        }
     }
 
-    private suspend fun persistSecret(nsec: String) {
-        val encrypted = secureSecretStore.encrypt(nsec.encodeToByteArray())
+    private suspend fun persistBundle(bundle: StoredAccountBundle) {
+        val encrypted = secureSecretStore.encrypt(bundle.toJson().encodeToByteArray())
         dataStore.edit { preferences ->
             preferences[SECRET_CIPHERTEXT] = encrypted.cipherText.toBase64()
             preferences[SECRET_IV] = encrypted.iv.toBase64()
         }
+    }
+
+    private suspend fun loadPersistedBundle(): StoredAccountBundle? {
+        val encrypted = loadPersistedSecret() ?: return null
+        val decrypted = runCatching { secureSecretStore.decrypt(encrypted).decodeToString() }.getOrNull()
+            ?: return null
+        return StoredAccountBundle.fromJson(decrypted)
     }
 
     private suspend fun loadPersistedSecret(): EncryptedSecret? {
@@ -246,17 +294,20 @@ class AppManager(
             .state()
             .apply {
                 account = null
+                deviceRoster = null
                 router =
                     Router(
-                        defaultScreen = Screen.ChatList,
+                        defaultScreen = Screen.Welcome,
                         screenStack = emptyList(),
                     )
                 busy =
                     BusyState(
                         creatingAccount = false,
                         restoringSession = false,
+                        linkingDevice = false,
                         creatingChat = false,
                         sendingMessage = false,
+                        updatingRoster = false,
                         syncingNetwork = false,
                     )
                 chatList = emptyList()

@@ -1,13 +1,15 @@
 use crate::actions::AppAction;
 use crate::state::{
     AccountSnapshot, AppState, ChatMessageSnapshot, ChatThreadSnapshot, CurrentChatSnapshot,
-    DeliveryState, Router, Screen,
+    DeliveryState, DeviceAuthorizationState, DeviceEntrySnapshot, DeviceRosterSnapshot, Router,
+    Screen,
 };
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 use flume::Sender;
 use nostr_double_ratchet::{
-    AuthorizedDevice, DeviceRoster, DomainError, Error, MessageEnvelope, OwnerPubkey,
-    ProtocolContext, RelayGap, SessionManager, SessionManagerSnapshot, SessionState, UnixSeconds,
+    DevicePubkey, DeviceRoster, DomainError, Error, MessageEnvelope, OwnerPubkey,
+    ProtocolContext, RelayGap, RosterEditor, SessionManager, SessionManagerSnapshot,
+    SessionState, UnixSeconds,
 };
 use nostr_double_ratchet_nostr::nostr as codec;
 use nostr_sdk::prelude::{
@@ -51,16 +53,19 @@ pub struct AppCore {
     next_message_id: u64,
     pending_inbound: Vec<PendingInbound>,
     pending_outbound: Vec<PendingOutbound>,
-    recent_handshake_peers: BTreeMap<String, u64>,
+    recent_handshake_peers: BTreeMap<String, RecentHandshakePeer>,
     seen_event_ids: HashSet<String>,
     seen_event_order: VecDeque<String>,
     protocol_subscription_filters: Option<Vec<Filter>>,
 }
 
 struct LoggedInState {
-    keys: Keys,
+    owner_pubkey: OwnerPubkey,
+    owner_keys: Option<Keys>,
+    device_keys: Keys,
     client: Client,
     session_manager: SessionManager,
+    authorization_state: LocalAuthorizationState,
 }
 
 #[derive(Clone)]
@@ -77,16 +82,40 @@ struct PendingInbound {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+struct PreparedPublishBatch {
+    #[serde(default)]
+    invite_events: Vec<Event>,
+    #[serde(default)]
+    message_events: Vec<Event>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct PendingOutbound {
     message_id: String,
     chat_id: String,
     body: String,
+    #[serde(default)]
+    prepared_publish: Option<PreparedPublishBatch>,
     #[serde(default)]
     reason: PendingSendReason,
     #[serde(default)]
     next_retry_at_secs: u64,
     #[serde(default)]
     in_flight: bool,
+}
+
+#[derive(Clone, Debug)]
+struct RecentHandshakePeer {
+    owner_hex: String,
+    device_hex: String,
+    observed_at_secs: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LocalAuthorizationState {
+    Authorized,
+    AwaitingApproval,
+    Revoked,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -224,11 +253,24 @@ impl AppCore {
         self.state.toast = None;
         match action {
             AppAction::CreateAccount => self.create_account(),
-            AppAction::RestoreSession { nsec } => self.restore_session(&nsec),
+            AppAction::RestoreSession { owner_nsec } => self.restore_primary_session(&owner_nsec),
+            AppAction::RestoreAccountBundle {
+                owner_nsec,
+                owner_pubkey_hex,
+                device_nsec,
+            } => self.restore_account_bundle(owner_nsec, &owner_pubkey_hex, &device_nsec),
+            AppAction::StartLinkedDevice { owner_input } => self.start_linked_device(&owner_input),
             AppAction::Logout => self.logout(),
             AppAction::CreateChat { peer_input } => self.create_chat(&peer_input),
             AppAction::OpenChat { chat_id } => self.open_chat(&chat_id),
             AppAction::SendMessage { chat_id, text } => self.send_message(&chat_id, &text),
+            AppAction::AddAuthorizedDevice { device_input } => {
+                self.add_authorized_device(&device_input)
+            }
+            AppAction::RemoveAuthorizedDevice { device_pubkey_hex } => {
+                self.remove_authorized_device(&device_pubkey_hex)
+            }
+            AppAction::AcknowledgeRevokedDevice => self.acknowledge_revoked_device(),
             AppAction::PushScreen { screen } => self.push_screen(screen),
             AppAction::UpdateScreenStack { stack } => self.update_screen_stack(stack),
         }
@@ -298,21 +340,11 @@ impl AppCore {
         self.state.busy.creating_account = true;
         self.emit_state();
 
-        let keys = Keys::generate();
-        let nsec = keys
-            .secret_key()
-            .to_bech32()
-            .unwrap_or_else(|_| keys.secret_key().to_secret_hex());
+        let owner_keys = Keys::generate();
+        let device_keys = Keys::generate();
 
-        if let Err(error) = self.start_session(keys, false) {
+        if let Err(error) = self.start_primary_session(owner_keys, device_keys, false, false) {
             self.state.toast = Some(error.to_string());
-        } else if let Some(account) = self.state.account.clone() {
-            let _ = self.update_tx.send(AppUpdate::AccountCreated {
-                rev: self.state.rev,
-                nsec,
-                pubkey: account.public_key_hex,
-                npub: account.npub,
-            });
         }
 
         self.state.busy.creating_account = false;
@@ -320,19 +352,73 @@ impl AppCore {
         self.emit_state();
     }
 
-    fn restore_session(&mut self, nsec: &str) {
+    fn restore_primary_session(&mut self, owner_nsec: &str) {
         self.state.busy.restoring_session = true;
         self.emit_state();
 
-        let result = Keys::parse(nsec.trim())
+        let result = Keys::parse(owner_nsec.trim())
             .map_err(|error| anyhow::anyhow!(error.to_string()))
-            .and_then(|keys| self.start_session(keys, true));
+            .and_then(|owner_keys| self.start_primary_session(owner_keys, Keys::generate(), true, false));
 
         if let Err(error) = result {
             self.state.toast = Some(error.to_string());
         }
 
         self.state.busy.restoring_session = false;
+        self.rebuild_state();
+        self.emit_state();
+    }
+
+    fn restore_account_bundle(
+        &mut self,
+        owner_nsec: Option<String>,
+        owner_pubkey_hex: &str,
+        device_nsec: &str,
+    ) {
+        self.state.busy.restoring_session = true;
+        self.emit_state();
+
+        let result = (|| -> anyhow::Result<()> {
+            let owner_pubkey = parse_owner_input(owner_pubkey_hex)?;
+            let owner_keys = match owner_nsec {
+                Some(secret) => {
+                    let keys =
+                        Keys::parse(secret.trim()).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                    let derived_owner = OwnerPubkey::from_bytes(keys.public_key().to_bytes());
+                    if derived_owner != owner_pubkey {
+                        return Err(anyhow::anyhow!(
+                            "stored owner secret does not match stored owner pubkey"
+                        ));
+                    }
+                    Some(keys)
+                }
+                None => None,
+            };
+            let device_keys = Keys::parse(device_nsec.trim())
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            self.start_session(owner_pubkey, owner_keys, device_keys, true, true)
+        })();
+
+        if let Err(error) = result {
+            self.state.toast = Some(error.to_string());
+        }
+
+        self.state.busy.restoring_session = false;
+        self.rebuild_state();
+        self.emit_state();
+    }
+
+    fn start_linked_device(&mut self, owner_input: &str) {
+        self.state.busy.linking_device = true;
+        self.emit_state();
+
+        let result = parse_owner_input(owner_input)
+            .and_then(|owner_pubkey| self.start_session(owner_pubkey, None, Keys::generate(), false, false));
+        if let Err(error) = result {
+            self.state.toast = Some(error.to_string());
+        }
+
+        self.state.busy.linking_device = false;
         self.rebuild_state();
         self.emit_state();
     }
@@ -364,6 +450,11 @@ impl AppCore {
     fn create_chat(&mut self, peer_input: &str) {
         if self.logged_in.is_none() {
             self.state.toast = Some("Create or restore an account first.".to_string());
+            self.emit_state();
+            return;
+        }
+        if !self.can_use_chats() {
+            self.state.toast = Some(chat_unavailable_message(self.logged_in.as_ref()).to_string());
             self.emit_state();
             return;
         }
@@ -408,6 +499,12 @@ impl AppCore {
     }
 
     fn open_chat(&mut self, chat_id: &str) {
+        if !self.can_use_chats() {
+            self.state.toast = Some(chat_unavailable_message(self.logged_in.as_ref()).to_string());
+            self.emit_state();
+            return;
+        }
+
         let Ok((chat_id, _pubkey)) = parse_peer_input(chat_id) else {
             self.state.toast = Some("Invalid peer key.".to_string());
             self.emit_state();
@@ -455,6 +552,11 @@ impl AppCore {
             self.emit_state();
             return;
         }
+        if !self.can_use_chats() {
+            self.state.toast = Some(chat_unavailable_message(self.logged_in.as_ref()).to_string());
+            self.emit_state();
+            return;
+        }
 
         let now = unix_now();
         self.prune_recent_handshake_peers(now.get());
@@ -498,6 +600,7 @@ impl AppCore {
                         message.id,
                         chat_id.clone(),
                         trimmed.to_string(),
+                        None,
                         reason,
                         now.get().saturating_add(PENDING_RETRY_DELAY_SECS),
                     );
@@ -509,21 +612,9 @@ impl AppCore {
                         PENDING_RETRY_DELAY_SECS,
                     ));
                 } else {
-                    let invite_events = prepared
-                        .invite_responses
-                        .iter()
-                        .map(codec::invite_response_event)
-                        .collect::<std::result::Result<Vec<_>, _>>();
-                    let message_events = prepared
-                        .deliveries
-                        .iter()
-                        .map(|delivery| codec::message_event(&delivery.envelope))
-                        .collect::<std::result::Result<Vec<_>, _>>();
-
-                    match (invite_events, message_events) {
-                        (Ok(invite_events), Ok(message_events))
-                            if !invite_events.is_empty() && !message_events.is_empty() =>
-                        {
+                    match build_prepared_publish_batch(&prepared) {
+                        Ok(Some(batch)) => {
+                            let reason = pending_reason_for_batch(&batch);
                             let message = self.push_outgoing_message(
                                 &chat_id,
                                 trimmed.to_string(),
@@ -534,38 +625,14 @@ impl AppCore {
                                 message.id.clone(),
                                 chat_id.clone(),
                                 trimmed.to_string(),
-                                PendingSendReason::PublishingFirstContact,
+                                Some(batch.clone()),
+                                reason,
                                 now.get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS),
                             );
                             self.set_pending_outbound_in_flight(&message.id, true);
-                            self.start_staged_first_contact_send(StagedOutboundSend {
-                                message_id: message.id,
-                                chat_id,
-                                invite_events,
-                                message_events,
-                            });
+                            self.start_publish_for_pending(message.id, chat_id, batch);
                         }
-                        (Ok(_), Ok(message_events)) if !message_events.is_empty() => {
-                            let message = self.push_outgoing_message(
-                                &chat_id,
-                                trimmed.to_string(),
-                                now.get(),
-                                DeliveryState::Pending,
-                            );
-                            self.queue_pending_outbound(
-                                message.id.clone(),
-                                chat_id.clone(),
-                                trimmed.to_string(),
-                                PendingSendReason::PublishRetry,
-                                now.get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS),
-                            );
-                            self.set_pending_outbound_in_flight(&message.id, true);
-                            self.start_pending_message_publish(message.id, chat_id, message_events);
-                        }
-                        (Err(error), _) | (_, Err(error)) => {
-                            self.state.toast = Some(error.to_string());
-                        }
-                        _ => {
+                        Ok(None) => {
                             let message = self.push_outgoing_message(
                                 &chat_id,
                                 trimmed.to_string(),
@@ -577,6 +644,9 @@ impl AppCore {
                                 &message.id,
                                 DeliveryState::Failed,
                             );
+                        }
+                        Err(error) => {
+                            self.state.toast = Some(error.to_string());
                         }
                     }
                 }
@@ -604,6 +674,12 @@ impl AppCore {
                 self.active_chat_id = None;
             }
             Screen::NewChat => {
+                if !self.can_use_chats() {
+                    self.state.toast =
+                        Some(chat_unavailable_message(self.logged_in.as_ref()).to_string());
+                    self.emit_state();
+                    return;
+                }
                 self.screen_stack = vec![Screen::NewChat];
                 self.active_chat_id = None;
             }
@@ -611,7 +687,11 @@ impl AppCore {
                 self.open_chat(&chat_id);
                 return;
             }
-            Screen::Welcome => return,
+            Screen::DeviceRoster => {
+                self.screen_stack = vec![Screen::DeviceRoster];
+                self.active_chat_id = None;
+            }
+            Screen::AwaitingDeviceApproval | Screen::DeviceRevoked | Screen::Welcome => return,
         }
 
         self.rebuild_state();
@@ -627,11 +707,21 @@ impl AppCore {
         let mut normalized_stack = Vec::new();
         for screen in stack {
             match screen {
-                Screen::Welcome | Screen::ChatList => {}
-                Screen::NewChat => normalized_stack.push(Screen::NewChat),
+                Screen::Welcome
+                | Screen::ChatList
+                | Screen::AwaitingDeviceApproval
+                | Screen::DeviceRevoked => {}
+                Screen::NewChat => {
+                    if self.can_use_chats() {
+                        normalized_stack.push(Screen::NewChat);
+                    }
+                }
+                Screen::DeviceRoster => normalized_stack.push(Screen::DeviceRoster),
                 Screen::Chat { chat_id } => {
-                    if let Ok((chat_id, _)) = parse_peer_input(&chat_id) {
-                        normalized_stack.push(Screen::Chat { chat_id });
+                    if self.can_use_chats() {
+                        if let Ok((chat_id, _)) = parse_peer_input(&chat_id) {
+                            normalized_stack.push(Screen::Chat { chat_id });
+                        }
                     }
                 }
             }
@@ -642,6 +732,119 @@ impl AppCore {
         self.rebuild_state();
         self.persist_best_effort();
         self.emit_state();
+    }
+
+    fn add_authorized_device(&mut self, device_input: &str) {
+        let Some(logged_in) = self.logged_in.as_ref() else {
+            self.state.toast = Some("Create or restore an account first.".to_string());
+            self.emit_state();
+            return;
+        };
+        if logged_in.owner_keys.is_none() {
+            self.state.toast = Some("Only the primary device can manage devices.".to_string());
+            self.emit_state();
+            return;
+        }
+
+        let Ok(device_pubkey) = parse_device_input(device_input) else {
+            self.state.toast = Some("Invalid device key.".to_string());
+            self.emit_state();
+            return;
+        };
+        if device_pubkey == local_device_from_keys(&logged_in.device_keys) {
+            self.state.toast = Some("The current device is already authorized.".to_string());
+            self.emit_state();
+            return;
+        }
+
+        self.state.busy.updating_roster = true;
+        self.emit_state();
+
+        let now = unix_now();
+        let updated_roster = {
+            let logged_in = self.logged_in.as_mut().expect("checked above");
+            let current_roster = local_roster_from_session_manager(&logged_in.session_manager);
+            let mut editor = RosterEditor::from_roster(current_roster.as_ref());
+            editor.authorize_device(device_pubkey, now);
+            let roster = editor.build(now);
+            logged_in.session_manager.apply_local_roster(roster.clone());
+            logged_in.authorization_state = derive_local_authorization_state(
+                logged_in.owner_keys.is_some(),
+                logged_in.owner_pubkey,
+                local_device_from_keys(&logged_in.device_keys),
+                &logged_in.session_manager,
+            );
+            roster
+        };
+
+        self.publish_roster_update(updated_roster);
+        self.resubscribe_to_protocol_events();
+        self.persist_best_effort();
+        self.state.busy.updating_roster = false;
+        self.rebuild_state();
+        self.emit_state();
+    }
+
+    fn remove_authorized_device(&mut self, device_pubkey_hex: &str) {
+        let Some(logged_in) = self.logged_in.as_ref() else {
+            self.state.toast = Some("Create or restore an account first.".to_string());
+            self.emit_state();
+            return;
+        };
+        if logged_in.owner_keys.is_none() {
+            self.state.toast = Some("Only the primary device can manage devices.".to_string());
+            self.emit_state();
+            return;
+        }
+
+        let Ok(device_pubkey) = parse_device_input(device_pubkey_hex) else {
+            self.state.toast = Some("Invalid device key.".to_string());
+            self.emit_state();
+            return;
+        };
+        if device_pubkey == local_device_from_keys(&logged_in.device_keys) {
+            self.state.toast = Some("The current device cannot remove itself.".to_string());
+            self.emit_state();
+            return;
+        }
+
+        self.state.busy.updating_roster = true;
+        self.emit_state();
+
+        let now = unix_now();
+        let updated_roster = {
+            let logged_in = self.logged_in.as_mut().expect("checked above");
+            let current_roster = local_roster_from_session_manager(&logged_in.session_manager);
+            let mut editor = RosterEditor::from_roster(current_roster.as_ref());
+            editor.revoke_device(device_pubkey);
+            let roster = editor.build(now);
+            logged_in.session_manager.apply_local_roster(roster.clone());
+            logged_in.authorization_state = derive_local_authorization_state(
+                logged_in.owner_keys.is_some(),
+                logged_in.owner_pubkey,
+                local_device_from_keys(&logged_in.device_keys),
+                &logged_in.session_manager,
+            );
+            roster
+        };
+
+        self.publish_roster_update(updated_roster);
+        self.resubscribe_to_protocol_events();
+        self.persist_best_effort();
+        self.state.busy.updating_roster = false;
+        self.rebuild_state();
+        self.emit_state();
+    }
+
+    fn acknowledge_revoked_device(&mut self) {
+        if matches!(
+            self.logged_in.as_ref().map(|logged_in| logged_in.authorization_state),
+            Some(LocalAuthorizationState::Revoked)
+        ) {
+            self.screen_stack.clear();
+            self.rebuild_state();
+            self.emit_state();
+        }
     }
 
     fn handle_relay_event(&mut self, event: Event) {
@@ -660,40 +863,114 @@ impl AppCore {
         match kind {
             codec::ROSTER_EVENT_KIND => {
                 if let Ok(decoded) = codec::parse_roster_event(&event) {
-                    let is_foreign_roster = {
-                        let logged_in = self.logged_in.as_ref().expect("checked above");
-                        decoded.owner_pubkey != local_owner_from_keys(&logged_in.keys)
-                    };
-                    if is_foreign_roster {
-                        self.logged_in
-                            .as_mut()
-                            .expect("checked above")
-                            .session_manager
-                            .observe_peer_roster(decoded.owner_pubkey, decoded.roster);
-                        self.remember_event(event_id);
-                        self.retry_pending_inbound(now);
-                        self.retry_pending_outbound(now);
-                        self.resubscribe_to_protocol_events();
-                        self.persist_best_effort();
-                        self.rebuild_state();
-                        self.emit_state();
-                        return;
+                    let is_local_owner = self
+                        .logged_in
+                        .as_ref()
+                        .map(|logged_in| decoded.owner_pubkey == logged_in.owner_pubkey)
+                        .unwrap_or(false);
+
+                    {
+                        let logged_in = self.logged_in.as_mut().expect("checked above");
+                        if is_local_owner {
+                            logged_in.session_manager.apply_local_roster(decoded.roster);
+                            let previous = logged_in.authorization_state;
+                            logged_in.authorization_state = derive_local_authorization_state(
+                                logged_in.owner_keys.is_some(),
+                                logged_in.owner_pubkey,
+                                local_device_from_keys(&logged_in.device_keys),
+                                &logged_in.session_manager,
+                            );
+                            match (previous, logged_in.authorization_state) {
+                                (
+                                    LocalAuthorizationState::AwaitingApproval,
+                                    LocalAuthorizationState::Authorized,
+                                ) => {
+                                    self.state.toast =
+                                        Some("This device has been approved.".to_string());
+                                }
+                                (_, LocalAuthorizationState::Revoked) => {
+                                    self.state.toast =
+                                        Some("This device was removed from the roster.".to_string());
+                                    self.active_chat_id = None;
+                                    self.screen_stack.clear();
+                                    self.pending_inbound.clear();
+                                    self.pending_outbound.clear();
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            logged_in
+                                .session_manager
+                                .observe_peer_roster(decoded.owner_pubkey, decoded.roster);
+                        }
                     }
+
+                    let migrated_owner_hexes = self.reconcile_recent_handshake_peers();
+                    self.apply_owner_migrations(&migrated_owner_hexes);
+                    self.remember_event(event_id);
+                    self.retry_pending_inbound(now);
+                    self.retry_pending_outbound(now);
+                    self.resubscribe_to_protocol_events();
+                    if is_local_owner
+                        && matches!(
+                            self.logged_in
+                                .as_ref()
+                                .map(|logged_in| logged_in.authorization_state),
+                            Some(LocalAuthorizationState::Authorized)
+                        )
+                    {
+                        self.schedule_tracked_peer_catch_up(Duration::from_secs(
+                            RESUBSCRIBE_CATCH_UP_DELAY_SECS,
+                        ));
+                    }
+                    for (_, owner_hex) in migrated_owner_hexes {
+                        if let Ok(pubkey) = PublicKey::parse(&owner_hex) {
+                            self.fetch_recent_messages_for_owner(
+                                OwnerPubkey::from_bytes(pubkey.to_bytes()),
+                                now,
+                            );
+                        }
+                    }
+                    self.persist_best_effort();
+                    self.rebuild_state();
+                    self.emit_state();
+                    return;
                 }
 
                 if let Ok(invite) = codec::parse_invite_event(&event) {
-                    let owner = invite.owner_public_key.unwrap_or(invite.inviter);
-                    let is_foreign_invite = {
+                    let invite_owner =
+                        invite
+                            .inviter_owner_pubkey
+                            .unwrap_or_else(|| OwnerPubkey::from_bytes(invite.inviter_device_pubkey.to_bytes()));
+                    let (local_owner, local_device) = {
                         let logged_in = self.logged_in.as_ref().expect("checked above");
-                        owner != local_owner_from_keys(&logged_in.keys)
+                        (
+                            logged_in.owner_pubkey,
+                            local_device_from_keys(&logged_in.device_keys),
+                        )
                     };
-                    if is_foreign_invite {
+                    let should_observe = if invite.inviter_device_pubkey == local_device {
+                        false
+                    } else if invite_owner == local_owner {
+                        local_roster_from_session_manager(
+                            &self
+                                .logged_in
+                                .as_ref()
+                                .expect("checked above")
+                                .session_manager,
+                        )
+                        .and_then(|roster| roster.get_device(&invite.inviter_device_pubkey).copied())
+                        .is_some()
+                    } else {
+                        true
+                    };
+                    if should_observe {
                         if let Err(error) = self
                             .logged_in
                             .as_mut()
                             .expect("checked above")
                             .session_manager
-                            .observe_device_invite(owner, invite)
+                            .observe_device_invite(invite_owner, invite)
                         {
                             self.state.toast = Some(error.to_string());
                         } else {
@@ -745,11 +1022,27 @@ impl AppCore {
                 match invite_response {
                     Ok(Some(processed)) => {
                         let owner_hex = processed.owner_pubkey.to_string();
-                        self.remember_recent_handshake_peer(owner_hex, now.get());
+                        self.remember_recent_handshake_peer(
+                            owner_hex.clone(),
+                            processed.device_pubkey.to_string(),
+                            now.get(),
+                        );
+                        let migrated_owner_hexes = self.reconcile_recent_handshake_peers();
+                        self.apply_owner_migrations(&migrated_owner_hexes);
                         self.retry_pending_inbound(now);
                         self.retry_pending_outbound(now);
                         self.resubscribe_to_protocol_events();
                         self.fetch_recent_messages_for_owner(processed.owner_pubkey, now);
+                        for (_, migrated_owner_hex) in migrated_owner_hexes {
+                            if migrated_owner_hex != owner_hex {
+                                if let Ok(pubkey) = PublicKey::parse(&migrated_owner_hex) {
+                                    self.fetch_recent_messages_for_owner(
+                                        OwnerPubkey::from_bytes(pubkey.to_bytes()),
+                                        now,
+                                    );
+                                }
+                            }
+                        }
                         self.persist_best_effort();
                     }
                     Ok(None) => {}
@@ -823,7 +1116,31 @@ impl AppCore {
         }
     }
 
-    fn start_session(&mut self, keys: Keys, allow_restore: bool) -> anyhow::Result<()> {
+    fn start_primary_session(
+        &mut self,
+        owner_keys: Keys,
+        device_keys: Keys,
+        allow_restore: bool,
+        allow_protocol_restore: bool,
+    ) -> anyhow::Result<()> {
+        let owner_pubkey = OwnerPubkey::from_bytes(owner_keys.public_key().to_bytes());
+        self.start_session(
+            owner_pubkey,
+            Some(owner_keys),
+            device_keys,
+            allow_restore,
+            allow_protocol_restore,
+        )
+    }
+
+    fn start_session(
+        &mut self,
+        owner_pubkey: OwnerPubkey,
+        owner_keys: Option<Keys>,
+        device_keys: Keys,
+        allow_restore: bool,
+        allow_protocol_restore: bool,
+    ) -> anyhow::Result<()> {
         if let Some(existing) = self.logged_in.take() {
             let client = existing.client;
             self.runtime.spawn(async move {
@@ -843,10 +1160,9 @@ impl AppCore {
         self.protocol_subscription_filters = None;
         self.next_message_id = 1;
 
-        let secret_bytes = keys.secret_key().to_secret_bytes();
+        let device_secret_bytes = device_keys.secret_key().to_secret_bytes();
+        let local_device = DevicePubkey::from_bytes(device_keys.public_key().to_bytes());
         let now = unix_now();
-        let local_owner = local_owner_from_keys(&keys);
-        let local_device = local_owner.as_device();
 
         let persisted = if allow_restore {
             self.load_persisted().ok().flatten()
@@ -857,19 +1173,21 @@ impl AppCore {
         if let Some(persisted) = &persisted {
             self.active_chat_id = persisted.active_chat_id.clone();
             self.next_message_id = persisted.next_message_id.max(1);
-            self.pending_outbound = persisted.pending_outbound.clone();
-            self.pending_inbound = persisted.pending_inbound.clone();
-            self.seen_event_order = persisted
-                .seen_event_ids
-                .iter()
-                .rev()
-                .take(MAX_SEEN_EVENT_IDS)
-                .cloned()
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            self.seen_event_ids = self.seen_event_order.iter().cloned().collect();
+            if allow_protocol_restore {
+                self.pending_outbound = persisted.pending_outbound.clone();
+                self.pending_inbound = persisted.pending_inbound.clone();
+                self.seen_event_order = persisted
+                    .seen_event_ids
+                    .iter()
+                    .rev()
+                    .take(MAX_SEEN_EVENT_IDS)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                self.seen_event_ids = self.seen_event_order.iter().cloned().collect();
+            }
             self.threads = persisted
                 .threads
                 .iter()
@@ -907,58 +1225,77 @@ impl AppCore {
                 .collect();
         }
 
-        if let Some(chat_id) = self.active_chat_id.clone() {
+        let mut session_manager = persisted
+            .and_then(|persisted| {
+                if allow_protocol_restore {
+                    persisted.session_manager
+                } else {
+                    None
+                }
+            })
+            .filter(|snapshot| {
+                snapshot.local_owner_pubkey == owner_pubkey && snapshot.local_device_pubkey == local_device
+            })
+            .map(|snapshot| SessionManager::from_snapshot(snapshot, device_secret_bytes))
+            .transpose()?
+            .unwrap_or_else(|| SessionManager::new(owner_pubkey, device_secret_bytes));
+
+        let existing_local_roster = session_manager
+            .snapshot()
+            .users
+            .into_iter()
+            .find(|user| user.owner_pubkey == owner_pubkey)
+            .and_then(|user| user.roster);
+        if owner_keys.is_some() && existing_local_roster.is_none() {
+            let mut roster_editor = RosterEditor::new();
+            roster_editor.authorize_device(local_device, now);
+            session_manager.apply_local_roster(roster_editor.build(now));
+        }
+
+        let authorization_state =
+            derive_local_authorization_state(owner_keys.is_some(), owner_pubkey, local_device, &session_manager);
+
+        if authorization_state != LocalAuthorizationState::Revoked {
+            let mut rng = OsRng;
+            let mut ctx = ProtocolContext::new(now, &mut rng);
+            session_manager.ensure_local_invite(&mut ctx)?;
+        }
+
+        if authorization_state != LocalAuthorizationState::Authorized {
+            self.active_chat_id = None;
+            self.screen_stack.clear();
+            self.pending_inbound.clear();
+            self.pending_outbound.clear();
+        } else if let Some(chat_id) = self.active_chat_id.clone() {
             self.screen_stack = vec![Screen::Chat { chat_id }];
         }
 
-        let mut session_manager = persisted
-            .and_then(|persisted| persisted.session_manager)
-            .map(|snapshot| SessionManager::from_snapshot(snapshot, secret_bytes))
-            .transpose()?
-            .unwrap_or_else(|| SessionManager::new(local_owner, secret_bytes));
-
-        let local_roster = DeviceRoster::new(now, vec![AuthorizedDevice::new(local_device, now)]);
-        session_manager.apply_local_roster(local_roster.clone());
-
-        let invite_url = {
-            let mut rng = OsRng;
-            let mut ctx = ProtocolContext::new(now, &mut rng);
-            let invite = session_manager.ensure_local_invite(&mut ctx)?.clone();
-            codec::invite_url(&invite, "https://chat.iris.to")?
-        };
-
-        let client = Client::new(keys.clone());
+        let client = Client::new(device_keys.clone());
         self.start_notifications_loop(client.clone());
-        self.publish_local_identity_artifacts(
-            client.clone(),
-            keys.clone(),
-            local_owner,
-            local_roster.clone(),
-            invite_url.clone(),
-        );
 
         self.logged_in = Some(LoggedInState {
-            keys: keys.clone(),
+            owner_pubkey,
+            owner_keys: owner_keys.clone(),
+            device_keys: device_keys.clone(),
             client,
             session_manager,
+            authorization_state,
         });
 
+        self.emit_account_bundle_update(owner_keys.as_ref(), &device_keys);
+        self.republish_local_identity_artifacts();
+        self.reconcile_recent_handshake_peers();
         self.retry_pending_inbound(now);
         self.retry_pending_outbound(now);
-
-        self.state.account = Some(AccountSnapshot {
-            public_key_hex: keys.public_key().to_hex(),
-            npub: keys
-                .public_key()
-                .to_bech32()
-                .unwrap_or_else(|_| keys.public_key().to_hex()),
-            invite_url,
-        });
         self.state.busy.syncing_network = true;
         self.rebuild_state();
         self.persist_best_effort();
         self.resubscribe_to_protocol_events();
-        self.schedule_tracked_peer_catch_up(Duration::from_secs(RESUBSCRIBE_CATCH_UP_DELAY_SECS));
+        if authorization_state == LocalAuthorizationState::Authorized {
+            self.schedule_tracked_peer_catch_up(Duration::from_secs(
+                RESUBSCRIBE_CATCH_UP_DELAY_SECS,
+            ));
+        }
         self.emit_state();
         Ok(())
     }
@@ -1021,6 +1358,20 @@ impl AppCore {
                 continue;
             }
 
+            if let Some(batch) = pending_message.prepared_publish.clone() {
+                pending_message.reason = pending_reason_for_batch(&batch);
+                pending_message.next_retry_at_secs =
+                    now.get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS);
+                pending_message.in_flight = true;
+                self.start_publish_for_pending(
+                    pending_message.message_id.clone(),
+                    pending_message.chat_id.clone(),
+                    batch,
+                );
+                still_pending.push(pending_message);
+                continue;
+            }
+
             let owner = match parse_peer_input(&pending_message.chat_id) {
                 Ok((_, peer_pubkey)) => OwnerPubkey::from_bytes(peer_pubkey.to_bytes()),
                 Err(_) => {
@@ -1055,58 +1406,33 @@ impl AppCore {
                         }
                         still_pending.push(pending_message);
                     } else {
-                        let invite_events = prepared
-                            .invite_responses
-                            .iter()
-                            .map(codec::invite_response_event)
-                            .collect::<std::result::Result<Vec<_>, _>>();
-                        let message_events = prepared
-                            .deliveries
-                            .iter()
-                            .map(|delivery| codec::message_event(&delivery.envelope))
-                            .collect::<std::result::Result<Vec<_>, _>>();
-
-                        match (invite_events, message_events) {
-                            (Ok(invite_events), Ok(message_events))
-                                if !invite_events.is_empty() && !message_events.is_empty() =>
-                            {
-                                pending_message.reason = PendingSendReason::PublishingFirstContact;
+                        match build_prepared_publish_batch(&prepared) {
+                            Ok(Some(batch)) => {
+                                pending_message.prepared_publish = Some(batch.clone());
+                                pending_message.reason = pending_reason_for_batch(&batch);
                                 pending_message.next_retry_at_secs =
                                     now.get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS);
                                 pending_message.in_flight = true;
-                                self.start_staged_first_contact_send(StagedOutboundSend {
-                                    message_id: pending_message.message_id.clone(),
-                                    chat_id: pending_message.chat_id.clone(),
-                                    invite_events,
-                                    message_events,
-                                });
-                                still_pending.push(pending_message);
-                            }
-                            (Ok(_), Ok(message_events)) if !message_events.is_empty() => {
-                                pending_message.reason = PendingSendReason::PublishRetry;
-                                pending_message.next_retry_at_secs =
-                                    now.get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS);
-                                pending_message.in_flight = true;
-                                self.start_pending_message_publish(
+                                self.start_publish_for_pending(
                                     pending_message.message_id.clone(),
                                     pending_message.chat_id.clone(),
-                                    message_events,
+                                    batch,
                                 );
                                 still_pending.push(pending_message);
                             }
-                            (Err(error), _) | (_, Err(error)) => {
+                            Ok(None) => {
+                                pending_message.reason = PendingSendReason::MissingDeviceInvite;
+                                pending_message.next_retry_at_secs =
+                                    now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
+                                still_pending.push(pending_message);
+                            }
+                            Err(error) => {
                                 self.state.toast = Some(error.to_string());
                                 self.update_message_delivery(
                                     &pending_message.chat_id,
                                     &pending_message.message_id,
                                     DeliveryState::Failed,
                                 );
-                            }
-                            _ => {
-                                pending_message.reason = PendingSendReason::MissingDeviceInvite;
-                                pending_message.next_retry_at_secs =
-                                    now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
-                                still_pending.push(pending_message);
                             }
                         }
                     }
@@ -1131,6 +1457,7 @@ impl AppCore {
         message_id: String,
         chat_id: String,
         body: String,
+        prepared_publish: Option<PreparedPublishBatch>,
         reason: PendingSendReason,
         next_retry_at_secs: u64,
     ) {
@@ -1138,6 +1465,7 @@ impl AppCore {
             message_id,
             chat_id,
             body,
+            prepared_publish,
             reason,
             next_retry_at_secs,
             in_flight: false,
@@ -1155,24 +1483,38 @@ impl AppCore {
     }
 
     fn prune_recent_handshake_peers(&mut self, now_secs: u64) {
-        self.recent_handshake_peers
-            .retain(|owner, observed_at_secs| {
-                let within_ttl =
-                    now_secs.saturating_sub(*observed_at_secs) <= RECENT_HANDSHAKE_TTL_SECS;
-                within_ttl && !self.threads.contains_key(owner)
-            });
+        self.reconcile_recent_handshake_peers();
+        self.recent_handshake_peers.retain(|_, peer| {
+            let within_ttl =
+                now_secs.saturating_sub(peer.observed_at_secs) <= RECENT_HANDSHAKE_TTL_SECS;
+            within_ttl && !self.threads.contains_key(&peer.owner_hex)
+        });
     }
 
-    fn remember_recent_handshake_peer(&mut self, owner_hex: String, now_secs: u64) {
+    fn remember_recent_handshake_peer(
+        &mut self,
+        owner_hex: String,
+        device_hex: String,
+        now_secs: u64,
+    ) {
         if self.threads.contains_key(&owner_hex) {
-            self.recent_handshake_peers.remove(&owner_hex);
+            self.recent_handshake_peers
+                .retain(|_, peer| peer.owner_hex != owner_hex);
             return;
         }
-        self.recent_handshake_peers.insert(owner_hex, now_secs);
+        self.recent_handshake_peers.insert(
+            device_hex.clone(),
+            RecentHandshakePeer {
+                owner_hex,
+                device_hex,
+                observed_at_secs: now_secs,
+            },
+        );
     }
 
     fn clear_recent_handshake_peer(&mut self, owner_hex: &str) {
-        self.recent_handshake_peers.remove(owner_hex);
+        self.recent_handshake_peers
+            .retain(|_, peer| peer.owner_hex != owner_hex);
     }
 
     fn tracked_peer_owner_hexes(&self) -> HashSet<String> {
@@ -1188,7 +1530,20 @@ impl AppCore {
 
     fn protocol_owner_hexes(&self) -> HashSet<String> {
         let mut owners = self.tracked_peer_owner_hexes();
-        owners.extend(self.recent_handshake_peers.keys().cloned());
+        owners.extend(
+            self.recent_handshake_peers
+                .values()
+                .map(|peer| peer.owner_hex.clone()),
+        );
+        if let Some(logged_in) = self.logged_in.as_ref() {
+            for user in logged_in.session_manager.snapshot().users {
+                for device in user.devices {
+                    if let Some(claimed_owner_pubkey) = device.claimed_owner_pubkey {
+                        owners.insert(claimed_owner_pubkey.to_string());
+                    }
+                }
+            }
+        }
         owners
     }
 
@@ -1233,6 +1588,113 @@ impl AppCore {
     ) {
         self.resubscribe_to_protocol_events();
         self.publish_message_batch(message_id, chat_id, message_events);
+    }
+
+    fn start_publish_for_pending(
+        &mut self,
+        message_id: String,
+        chat_id: String,
+        batch: PreparedPublishBatch,
+    ) {
+        if batch.message_events.is_empty() {
+            return;
+        }
+
+        if batch.invite_events.is_empty() {
+            self.start_pending_message_publish(message_id, chat_id, batch.message_events);
+            return;
+        }
+
+        self.start_staged_first_contact_send(StagedOutboundSend {
+            message_id,
+            chat_id,
+            invite_events: batch.invite_events,
+            message_events: batch.message_events,
+        });
+    }
+
+    fn reconcile_recent_handshake_peers(&mut self) -> Vec<(String, String)> {
+        let Some(logged_in) = self.logged_in.as_ref() else {
+            return Vec::new();
+        };
+
+        let mut session_owners_by_device = BTreeMap::new();
+        for user in logged_in.session_manager.snapshot().users {
+            let owner_hex = user.owner_pubkey.to_string();
+            for device in user.devices {
+                if device.active_session.is_none()
+                    && device.inactive_sessions.is_empty()
+                    && device.claimed_owner_pubkey.is_none()
+                {
+                    continue;
+                }
+                session_owners_by_device
+                    .insert(device.device_pubkey.to_string(), owner_hex.clone());
+            }
+        }
+
+        let mut migrated_owner_hexes = Vec::new();
+        for peer in self.recent_handshake_peers.values_mut() {
+            let Some(owner_hex) = session_owners_by_device.get(&peer.device_hex) else {
+                continue;
+            };
+            if *owner_hex != peer.owner_hex {
+                let previous_owner_hex = peer.owner_hex.clone();
+                peer.owner_hex = owner_hex.clone();
+                migrated_owner_hexes.push((previous_owner_hex, owner_hex.clone()));
+            }
+        }
+
+        migrated_owner_hexes
+    }
+
+    fn apply_owner_migrations(&mut self, migrations: &[(String, String)]) {
+        for (old_owner_hex, new_owner_hex) in migrations {
+            if old_owner_hex == new_owner_hex {
+                continue;
+            }
+
+            if let Some(mut old_thread) = self.threads.remove(old_owner_hex) {
+                old_thread.chat_id = new_owner_hex.clone();
+                for message in &mut old_thread.messages {
+                    message.chat_id = new_owner_hex.clone();
+                }
+
+                match self.threads.get_mut(new_owner_hex) {
+                    Some(existing) => {
+                        existing.unread_count =
+                            existing.unread_count.saturating_add(old_thread.unread_count);
+                        existing.updated_at_secs =
+                            existing.updated_at_secs.max(old_thread.updated_at_secs);
+                        existing.messages.extend(old_thread.messages);
+                        existing.messages.sort_by(|left, right| {
+                            left.created_at_secs
+                                .cmp(&right.created_at_secs)
+                                .then_with(|| left.id.cmp(&right.id))
+                        });
+                    }
+                    None => {
+                        self.threads.insert(new_owner_hex.clone(), old_thread);
+                    }
+                }
+            }
+
+            if self.active_chat_id.as_deref() == Some(old_owner_hex.as_str()) {
+                self.active_chat_id = Some(new_owner_hex.clone());
+            }
+            for pending in &mut self.pending_outbound {
+                if pending.chat_id == *old_owner_hex {
+                    pending.chat_id = new_owner_hex.clone();
+                }
+            }
+            for screen in &mut self.screen_stack {
+                if let Screen::Chat { chat_id } = screen {
+                    if *chat_id == *old_owner_hex {
+                        *chat_id = new_owner_hex.clone();
+                    }
+                }
+            }
+        }
     }
 
     fn start_staged_first_contact_send(&mut self, staged: StagedOutboundSend) {
@@ -1496,10 +1958,18 @@ impl AppCore {
     }
 
     fn rebuild_state(&mut self) {
-        let default_screen = if self.state.account.is_some() {
-            Screen::ChatList
-        } else {
-            Screen::Welcome
+        self.state.account = self.build_account_snapshot();
+        self.state.device_roster = self.build_device_roster_snapshot();
+
+        let default_screen = match self
+            .logged_in
+            .as_ref()
+            .map(|logged_in| logged_in.authorization_state)
+        {
+            None => Screen::Welcome,
+            Some(LocalAuthorizationState::Authorized) => Screen::ChatList,
+            Some(LocalAuthorizationState::AwaitingApproval) => Screen::AwaitingDeviceApproval,
+            Some(LocalAuthorizationState::Revoked) => Screen::DeviceRevoked,
         };
 
         let mut threads: Vec<&ThreadRecord> = self.threads.values().collect();
@@ -1533,6 +2003,135 @@ impl AppCore {
         };
     }
 
+    fn build_account_snapshot(&self) -> Option<AccountSnapshot> {
+        let logged_in = self.logged_in.as_ref()?;
+        let owner_public_key_hex = logged_in.owner_pubkey.to_string();
+        let owner_npub =
+            owner_npub_from_owner(logged_in.owner_pubkey).unwrap_or_else(|| owner_public_key_hex.clone());
+        let device_public_key_hex = logged_in.device_keys.public_key().to_hex();
+        let device_npub = logged_in
+            .device_keys
+            .public_key()
+            .to_bech32()
+            .unwrap_or_else(|_| device_public_key_hex.clone());
+
+        Some(AccountSnapshot {
+            public_key_hex: owner_public_key_hex,
+            npub: owner_npub,
+            device_public_key_hex,
+            device_npub,
+            has_owner_signing_authority: logged_in.owner_keys.is_some(),
+            authorization_state: public_authorization_state(logged_in.authorization_state),
+        })
+    }
+
+    fn build_device_roster_snapshot(&self) -> Option<DeviceRosterSnapshot> {
+        let logged_in = self.logged_in.as_ref()?;
+        let account = self.build_account_snapshot()?;
+        let current_device_pubkey_hex = account.device_public_key_hex.clone();
+        let current_device_npub = account.device_npub.clone();
+        let mut entries = BTreeMap::<String, DeviceEntrySnapshot>::new();
+
+        if let Some(user) = logged_in
+            .session_manager
+            .snapshot()
+            .users
+            .into_iter()
+            .find(|user| user.owner_pubkey == logged_in.owner_pubkey)
+        {
+            if let Some(roster) = user.roster.as_ref() {
+                for authorized_device in roster.devices() {
+                    let device_pubkey_hex = authorized_device.device_pubkey.to_string();
+                    entries.entry(device_pubkey_hex.clone()).or_insert(DeviceEntrySnapshot {
+                        device_pubkey_hex: device_pubkey_hex.clone(),
+                        device_npub: device_npub(&device_pubkey_hex)
+                            .unwrap_or_else(|| device_pubkey_hex.clone()),
+                        is_current_device: device_pubkey_hex == current_device_pubkey_hex,
+                        is_authorized: true,
+                        is_stale: false,
+                        last_activity_secs: None,
+                    });
+                }
+            }
+
+            for device in user.devices {
+                let device_pubkey_hex = device.device_pubkey.to_string();
+                let entry = entries
+                    .entry(device_pubkey_hex.clone())
+                    .or_insert(DeviceEntrySnapshot {
+                        device_pubkey_hex: device_pubkey_hex.clone(),
+                        device_npub: device_npub(&device_pubkey_hex)
+                            .unwrap_or_else(|| device_pubkey_hex.clone()),
+                        is_current_device: device_pubkey_hex == current_device_pubkey_hex,
+                        is_authorized: device.authorized,
+                        is_stale: device.is_stale,
+                        last_activity_secs: device.last_activity.map(UnixSeconds::get),
+                    });
+                entry.is_authorized = device.authorized;
+                entry.is_stale = device.is_stale;
+                entry.last_activity_secs = device.last_activity.map(UnixSeconds::get);
+            }
+        }
+
+        entries.entry(current_device_pubkey_hex.clone()).or_insert(DeviceEntrySnapshot {
+            device_pubkey_hex: current_device_pubkey_hex.clone(),
+            device_npub: current_device_npub.clone(),
+            is_current_device: true,
+            is_authorized: matches!(logged_in.authorization_state, LocalAuthorizationState::Authorized),
+            is_stale: matches!(logged_in.authorization_state, LocalAuthorizationState::Revoked),
+            last_activity_secs: None,
+        });
+
+        let mut devices = entries.into_values().collect::<Vec<_>>();
+        devices.sort_by(|left, right| {
+            right
+                .is_current_device
+                .cmp(&left.is_current_device)
+                .then_with(|| left.device_pubkey_hex.cmp(&right.device_pubkey_hex))
+        });
+
+        Some(DeviceRosterSnapshot {
+            owner_public_key_hex: account.public_key_hex,
+            owner_npub: account.npub,
+            current_device_public_key_hex: current_device_pubkey_hex,
+            current_device_npub,
+            can_manage_devices: logged_in.owner_keys.is_some(),
+            authorization_state: public_authorization_state(logged_in.authorization_state),
+            devices,
+        })
+    }
+
+    fn can_use_chats(&self) -> bool {
+        matches!(
+            self.logged_in
+                .as_ref()
+                .map(|logged_in| logged_in.authorization_state),
+            Some(LocalAuthorizationState::Authorized)
+        )
+    }
+
+    fn emit_account_bundle_update(&self, owner_keys: Option<&Keys>, device_keys: &Keys) {
+        let device_nsec = device_keys
+            .secret_key()
+            .to_bech32()
+            .unwrap_or_else(|_| device_keys.secret_key().to_secret_hex());
+        let owner_nsec = owner_keys.map(|keys| {
+            keys.secret_key()
+                .to_bech32()
+                .unwrap_or_else(|_| keys.secret_key().to_secret_hex())
+        });
+        let owner_pubkey_hex = owner_keys
+            .map(|keys| keys.public_key().to_hex())
+            .or_else(|| self.logged_in.as_ref().map(|logged_in| logged_in.owner_pubkey.to_string()))
+            .unwrap_or_default();
+        let _ = self.update_tx.send(AppUpdate::PersistAccountBundle {
+            rev: self.state.rev,
+            owner_nsec,
+            owner_pubkey_hex,
+            device_nsec,
+        });
+    }
+
     fn emit_state(&mut self) {
         self.state.rev = self.state.rev.saturating_add(1);
         let snapshot = self.state.clone();
@@ -1562,7 +2161,7 @@ impl AppCore {
         };
 
         let persisted = PersistedState {
-            version: 4,
+            version: 6,
             active_chat_id: self.active_chat_id.clone(),
             next_message_id: self.next_message_id,
             session_manager: Some(logged_in.session_manager.snapshot()),
@@ -1625,65 +2224,115 @@ impl AppCore {
         });
     }
 
-    fn publish_local_identity_artifacts(
-        &self,
-        client: Client,
-        keys: Keys,
-        owner: OwnerPubkey,
-        roster: DeviceRoster,
-        invite_url: String,
-    ) {
-        let invite = match normalize_invite_from_url(&invite_url) {
-            Ok(invite) => invite,
-            Err(error) => {
-                let _ = self
-                    .core_sender
-                    .send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
-                        error.to_string(),
-                    ))));
-                return;
-            }
+    fn publish_local_identity_artifacts(&self) {
+        let Some(logged_in) = self.logged_in.as_ref() else {
+            return;
         };
+        if logged_in.authorization_state == LocalAuthorizationState::Revoked {
+            return;
+        }
+
+        let snapshot = logged_in.session_manager.snapshot();
+        let local_roster = snapshot
+            .users
+            .iter()
+            .find(|user| user.owner_pubkey == logged_in.owner_pubkey)
+            .and_then(|user| user.roster.clone());
+        let local_invite = snapshot.local_invite.clone();
+        let owner_keys = logged_in.owner_keys.clone();
+        let device_keys = logged_in.device_keys.clone();
+        let owner_pubkey = logged_in.owner_pubkey;
+        let client = logged_in.client.clone();
         let tx = self.core_sender.clone();
+
         self.runtime.spawn(async move {
             for relay in configured_relays() {
                 let _ = client.add_relay(relay).await;
             }
             client.connect_with_timeout(Duration::from_secs(5)).await;
 
-            let roster_event = match codec::roster_unsigned_event(owner, &roster)
-                .and_then(|unsigned| unsigned.sign_with_keys(&keys).map_err(Into::into))
-            {
-                Ok(event) => event,
-                Err(error) => {
-                    let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
-                        error.to_string(),
-                    ))));
-                    return;
+            if let (Some(keys), Some(roster)) = (owner_keys, local_roster) {
+                let roster_event = match codec::roster_unsigned_event(owner_pubkey, &roster)
+                    .and_then(|unsigned| unsigned.sign_with_keys(&keys).map_err(Into::into))
+                {
+                    Ok(event) => Some(event),
+                    Err(error) => {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
+                            error.to_string(),
+                        ))));
+                        None
+                    }
+                };
+                if let Some(roster_event) = roster_event {
+                    if let Err(error) =
+                        publish_event_with_retry(&client, roster_event, "roster").await
+                    {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
+                            format!("Roster publish failed: {error}"),
+                        ))));
+                    }
                 }
-            };
-
-            let invite_event = match codec::invite_unsigned_event(&invite)
-                .and_then(|unsigned| unsigned.sign_with_keys(&keys).map_err(Into::into))
-            {
-                Ok(event) => event,
-                Err(error) => {
-                    let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
-                        error.to_string(),
-                    ))));
-                    return;
-                }
-            };
-
-            if let Err(error) = publish_event_with_retry(&client, roster_event, "roster").await {
-                let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(format!(
-                    "Roster publish failed: {error}"
-                )))));
             }
-            if let Err(error) = publish_event_with_retry(&client, invite_event, "invite").await {
-                let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(format!(
-                    "Invite publish failed: {error}"
-                )))));
+
+            if let Some(invite) = local_invite {
+                let invite_event = match codec::invite_unsigned_event(&invite)
+                    .and_then(|unsigned| unsigned.sign_with_keys(&device_keys).map_err(Into::into))
+                {
+                    Ok(event) => Some(event),
+                    Err(error) => {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
+                            error.to_string(),
+                        ))));
+                        None
+                    }
+                };
+                if let Some(invite_event) = invite_event {
+                    if let Err(error) =
+                        publish_event_with_retry(&client, invite_event, "invite").await
+                    {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
+                            format!("Invite publish failed: {error}"),
+                        ))));
+                    }
+                }
+            }
+
+            let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::SyncComplete)));
+        });
+    }
+
+    fn publish_roster_update(&self, roster: DeviceRoster) {
+        let Some(logged_in) = self.logged_in.as_ref() else {
+            return;
+        };
+        let Some(owner_keys) = logged_in.owner_keys.clone() else {
+            return;
+        };
+        let owner_pubkey = logged_in.owner_pubkey;
+        let client = logged_in.client.clone();
+        let tx = self.core_sender.clone();
+
+        self.runtime.spawn(async move {
+            for relay in configured_relays() {
+                let _ = client.add_relay(relay).await;
+            }
+            client.connect_with_timeout(Duration::from_secs(5)).await;
+
+            match codec::roster_unsigned_event(owner_pubkey, &roster)
+                .and_then(|unsigned| unsigned.sign_with_keys(&owner_keys).map_err(Into::into))
+            {
+                Ok(event) => {
+                    if let Err(error) = publish_event_with_retry(&client, event, "roster").await {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
+                            format!("Roster publish failed: {error}"),
+                        ))));
+                    }
+                }
+                Err(error) => {
+                    let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
+                        error.to_string(),
+                    ))));
+                }
             }
 
             let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::SyncComplete)));
@@ -1691,24 +2340,7 @@ impl AppCore {
     }
 
     fn republish_local_identity_artifacts(&self) {
-        let Some(logged_in) = self.logged_in.as_ref() else {
-            return;
-        };
-        let Some(account) = self.state.account.as_ref() else {
-            return;
-        };
-
-        let now = unix_now();
-        let owner = local_owner_from_keys(&logged_in.keys);
-        let roster = DeviceRoster::new(now, vec![AuthorizedDevice::new(owner.as_device(), now)]);
-
-        self.publish_local_identity_artifacts(
-            logged_in.client.clone(),
-            logged_in.keys.clone(),
-            owner,
-            roster,
-            account.invite_url.clone(),
-        );
+        self.publish_local_identity_artifacts();
     }
 
     fn resubscribe_to_protocol_events(&mut self) {
@@ -1740,16 +2372,29 @@ impl AppCore {
     fn protocol_filters(&self) -> Vec<Filter> {
         let mut filters = Vec::new();
 
-        let peer_authors = self
-            .known_peer_owner_hexes()
+        let roster_authors = self
+            .known_roster_owner_hexes()
             .into_iter()
             .filter_map(|hex| PublicKey::parse(&hex).ok())
             .collect::<Vec<_>>();
-        if !peer_authors.is_empty() {
+        if !roster_authors.is_empty() {
             filters.push(
                 Filter::new()
                     .kind(Kind::from(codec::ROSTER_EVENT_KIND as u16))
-                    .authors(peer_authors),
+                    .authors(roster_authors),
+            );
+        }
+
+        let invite_authors = self
+            .known_invite_author_hexes()
+            .into_iter()
+            .filter_map(|hex| PublicKey::parse(&hex).ok())
+            .collect::<Vec<_>>();
+        if !invite_authors.is_empty() {
+            filters.push(
+                Filter::new()
+                    .kind(Kind::from(codec::INVITE_EVENT_KIND as u16))
+                    .authors(invite_authors),
             );
         }
 
@@ -1784,8 +2429,42 @@ impl AppCore {
         filters
     }
 
-    fn known_peer_owner_hexes(&self) -> HashSet<String> {
-        self.protocol_owner_hexes()
+    fn known_roster_owner_hexes(&self) -> HashSet<String> {
+        let mut owners = self.protocol_owner_hexes();
+        if let Some(logged_in) = self.logged_in.as_ref() {
+            owners.insert(logged_in.owner_pubkey.to_string());
+        }
+        owners
+    }
+
+    fn known_invite_author_hexes(&self) -> HashSet<String> {
+        let Some(logged_in) = self.logged_in.as_ref() else {
+            return HashSet::new();
+        };
+
+        let tracked_owners = self.protocol_owner_hexes();
+        let local_device_hex = local_device_from_keys(&logged_in.device_keys).to_string();
+        let mut authors = HashSet::new();
+
+        for user in logged_in.session_manager.snapshot().users {
+            let owner_hex = user.owner_pubkey.to_string();
+            let should_include = owner_hex == logged_in.owner_pubkey.to_string()
+                || tracked_owners.contains(&owner_hex);
+            if !should_include {
+                continue;
+            }
+            if let Some(roster) = user.roster {
+                for device in roster.devices() {
+                    let device_hex = device.device_pubkey.to_string();
+                    if owner_hex == logged_in.owner_pubkey.to_string() && device_hex == local_device_hex {
+                        continue;
+                    }
+                    authors.insert(device_hex);
+                }
+            }
+        }
+
+        authors
     }
 
     fn known_message_author_hexes(&self) -> HashSet<String> {
@@ -1928,6 +2607,38 @@ fn pending_reason_from_prepared(
     None
 }
 
+fn build_prepared_publish_batch(
+    prepared: &nostr_double_ratchet::PreparedSend,
+) -> anyhow::Result<Option<PreparedPublishBatch>> {
+    let invite_events = prepared
+        .invite_responses
+        .iter()
+        .map(codec::invite_response_event)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let message_events = prepared
+        .deliveries
+        .iter()
+        .map(|delivery| codec::message_event(&delivery.envelope))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    if message_events.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(PreparedPublishBatch {
+        invite_events,
+        message_events,
+    }))
+}
+
+fn pending_reason_for_batch(batch: &PreparedPublishBatch) -> PendingSendReason {
+    if batch.invite_events.is_empty() {
+        PendingSendReason::PublishRetry
+    } else {
+        PendingSendReason::PublishingFirstContact
+    }
+}
+
 pub(crate) fn parse_peer_input(input: &str) -> anyhow::Result<(String, PublicKey)> {
     let mut normalized = input.trim().to_ascii_lowercase();
     if let Some(stripped) = normalized.strip_prefix("nostr:") {
@@ -1952,16 +2663,92 @@ pub(crate) fn normalize_peer_input_for_display(input: &str) -> String {
     }
 }
 
+fn parse_owner_input(input: &str) -> anyhow::Result<OwnerPubkey> {
+    let (_, pubkey) = parse_peer_input(input)?;
+    Ok(OwnerPubkey::from_bytes(pubkey.to_bytes()))
+}
+
+fn parse_device_input(input: &str) -> anyhow::Result<DevicePubkey> {
+    let (_, pubkey) = parse_peer_input(input)?;
+    Ok(DevicePubkey::from_bytes(pubkey.to_bytes()))
+}
+
+#[cfg(test)]
 fn local_owner_from_keys(keys: &Keys) -> OwnerPubkey {
     OwnerPubkey::from_bytes(keys.public_key().to_bytes())
+}
+
+fn local_device_from_keys(keys: &Keys) -> DevicePubkey {
+    DevicePubkey::from_bytes(keys.public_key().to_bytes())
 }
 
 fn owner_npub(peer_hex: &str) -> Option<String> {
     PublicKey::parse(peer_hex).ok()?.to_bech32().ok()
 }
 
-fn normalize_invite_from_url(url: &str) -> anyhow::Result<nostr_double_ratchet::Invite> {
-    Ok(codec::parse_invite_url(url)?)
+fn owner_npub_from_owner(owner_pubkey: OwnerPubkey) -> Option<String> {
+    PublicKey::parse(owner_pubkey.to_string()).ok()?.to_bech32().ok()
+}
+
+fn device_npub(device_hex: &str) -> Option<String> {
+    PublicKey::parse(device_hex).ok()?.to_bech32().ok()
+}
+
+fn local_roster_from_session_manager(session_manager: &SessionManager) -> Option<DeviceRoster> {
+    let snapshot = session_manager.snapshot();
+    let owner = snapshot.local_owner_pubkey;
+    snapshot
+        .users
+        .into_iter()
+        .find(|user| user.owner_pubkey == owner)
+        .and_then(|user| user.roster)
+}
+
+fn public_authorization_state(
+    state: LocalAuthorizationState,
+) -> DeviceAuthorizationState {
+    match state {
+        LocalAuthorizationState::Authorized => DeviceAuthorizationState::Authorized,
+        LocalAuthorizationState::AwaitingApproval => DeviceAuthorizationState::AwaitingApproval,
+        LocalAuthorizationState::Revoked => DeviceAuthorizationState::Revoked,
+    }
+}
+
+fn derive_local_authorization_state(
+    has_owner_signing_authority: bool,
+    owner_pubkey: OwnerPubkey,
+    local_device_pubkey: DevicePubkey,
+    session_manager: &SessionManager,
+) -> LocalAuthorizationState {
+    let local_roster = session_manager
+        .snapshot()
+        .users
+        .into_iter()
+        .find(|user| user.owner_pubkey == owner_pubkey)
+        .and_then(|user| user.roster);
+    match local_roster {
+        Some(roster) => {
+            if roster.get_device(&local_device_pubkey).is_some() {
+                LocalAuthorizationState::Authorized
+            } else {
+                LocalAuthorizationState::Revoked
+            }
+        }
+        None if has_owner_signing_authority => LocalAuthorizationState::Authorized,
+        None => LocalAuthorizationState::AwaitingApproval,
+    }
+}
+
+fn chat_unavailable_message(logged_in: Option<&LoggedInState>) -> &'static str {
+    match logged_in.map(|logged_in| logged_in.authorization_state) {
+        Some(LocalAuthorizationState::AwaitingApproval) => {
+            "This device is still waiting for approval."
+        }
+        Some(LocalAuthorizationState::Revoked) => {
+            "This device has been removed from the roster. Log out to continue."
+        }
+        _ => "Create or restore an account first.",
+    }
 }
 
 fn unix_now() -> UnixSeconds {
@@ -2068,6 +2855,7 @@ async fn relay_status_summary(client: &Client) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostr_double_ratchet::AuthorizedDevice;
     use crate::FfiApp;
     use futures_util::{SinkExt, StreamExt};
     use nostr_sdk::prelude::SecretKey;
@@ -2503,7 +3291,7 @@ mod tests {
             "test".to_string(),
         );
         app.dispatch(AppAction::RestoreSession {
-            nsec: nsec_for_fill(secret_fill),
+            owner_nsec: nsec_for_fill(secret_fill),
         });
         wait_for_state(&app, "account restore", |state| {
             state.account.is_some() && !state.busy.restoring_session
@@ -2553,8 +3341,50 @@ mod tests {
         panic!("timed out waiting for persisted state: {label}");
     }
 
+    fn pending_publish_event_ids(core: &AppCore, message_id: &str) -> (Vec<String>, Vec<String>) {
+        let pending = core
+            .pending_outbound
+            .iter()
+            .find(|pending| pending.message_id == message_id)
+            .expect("pending outbound");
+        let batch = pending
+            .prepared_publish
+            .as_ref()
+            .expect("prepared publish batch");
+        (
+            batch
+                .invite_events
+                .iter()
+                .map(|event| event.id.to_string())
+                .collect(),
+            batch
+                .message_events
+                .iter()
+                .map(|event| event.id.to_string())
+                .collect(),
+        )
+    }
+
     fn keys_for_fill(secret_fill: u8) -> Keys {
         Keys::new(SecretKey::from_slice(&[secret_fill; 32]).expect("secret key"))
+    }
+
+    fn device_keys_for_fill(secret_fill: u8) -> Keys {
+        Keys::new(SecretKey::from_slice(&[secret_fill.wrapping_add(100); 32]).expect("secret key"))
+    }
+
+    fn start_primary_test_session(
+        core: &mut AppCore,
+        owner_fill: u8,
+        allow_restore: bool,
+        allow_protocol_restore: bool,
+    ) -> anyhow::Result<()> {
+        core.start_primary_session(
+            keys_for_fill(owner_fill),
+            device_keys_for_fill(owner_fill),
+            allow_restore,
+            allow_protocol_restore,
+        )
     }
 
     fn established_session_manager_pair(
@@ -2562,23 +3392,27 @@ mod tests {
         bob_fill: u8,
         base_secs: u64,
     ) -> (SessionManager, SessionManager, String) {
-        let alice_keys = keys_for_fill(alice_fill);
-        let bob_keys = keys_for_fill(bob_fill);
-        let alice_owner = local_owner_from_keys(&alice_keys);
-        let bob_owner = local_owner_from_keys(&bob_keys);
+        let alice_owner_keys = keys_for_fill(alice_fill);
+        let bob_owner_keys = keys_for_fill(bob_fill);
+        let alice_device_keys = device_keys_for_fill(alice_fill);
+        let bob_device_keys = device_keys_for_fill(bob_fill);
+        let alice_owner = local_owner_from_keys(&alice_owner_keys);
+        let bob_owner = local_owner_from_keys(&bob_owner_keys);
+        let alice_device = local_device_from_keys(&alice_device_keys);
+        let bob_device = local_device_from_keys(&bob_device_keys);
         let now = UnixSeconds(base_secs);
 
         let mut alice_manager =
-            SessionManager::new(alice_owner, alice_keys.secret_key().to_secret_bytes());
+            SessionManager::new(alice_owner, alice_device_keys.secret_key().to_secret_bytes());
         let mut bob_manager =
-            SessionManager::new(bob_owner, bob_keys.secret_key().to_secret_bytes());
+            SessionManager::new(bob_owner, bob_device_keys.secret_key().to_secret_bytes());
 
         let alice_roster = DeviceRoster::new(
             now,
-            vec![AuthorizedDevice::new(alice_owner.as_device(), now)],
+            vec![AuthorizedDevice::new(alice_device, now)],
         );
         let bob_roster =
-            DeviceRoster::new(now, vec![AuthorizedDevice::new(bob_owner.as_device(), now)]);
+            DeviceRoster::new(now, vec![AuthorizedDevice::new(bob_device, now)]);
         alice_manager.apply_local_roster(alice_roster.clone());
         bob_manager.apply_local_roster(bob_roster.clone());
         alice_manager.observe_peer_roster(bob_owner, bob_roster.clone());
@@ -2631,17 +3465,24 @@ mod tests {
         secret_fill: u8,
         session_manager: SessionManager,
     ) -> AppCore {
-        let keys = keys_for_fill(secret_fill);
+        let owner_keys = keys_for_fill(secret_fill);
+        let device_keys = device_keys_for_fill(secret_fill);
         let mut core = test_core(data_dir);
         core.state.account = Some(AccountSnapshot {
-            public_key_hex: keys.public_key().to_hex(),
-            npub: keys.public_key().to_bech32().expect("npub"),
-            invite_url: "https://chat.iris.to".to_string(),
+            public_key_hex: owner_keys.public_key().to_hex(),
+            npub: owner_keys.public_key().to_bech32().expect("npub"),
+            device_public_key_hex: device_keys.public_key().to_hex(),
+            device_npub: device_keys.public_key().to_bech32().expect("device npub"),
+            has_owner_signing_authority: true,
+            authorization_state: DeviceAuthorizationState::Authorized,
         });
         core.logged_in = Some(LoggedInState {
-            keys: keys.clone(),
-            client: Client::new(keys),
+            owner_pubkey: local_owner_from_keys(&owner_keys),
+            owner_keys: Some(owner_keys),
+            device_keys: device_keys.clone(),
+            client: Client::new(device_keys),
             session_manager,
+            authorization_state: LocalAuthorizationState::Authorized,
         });
         core.rebuild_state();
         core
@@ -2664,6 +3505,28 @@ mod tests {
                 .expect("publish event");
             let _ = client.shutdown().await;
         });
+    }
+
+    fn fetch_local_relay_events(filters: Vec<Filter>) -> Vec<Event> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("fetch runtime");
+        runtime.block_on(async move {
+            let client = Client::new(keys_for_fill(200));
+            client
+                .add_relay("ws://127.0.0.1:4848")
+                .await
+                .expect("add relay");
+            client.connect_with_timeout(Duration::from_secs(5)).await;
+            let events = client
+                .fetch_events(filters, Some(Duration::from_secs(5)))
+                .await
+                .expect("fetch events");
+            let collected = events.into_iter().collect::<Vec<_>>();
+            let _ = client.shutdown().await;
+            collected
+        })
     }
 
     #[test]
@@ -2729,12 +3592,9 @@ mod tests {
         let chat_id = parse_peer_input(&npub_for_fill(22))
             .expect("peer chat id")
             .0;
-        let keys = Keys::new(SecretKey::from_slice(&[21; 32]).expect("secret key"));
 
         let mut seeded = test_core(data_dir.path());
-        seeded
-            .start_session(keys.clone(), false)
-            .expect("start session");
+        start_primary_test_session(&mut seeded, 21, false, false).expect("start session");
         seeded.remember_event("event-1".to_string());
         seeded.threads.insert(
             chat_id.clone(),
@@ -2761,9 +3621,7 @@ mod tests {
         seeded.persist_best_effort();
 
         let mut restored = test_core(data_dir.path());
-        restored
-            .start_session(keys.clone(), true)
-            .expect("restore session");
+        start_primary_test_session(&mut restored, 21, true, true).expect("restore session");
         assert_eq!(restored.active_chat_id.as_deref(), Some(chat_id.as_str()));
         assert_eq!(restored.state.chat_list.len(), 1);
         assert_eq!(
@@ -2779,7 +3637,7 @@ mod tests {
         assert!(restored.has_seen_event("event-1"));
 
         let mut fresh = test_core(data_dir.path());
-        fresh.start_session(keys, false).expect("fresh session");
+        start_primary_test_session(&mut fresh, 21, false, false).expect("fresh session");
         assert!(fresh.state.chat_list.is_empty());
         assert!(fresh.active_chat_id.is_none());
         assert!(!fresh.has_seen_event("event-1"));
@@ -2792,7 +3650,6 @@ mod tests {
             .unwrap_or_else(|poison| poison.into_inner());
         let _env = RelayEnvGuard::local_only();
         let data_dir = TempDir::new().expect("temp dir");
-        let keys = Keys::new(SecretKey::from_slice(&[31; 32]).expect("secret key"));
         let peer_npub = npub_for_fill(32);
         let peer_hex = parse_peer_input(&peer_npub).expect("peer hex").0;
 
@@ -2822,8 +3679,7 @@ mod tests {
         .expect("write legacy persistence");
 
         let mut core = test_core(data_dir.path());
-        core.start_session(keys, true)
-            .expect("restore legacy state");
+        start_primary_test_session(&mut core, 31, true, false).expect("restore legacy state");
 
         assert_eq!(core.active_chat_id.as_deref(), Some(peer_hex.as_str()));
         assert_eq!(core.state.chat_list[0].chat_id, peer_hex);
@@ -2845,15 +3701,10 @@ mod tests {
             .unwrap_or_else(|poison| poison.into_inner());
         let data_dir = TempDir::new().expect("temp dir");
         let mut core = test_core(data_dir.path());
+        start_primary_test_session(&mut core, 40, false, false).expect("start session");
         let chat_id = parse_peer_input(&npub_for_fill(41))
             .expect("peer chat id")
             .0;
-
-        core.state.account = Some(AccountSnapshot {
-            public_key_hex: parse_peer_input(&npub_for_fill(40)).expect("account hex").0,
-            npub: npub_for_fill(40),
-            invite_url: "https://chat.iris.to".to_string(),
-        });
         core.threads.insert(
             chat_id.clone(),
             ThreadRecord {
@@ -2896,8 +3747,7 @@ mod tests {
         let _env = RelayEnvGuard::local_only();
         let data_dir = TempDir::new().expect("temp dir");
         let mut core = test_core(data_dir.path());
-        core.start_session(keys_for_fill(69), false)
-            .expect("start session");
+        start_primary_test_session(&mut core, 69, false, false).expect("start session");
 
         let client = core.logged_in.as_ref().expect("logged in").client.clone();
         let protocol_id = SubscriptionId::new(PROTOCOL_SUBSCRIPTION_ID);
@@ -2957,25 +3807,112 @@ mod tests {
     }
 
     #[test]
+    fn retry_pending_outbound_reuses_same_prepared_events_without_advancing_session() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::custom("ws://127.0.0.1:59999");
+        let data_dir = TempDir::new().expect("temp dir");
+        let (alice_manager, _bob_manager, chat_id) =
+            established_session_manager_pair(77, 78, 1_900_000_100);
+        let mut core = logged_in_core_with_manager(data_dir.path(), 77, alice_manager);
+
+        core.send_message(&chat_id, "retry me");
+
+        let message_id = core.pending_outbound[0].message_id.clone();
+        let event_ids_before = pending_publish_event_ids(&core, &message_id);
+
+        core.handle_internal(InternalEvent::StagedSendFinished {
+            message_id: message_id.clone(),
+            chat_id: chat_id.clone(),
+            success: false,
+        });
+
+        let snapshot_before_retry = core
+            .logged_in
+            .as_ref()
+            .expect("logged in")
+            .session_manager
+            .snapshot();
+        if let Some(pending) = core
+            .pending_outbound
+            .iter_mut()
+            .find(|pending| pending.message_id == message_id)
+        {
+            pending.next_retry_at_secs = 0;
+        }
+
+        core.retry_pending_outbound(UnixSeconds(1_900_000_200));
+
+        let snapshot_after_retry = core
+            .logged_in
+            .as_ref()
+            .expect("logged in")
+            .session_manager
+            .snapshot();
+        let event_ids_after = pending_publish_event_ids(&core, &message_id);
+
+        assert_eq!(event_ids_after, event_ids_before);
+        assert_eq!(snapshot_after_retry, snapshot_before_retry);
+        assert!(
+            core.pending_outbound
+                .iter()
+                .find(|pending| pending.message_id == message_id)
+                .expect("pending outbound after retry")
+                .in_flight
+        );
+    }
+
+    #[test]
+    fn prepared_pending_outbound_persists_across_restore() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::custom("ws://127.0.0.1:59999");
+        let data_dir = TempDir::new().expect("temp dir");
+        let (alice_manager, _bob_manager, chat_id) =
+            established_session_manager_pair(79, 80, 1_900_000_300);
+        let mut core = logged_in_core_with_manager(data_dir.path(), 79, alice_manager);
+
+        core.send_message(&chat_id, "persist me");
+        let message_id = core.pending_outbound[0].message_id.clone();
+        let event_ids_before = pending_publish_event_ids(&core, &message_id);
+        core.persist_best_effort();
+
+        let mut restored = test_core(data_dir.path());
+        start_primary_test_session(&mut restored, 79, true, true)
+            .expect("restore session with prepared pending outbound");
+
+        let restored_message_id = restored.pending_outbound[0].message_id.clone();
+        let event_ids_after = pending_publish_event_ids(&restored, &restored_message_id);
+
+        assert_eq!(restored.pending_outbound.len(), 1);
+        assert_eq!(event_ids_after, event_ids_before);
+    }
+
+    #[test]
     fn pending_inbound_persists_across_restore() {
         let _guard = relay_test_lock()
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let data_dir = TempDir::new().expect("temp dir");
-        let keys = keys_for_fill(75);
-        let owner = local_owner_from_keys(&keys);
+        let owner_keys = keys_for_fill(75);
+        let device_keys = device_keys_for_fill(75);
+        let owner = local_owner_from_keys(&owner_keys);
         let now = UnixSeconds(500);
+        let local_device = local_device_from_keys(&device_keys);
 
-        let mut session_manager = SessionManager::new(owner, keys.secret_key().to_secret_bytes());
+        let mut session_manager =
+            SessionManager::new(owner, device_keys.secret_key().to_secret_bytes());
         session_manager.apply_local_roster(DeviceRoster::new(
             now,
-            vec![AuthorizedDevice::new(owner.as_device(), now)],
+            vec![AuthorizedDevice::new(local_device, now)],
         ));
 
         let mut core = logged_in_core_with_manager(data_dir.path(), 75, session_manager);
         core.pending_inbound.push(PendingInbound {
             envelope: MessageEnvelope {
-                sender: local_owner_from_keys(&keys_for_fill(76)).as_device(),
+                sender: local_device_from_keys(&device_keys_for_fill(76)),
                 signer_secret_key: [9; 32],
                 created_at: UnixSeconds(501),
                 encrypted_header: "header".to_string(),
@@ -2992,8 +3929,7 @@ mod tests {
         );
 
         let mut restored = test_core(data_dir.path());
-        restored
-            .start_session(keys, true)
+        start_primary_test_session(&mut restored, 75, true, true)
             .expect("restore session with pending inbound");
 
         assert_eq!(restored.pending_inbound.len(), 1);
@@ -3001,6 +3937,110 @@ mod tests {
             restored.pending_inbound[0].envelope.encrypted_header,
             "header"
         );
+    }
+
+    #[test]
+    fn recent_handshake_peer_tracks_claimed_owner_after_roster_verification() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let data_dir = TempDir::new().expect("temp dir");
+
+        let alice_device_keys = device_keys_for_fill(120);
+        let alice_claimed_owner_keys = keys_for_fill(121);
+        let bob_owner_keys = keys_for_fill(122);
+        let bob_device_keys = device_keys_for_fill(122);
+
+        let alice_device_owner = local_owner_from_keys(&alice_device_keys);
+        let alice_claimed_owner = local_owner_from_keys(&alice_claimed_owner_keys);
+        let bob_owner = local_owner_from_keys(&bob_owner_keys);
+        let now = UnixSeconds(1_900_000_400);
+
+        let mut alice_manager = SessionManager::new(
+            alice_claimed_owner,
+            alice_device_keys.secret_key().to_secret_bytes(),
+        );
+        let mut bob_manager =
+            SessionManager::new(bob_owner, bob_device_keys.secret_key().to_secret_bytes());
+
+        let bob_roster =
+            DeviceRoster::new(
+                now,
+                vec![AuthorizedDevice::new(local_device_from_keys(&bob_device_keys), now)],
+            );
+        bob_manager.apply_local_roster(bob_roster.clone());
+        alice_manager.observe_peer_roster(bob_owner, bob_roster);
+
+        let bob_invite = {
+            let mut rng = OsRng;
+            let mut ctx = ProtocolContext::new(UnixSeconds(now.get() + 1), &mut rng);
+            bob_manager
+                .ensure_local_invite(&mut ctx)
+                .expect("ensure bob invite")
+                .clone()
+        };
+        alice_manager
+            .observe_device_invite(bob_owner, bob_invite)
+            .expect("observe bob invite");
+
+        let prepared = {
+            let mut rng = OsRng;
+            let mut ctx = ProtocolContext::new(UnixSeconds(now.get() + 2), &mut rng);
+            alice_manager
+                .prepare_send(&mut ctx, bob_owner, b"claim migration".to_vec())
+                .expect("prepare first-contact send")
+        };
+        assert_eq!(prepared.invite_responses.len(), 1);
+
+        let mut core = logged_in_core_with_manager(data_dir.path(), 122, bob_manager);
+        let processed = {
+            let logged_in = core.logged_in.as_mut().expect("logged in");
+            let mut rng = OsRng;
+            let mut ctx = ProtocolContext::new(UnixSeconds(now.get() + 3), &mut rng);
+            logged_in
+                .session_manager
+                .observe_invite_response(&mut ctx, &prepared.invite_responses[0])
+                .expect("observe invite response")
+                .expect("processed invite response")
+        };
+        assert_eq!(processed.owner_pubkey, alice_device_owner);
+
+        core.remember_recent_handshake_peer(
+            processed.owner_pubkey.to_string(),
+            processed.device_pubkey.to_string(),
+            now.get(),
+        );
+        assert!(core
+            .protocol_owner_hexes()
+            .contains(&alice_device_owner.to_string()));
+        assert!(core
+            .protocol_owner_hexes()
+            .contains(&alice_claimed_owner.to_string()));
+
+        {
+            let logged_in = core.logged_in.as_mut().expect("logged in");
+            let alice_roster = DeviceRoster::new(
+                UnixSeconds(now.get() + 4),
+                vec![AuthorizedDevice::new(
+                    local_device_from_keys(&alice_device_keys),
+                    UnixSeconds(now.get() + 4),
+                )],
+            );
+            logged_in
+                .session_manager
+                .observe_peer_roster(alice_claimed_owner, alice_roster);
+        }
+
+        let migrated_owner_hexes = core.reconcile_recent_handshake_peers();
+        assert!(migrated_owner_hexes
+            .iter()
+            .any(|(_, owner_hex)| owner_hex == &alice_claimed_owner.to_string()));
+        assert!(core
+            .protocol_owner_hexes()
+            .contains(&alice_claimed_owner.to_string()));
+        assert!(!core
+            .protocol_owner_hexes()
+            .contains(&alice_device_owner.to_string()));
     }
 
     #[test]
@@ -3114,16 +4154,20 @@ mod tests {
         let _env = RelayEnvGuard::local_only();
         let _relay = TestRelay::start();
 
-        let bob_keys = keys_for_fill(92);
-        let bob_owner = local_owner_from_keys(&bob_keys);
+        let bob_owner_keys = keys_for_fill(92);
+        let bob_device_keys = device_keys_for_fill(92);
+        let bob_owner = local_owner_from_keys(&bob_owner_keys);
         let now = unix_now();
         let bob_roster =
-            DeviceRoster::new(now, vec![AuthorizedDevice::new(bob_owner.as_device(), now)]);
+            DeviceRoster::new(
+                now,
+                vec![AuthorizedDevice::new(local_device_from_keys(&bob_device_keys), now)],
+            );
         let roster_event = codec::roster_unsigned_event(bob_owner, &bob_roster)
             .expect("bob roster event")
-            .sign_with_keys(&bob_keys)
+            .sign_with_keys(&bob_owner_keys)
             .expect("sign bob roster");
-        publish_local_relay_event(&bob_keys, roster_event);
+        publish_local_relay_event(&bob_owner_keys, roster_event);
 
         let (_alice_dir, alice) = app(91);
         alice.dispatch(AppAction::CreateChat {
@@ -3151,7 +4195,7 @@ mod tests {
         });
 
         let mut session_manager =
-            SessionManager::new(bob_owner, bob_keys.secret_key().to_secret_bytes());
+            SessionManager::new(bob_owner, bob_device_keys.secret_key().to_secret_bytes());
         session_manager.apply_local_roster(bob_roster);
         let mut rng = OsRng;
         let mut ctx = ProtocolContext::new(unix_now(), &mut rng);
@@ -3161,9 +4205,9 @@ mod tests {
             .clone();
         let invite_event = codec::invite_unsigned_event(&invite)
             .expect("bob invite event")
-            .sign_with_keys(&bob_keys)
+            .sign_with_keys(&bob_device_keys)
             .expect("sign bob invite");
-        publish_local_relay_event(&bob_keys, invite_event);
+        publish_local_relay_event(&bob_device_keys, invite_event);
 
         let alice_after_invite =
             wait_for_state(&alice, "alice publishes after invite appears", |state| {
@@ -3256,6 +4300,18 @@ mod tests {
             chat_id: bob_chat_id.clone(),
             text: "hi alice".to_string(),
         });
+        let _bob_after_reply = wait_for_state(&bob, "bob sends reply", |state| {
+            state
+                .current_chat
+                .as_ref()
+                .and_then(|chat| chat.messages.last())
+                .map(|message| {
+                    message.is_outgoing &&
+                        message.body == "hi alice" &&
+                        matches!(message.delivery, DeliveryState::Sent)
+                })
+                .unwrap_or(false)
+        });
         let alice_with_reply = wait_for_state(&alice, "alice receives reply", |state| {
             state
                 .current_chat
@@ -3301,6 +4357,251 @@ mod tests {
             charlie_state.chat_list[0].last_message_preview.as_deref(),
             Some("reverse first")
         );
+    }
+
+    #[test]
+    fn primary_bootstrap_uses_separate_device_identity_and_one_device_roster() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::local_only();
+        let data_dir = TempDir::new().expect("temp dir");
+        let mut core = test_core(data_dir.path());
+
+        start_primary_test_session(&mut core, 140, false, false).expect("start primary session");
+
+        let account = core.state.account.as_ref().expect("account");
+        assert_ne!(account.public_key_hex, account.device_public_key_hex);
+        assert!(account.has_owner_signing_authority);
+        assert!(matches!(
+            account.authorization_state,
+            DeviceAuthorizationState::Authorized
+        ));
+
+        let snapshot = core
+            .logged_in
+            .as_ref()
+            .expect("logged in")
+            .session_manager
+            .snapshot();
+        assert_eq!(snapshot.local_owner_pubkey.to_string(), account.public_key_hex);
+        assert_eq!(snapshot.local_device_pubkey.to_string(), account.device_public_key_hex);
+
+        let local_roster = snapshot
+            .users
+            .into_iter()
+            .find(|user| user.owner_pubkey == snapshot.local_owner_pubkey)
+            .and_then(|user| user.roster)
+            .expect("local roster");
+        assert_eq!(local_roster.devices().len(), 1);
+        assert_eq!(
+            local_roster.devices()[0].device_pubkey.to_string(),
+            account.device_public_key_hex
+        );
+    }
+
+    #[test]
+    fn linked_device_starts_awaiting_approval_with_device_invite() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let data_dir = TempDir::new().expect("temp dir");
+        let mut core = test_core(data_dir.path());
+
+        core.start_linked_device(&npub_for_fill(141));
+
+        let account = core.state.account.as_ref().expect("account");
+        assert!(!account.has_owner_signing_authority);
+        assert!(matches!(
+            account.authorization_state,
+            DeviceAuthorizationState::AwaitingApproval
+        ));
+        assert!(matches!(
+            core.state.router.default_screen,
+            Screen::AwaitingDeviceApproval
+        ));
+        assert!(core
+            .logged_in
+            .as_ref()
+            .expect("logged in")
+            .session_manager
+            .snapshot()
+            .local_invite
+            .is_some());
+        let roster = core.state.device_roster.as_ref().expect("device roster");
+        assert_eq!(roster.devices.len(), 1);
+        assert!(!roster.devices[0].is_authorized);
+        assert!(roster.devices[0].is_current_device);
+    }
+
+    #[test]
+    fn linked_device_becomes_authorized_when_owner_roster_arrives() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let data_dir = TempDir::new().expect("temp dir");
+        let owner_keys = keys_for_fill(142);
+        let owner = local_owner_from_keys(&owner_keys);
+        let mut core = test_core(data_dir.path());
+
+        core.start_linked_device(&owner_keys.public_key().to_bech32().expect("owner npub"));
+        let device_pubkey = parse_device_input(
+            &core.state
+                .account
+                .as_ref()
+                .expect("account")
+                .device_public_key_hex,
+        )
+        .expect("device pubkey");
+        let now = unix_now();
+        let roster = DeviceRoster::new(now, vec![AuthorizedDevice::new(device_pubkey, now)]);
+        let roster_event = codec::roster_unsigned_event(owner, &roster)
+            .expect("roster event")
+            .sign_with_keys(&owner_keys)
+            .expect("sign roster");
+
+        core.handle_relay_event(roster_event);
+
+        assert!(matches!(
+            core.state
+                .account
+                .as_ref()
+                .expect("account")
+                .authorization_state,
+            DeviceAuthorizationState::Authorized
+        ));
+        assert!(matches!(core.state.router.default_screen, Screen::ChatList));
+        assert!(core
+            .state
+            .device_roster
+            .as_ref()
+            .expect("roster")
+            .devices
+            .iter()
+            .any(|device| device.device_pubkey_hex == device_pubkey.to_string() && device.is_authorized));
+    }
+
+    #[test]
+    fn linked_device_transitions_to_revoked_when_owner_roster_excludes_it() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let data_dir = TempDir::new().expect("temp dir");
+        let owner_keys = keys_for_fill(143);
+        let owner = local_owner_from_keys(&owner_keys);
+        let mut core = test_core(data_dir.path());
+
+        core.start_linked_device(&owner_keys.public_key().to_bech32().expect("owner npub"));
+        let device_pubkey = parse_device_input(
+            &core.state
+                .account
+                .as_ref()
+                .expect("account")
+                .device_public_key_hex,
+        )
+        .expect("device pubkey");
+
+        let authorized_now = unix_now();
+        let authorized_roster =
+            DeviceRoster::new(authorized_now, vec![AuthorizedDevice::new(device_pubkey, authorized_now)]);
+        let authorized_event = codec::roster_unsigned_event(owner, &authorized_roster)
+            .expect("authorized roster event")
+            .sign_with_keys(&owner_keys)
+            .expect("sign authorized roster");
+        core.handle_relay_event(authorized_event);
+
+        let revoked_roster = DeviceRoster::new(UnixSeconds(authorized_now.get() + 1), Vec::new());
+        let revoked_event = codec::roster_unsigned_event(owner, &revoked_roster)
+            .expect("revoked roster event")
+            .sign_with_keys(&owner_keys)
+            .expect("sign revoked roster");
+        core.handle_relay_event(revoked_event);
+
+        assert!(matches!(
+            core.state
+                .account
+                .as_ref()
+                .expect("account")
+                .authorization_state,
+            DeviceAuthorizationState::Revoked
+        ));
+        assert!(matches!(
+            core.state.router.default_screen,
+            Screen::DeviceRevoked
+        ));
+    }
+
+    #[test]
+    fn add_and_remove_authorized_device_updates_local_roster_snapshot() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let data_dir = TempDir::new().expect("temp dir");
+        let mut core = test_core(data_dir.path());
+        start_primary_test_session(&mut core, 144, false, false).expect("start primary session");
+
+        let added_device_npub = device_keys_for_fill(145)
+            .public_key()
+            .to_bech32()
+            .expect("device npub");
+        core.add_authorized_device(&added_device_npub);
+        assert!(core
+            .state
+            .device_roster
+            .as_ref()
+            .expect("device roster")
+            .devices
+            .iter()
+            .any(|device| device.device_npub == added_device_npub && device.is_authorized));
+
+        let added_device_hex = normalize_peer_input_for_display(&added_device_npub);
+        core.remove_authorized_device(&added_device_hex);
+        assert!(!core
+            .state
+            .device_roster
+            .as_ref()
+            .expect("device roster")
+            .devices
+            .iter()
+            .any(|device| device.device_pubkey_hex == added_device_hex));
+    }
+
+    #[test]
+    fn primary_identity_publishes_owner_signed_roster_and_device_signed_invite() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::local_only();
+        let _relay = TestRelay::start();
+        let data_dir = TempDir::new().expect("temp dir");
+        let mut core = test_core(data_dir.path());
+        start_primary_test_session(&mut core, 146, false, false).expect("start primary session");
+
+        let account = core.state.account.as_ref().expect("account");
+        let owner_key = PublicKey::parse(&account.public_key_hex).expect("owner key");
+        let device_key = PublicKey::parse(&account.device_public_key_hex).expect("device key");
+
+        let deadline = Instant::now() + StdDuration::from_secs(5);
+        let mut events = Vec::new();
+        while Instant::now() < deadline {
+            events = fetch_local_relay_events(vec![Filter::new().kind(Kind::from(codec::ROSTER_EVENT_KIND as u16))]);
+            let has_roster = events.iter().any(|event| {
+                codec::parse_roster_event(event).is_ok() && event.pubkey == owner_key
+            });
+            let has_invite = events.iter().any(|event| {
+                codec::parse_invite_event(event).is_ok() && event.pubkey == device_key
+            });
+            if has_roster && has_invite {
+                break;
+            }
+            thread::sleep(StdDuration::from_millis(100));
+        }
+        assert!(events.iter().any(|event| {
+            codec::parse_roster_event(event).is_ok() && event.pubkey == owner_key
+        }));
+        assert!(events.iter().any(|event| {
+            codec::parse_invite_event(event).is_ok() && event.pubkey == device_key
+        }));
     }
 
     #[test]

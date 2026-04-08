@@ -11,6 +11,7 @@ import social.innode.ndr.demo.core.AppManager
 
 data class WelcomeUiState(
     val importValue: String = "",
+    val linkOwnerValue: String = "",
     val isWorking: Boolean = false,
     val errorMessage: String? = null,
     val didLogin: Boolean = false,
@@ -27,7 +28,10 @@ class WelcomeViewModel(
             appManager.state.collect { state ->
                 mutableUiState.update { current ->
                     current.copy(
-                        isWorking = state.busy.creatingAccount || state.busy.restoringSession,
+                        isWorking =
+                            state.busy.creatingAccount ||
+                                state.busy.restoringSession ||
+                                state.busy.linkingDevice,
                         errorMessage = state.toast,
                         didLogin = state.account != null,
                     )
@@ -44,6 +48,14 @@ class WelcomeViewModel(
             )
     }
 
+    fun onLinkOwnerValueChanged(value: String) {
+        mutableUiState.value =
+            mutableUiState.value.copy(
+                linkOwnerValue = value,
+                errorMessage = null,
+            )
+    }
+
     fun generate() {
         mutableUiState.update { it.copy(errorMessage = null) }
         appManager.createAccount()
@@ -52,5 +64,10 @@ class WelcomeViewModel(
     fun import() {
         mutableUiState.update { it.copy(errorMessage = null) }
         appManager.restoreSession(mutableUiState.value.importValue)
+    }
+
+    fun linkExistingAccount() {
+        mutableUiState.update { it.copy(errorMessage = null) }
+        appManager.startLinkedDevice(mutableUiState.value.linkOwnerValue)
     }
 }

@@ -30,6 +30,22 @@ class PikaLikeUiTest {
 
         composeRule.waitForTag("myProfileSheet")
         composeRule.onNodeWithTag("myProfileQrCode", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithTag("myProfileManageDevicesButton", useUnmergedTree = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun profile_sheet_opens_manage_devices() {
+        composeRule.ensureChatList()
+        composeRule.onNodeWithTag("chatListProfileButton", useUnmergedTree = true).performClick()
+
+        composeRule.waitForTag("myProfileManageDevicesButton")
+        composeRule.onNodeWithTag("myProfileManageDevicesButton", useUnmergedTree = true)
+            .performClick()
+
+        composeRule.waitForTag("deviceRosterOwnerNpub")
+        composeRule.onNodeWithTag("deviceRosterCurrentDeviceNpub", useUnmergedTree = true)
+            .assertIsDisplayed()
+        composeRule.onNodeWithTag("deviceRosterAddInput", useUnmergedTree = true).assertIsDisplayed()
     }
 
     @Test
@@ -75,6 +91,23 @@ class PikaLikeUiTest {
             .onNodeWithTag("newChatPeerInput", useUnmergedTree = true)
             .assertTextContains(VALID_PEER_NPUB)
         composeRule.onNodeWithTag("newChatStartButton", useUnmergedTree = true).assertIsEnabled()
+    }
+
+    @Test
+    fun scan_owner_qr_enters_awaiting_approval_screen() {
+        composeRule.resetToWelcome()
+        composeRule.waitForTag("linkOwnerInput")
+        composeRule.runOnUiThread {
+            QrScannerTestOverrides.nextScannedValue = VALID_PEER_NPUB
+        }
+        composeRule.onNodeWithTag("linkOwnerScanQrButton", useUnmergedTree = true).performClick()
+        composeRule.onNodeWithTag("linkExistingAccountButton", useUnmergedTree = true).performClick()
+
+        composeRule.waitForTag("awaitingApprovalScreen")
+        composeRule.onNodeWithTag("awaitingApprovalDeviceQrCode", useUnmergedTree = true)
+            .assertIsDisplayed()
+        composeRule.onNodeWithTag("awaitingApprovalDeviceNpub", useUnmergedTree = true)
+            .assertIsDisplayed()
     }
 
     private fun androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, *>.waitForTag(
@@ -126,6 +159,14 @@ class PikaLikeUiTest {
         }
 
         waitForTag("chatListNewChatButton")
+    }
+
+    private fun androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, *>.resetToWelcome() {
+        runOnUiThread {
+            val activity = activity
+            (activity.application as NdrDemoApp).container.appManager.logout()
+        }
+        waitForTag("generateKeyButton", timeoutMillis = 30_000)
     }
 
     private fun androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, *>.hasTag(tag: String): Boolean =

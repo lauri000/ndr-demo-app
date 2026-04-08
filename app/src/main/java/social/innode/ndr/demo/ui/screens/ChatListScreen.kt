@@ -180,6 +180,12 @@ fun ChatListScreen(
         MyProfileSheet(
             npub = account.npub,
             publicKeyHex = account.publicKeyHex,
+            deviceNpub = account.deviceNpub,
+            canManageDevices = account.hasOwnerSigningAuthority,
+            onManageDevices = {
+                showProfile = false
+                appManager.pushScreen(Screen.DeviceRoster)
+            },
             onLogout = {
                 showProfile = false
                 appManager.logout()

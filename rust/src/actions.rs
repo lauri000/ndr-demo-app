@@ -3,11 +3,20 @@ use crate::state::Screen;
 #[derive(uniffi::Enum, Clone, Debug)]
 pub enum AppAction {
     CreateAccount,
-    RestoreSession { nsec: String },
+    RestoreSession { owner_nsec: String },
+    RestoreAccountBundle {
+        owner_nsec: Option<String>,
+        owner_pubkey_hex: String,
+        device_nsec: String,
+    },
+    StartLinkedDevice { owner_input: String },
     Logout,
     CreateChat { peer_input: String },
     OpenChat { chat_id: String },
     SendMessage { chat_id: String, text: String },
+    AddAuthorizedDevice { device_input: String },
+    RemoveAuthorizedDevice { device_pubkey_hex: String },
+    AcknowledgeRevokedDevice,
     PushScreen { screen: Screen },
     UpdateScreenStack { stack: Vec<Screen> },
 }

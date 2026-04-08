@@ -4,6 +4,9 @@ pub enum Screen {
     ChatList,
     NewChat,
     Chat { chat_id: String },
+    DeviceRoster,
+    AwaitingDeviceApproval,
+    DeviceRevoked,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
@@ -16,16 +19,49 @@ pub struct Router {
 pub struct BusyState {
     pub creating_account: bool,
     pub restoring_session: bool,
+    pub linking_device: bool,
     pub creating_chat: bool,
     pub sending_message: bool,
+    pub updating_roster: bool,
     pub syncing_network: bool,
+}
+
+#[derive(uniffi::Enum, Clone, Debug)]
+pub enum DeviceAuthorizationState {
+    Authorized,
+    AwaitingApproval,
+    Revoked,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct AccountSnapshot {
     pub public_key_hex: String,
     pub npub: String,
-    pub invite_url: String,
+    pub device_public_key_hex: String,
+    pub device_npub: String,
+    pub has_owner_signing_authority: bool,
+    pub authorization_state: DeviceAuthorizationState,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct DeviceEntrySnapshot {
+    pub device_pubkey_hex: String,
+    pub device_npub: String,
+    pub is_current_device: bool,
+    pub is_authorized: bool,
+    pub is_stale: bool,
+    pub last_activity_secs: Option<u64>,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct DeviceRosterSnapshot {
+    pub owner_public_key_hex: String,
+    pub owner_npub: String,
+    pub current_device_public_key_hex: String,
+    pub current_device_npub: String,
+    pub can_manage_devices: bool,
+    pub authorization_state: DeviceAuthorizationState,
+    pub devices: Vec<DeviceEntrySnapshot>,
 }
 
 #[derive(uniffi::Enum, Clone, Debug)]
@@ -69,6 +105,7 @@ pub struct AppState {
     pub rev: u64,
     pub router: Router,
     pub account: Option<AccountSnapshot>,
+    pub device_roster: Option<DeviceRosterSnapshot>,
     pub busy: BusyState,
     pub chat_list: Vec<ChatThreadSnapshot>,
     pub current_chat: Option<CurrentChatSnapshot>,
@@ -84,6 +121,7 @@ impl AppState {
                 screen_stack: Vec::new(),
             },
             account: None,
+            device_roster: None,
             busy: BusyState::default(),
             chat_list: Vec::new(),
             current_chat: None,

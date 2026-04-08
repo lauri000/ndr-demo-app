@@ -2,6 +2,7 @@ package social.innode.ndr.demo.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,18 +17,31 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import social.innode.ndr.demo.rust.isValidPeerInput
+import social.innode.ndr.demo.rust.normalizePeerInput
 
 @Composable
 fun WelcomeScreen(
     uiState: WelcomeUiState,
     onImportValueChanged: (String) -> Unit,
+    onLinkOwnerValueChanged: (String) -> Unit,
     onGenerateClick: () -> Unit,
     onImportClick: () -> Unit,
+    onLinkExistingAccountClick: () -> Unit,
     onLoggedIn: () -> Unit,
 ) {
+    var showScanner by remember { mutableStateOf(false) }
+    val normalizedLinkValue = normalizePeerInput(uiState.linkOwnerValue)
+    val isValidLinkValue =
+        normalizedLinkValue.isNotBlank() && isValidPeerInput(normalizedLinkValue)
+
     LaunchedEffect(uiState.didLogin) {
         if (uiState.didLogin) {
             onLoggedIn()
@@ -47,7 +61,7 @@ fun WelcomeScreen(
             style = MaterialTheme.typography.headlineMedium,
         )
         Text(
-            text = "Generate a fresh keypair or import an existing nsec. The Rust app core owns account creation, relay connections, persistence, and protocol state. Android only renders UI and stores the encrypted nsec.",
+            text = "Generate a fresh primary account, import an existing owner key, or link a new device to an existing owner npub. The Rust app core owns relay connections, persistence, routing, and protocol state. Android renders UI, scans QR codes, and stores the encrypted account bundle.",
             style = MaterialTheme.typography.bodyLarge,
         )
 
@@ -91,6 +105,47 @@ fun WelcomeScreen(
             Text("Import existing key")
         }
 
+        Text(
+            text = "Link existing account",
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Text(
+            text = "Scan or paste the owner npub from your primary device. This new device will publish its own invite and wait for approval in the device roster.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        OutlinedTextField(
+            value = uiState.linkOwnerValue,
+            onValueChange = onLinkOwnerValueChanged,
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .testTag("linkOwnerInput"),
+            label = { Text("Owner npub or hex") },
+            singleLine = true,
+            isError = uiState.linkOwnerValue.isNotBlank() && !isValidLinkValue,
+            enabled = !uiState.isWorking,
+        )
+
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(
+                onClick = { showScanner = true },
+                enabled = !uiState.isWorking,
+                modifier = Modifier.testTag("linkOwnerScanQrButton"),
+            ) {
+                Text("Scan owner QR")
+            }
+
+            Button(
+                onClick = onLinkExistingAccountClick,
+                enabled = isValidLinkValue && !uiState.isWorking,
+                modifier = Modifier.testTag("linkExistingAccountButton"),
+            ) {
+                Text("Link existing account")
+            }
+        }
+
         uiState.errorMessage?.let { error ->
             Text(
                 text = error,
@@ -98,5 +153,15 @@ fun WelcomeScreen(
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
+    }
+
+    if (showScanner) {
+        QrScannerDialog(
+            onDismiss = { showScanner = false },
+            onScanned = { scanned ->
+                onLinkOwnerValueChanged(normalizePeerInput(scanned))
+                showScanner = false
+            },
+        )
     }
 }

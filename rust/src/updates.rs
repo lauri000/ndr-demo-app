@@ -6,11 +6,11 @@ use nostr_sdk::prelude::Event;
 #[allow(clippy::large_enum_variant)]
 pub enum AppUpdate {
     FullState(AppState),
-    AccountCreated {
+    PersistAccountBundle {
         rev: u64,
-        nsec: String,
-        pubkey: String,
-        npub: String,
+        owner_nsec: Option<String>,
+        owner_pubkey_hex: String,
+        device_nsec: String,
     },
 }
 

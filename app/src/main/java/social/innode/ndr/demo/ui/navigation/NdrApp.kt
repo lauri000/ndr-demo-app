@@ -14,9 +14,12 @@ import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.Screen
 import social.innode.ndr.demo.ui.screens.ChatListScreen
 import social.innode.ndr.demo.ui.screens.ChatScreen
+import social.innode.ndr.demo.ui.screens.DeviceRevokedScreen
+import social.innode.ndr.demo.ui.screens.DeviceRosterScreen
 import social.innode.ndr.demo.ui.screens.NewChatScreen
 import social.innode.ndr.demo.ui.screens.SplashScreen
 import social.innode.ndr.demo.ui.screens.SplashViewModel
+import social.innode.ndr.demo.ui.screens.AwaitingDeviceApprovalScreen
 import social.innode.ndr.demo.ui.screens.WelcomeScreen
 import social.innode.ndr.demo.ui.screens.WelcomeViewModel
 
@@ -48,8 +51,10 @@ fun NdrApp(container: AppContainer) {
             WelcomeScreen(
                 uiState = welcomeUiState,
                 onImportValueChanged = welcomeViewModel::onImportValueChanged,
+                onLinkOwnerValueChanged = welcomeViewModel::onLinkOwnerValueChanged,
                 onGenerateClick = welcomeViewModel::generate,
                 onImportClick = welcomeViewModel::import,
+                onLinkExistingAccountClick = welcomeViewModel::linkExistingAccount,
                 onLoggedIn = {},
             )
         }
@@ -65,8 +70,10 @@ fun NdrApp(container: AppContainer) {
                     WelcomeScreen(
                         uiState = welcomeUiState,
                         onImportValueChanged = welcomeViewModel::onImportValueChanged,
+                        onLinkOwnerValueChanged = welcomeViewModel::onLinkOwnerValueChanged,
                         onGenerateClick = welcomeViewModel::generate,
                         onImportClick = welcomeViewModel::import,
+                        onLinkExistingAccountClick = welcomeViewModel::linkExistingAccount,
                         onLoggedIn = {},
                     )
                 }
@@ -77,6 +84,18 @@ fun NdrApp(container: AppContainer) {
 
                 Screen.NewChat -> {
                     NewChatScreen(appManager = appManager, appState = appState)
+                }
+
+                Screen.DeviceRoster -> {
+                    DeviceRosterScreen(appManager = appManager, appState = appState)
+                }
+
+                Screen.AwaitingDeviceApproval -> {
+                    AwaitingDeviceApprovalScreen(appManager = appManager, appState = appState)
+                }
+
+                Screen.DeviceRevoked -> {
+                    DeviceRevokedScreen(appManager = appManager, appState = appState)
                 }
 
                 is Screen.Chat -> {

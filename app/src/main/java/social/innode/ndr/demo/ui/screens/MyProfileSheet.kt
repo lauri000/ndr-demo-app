@@ -1,6 +1,5 @@
 package social.innode.ndr.demo.ui.screens
 
-import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,14 +22,15 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.qrcode.QRCodeWriter
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MyProfileSheet(
     npub: String,
     publicKeyHex: String,
+    deviceNpub: String,
+    canManageDevices: Boolean,
+    onManageDevices: () -> Unit,
     onLogout: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -80,8 +80,20 @@ fun MyProfileSheet(
             Text("Public key hex", style = MaterialTheme.typography.titleSmall)
             Text(publicKeyHex, style = MaterialTheme.typography.bodySmall)
 
+            Text("Current device npub", style = MaterialTheme.typography.titleSmall)
+            Text(deviceNpub, style = MaterialTheme.typography.bodySmall)
+
             TextButton(onClick = { clipboard.setText(AnnotatedString(npub)) }) {
                 Text("Copy npub")
+            }
+
+            if (canManageDevices) {
+                TextButton(
+                    onClick = onManageDevices,
+                    modifier = Modifier.testTag("myProfileManageDevicesButton"),
+                ) {
+                    Text("Manage devices")
+                }
             }
 
             TextButton(
@@ -93,22 +105,3 @@ fun MyProfileSheet(
         }
     }
 }
-
-private fun createQrBitmap(
-    value: String,
-    size: Int,
-): Bitmap? =
-    runCatching {
-        val matrix = QRCodeWriter().encode(value, BarcodeFormat.QR_CODE, size, size)
-        Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).apply {
-            for (x in 0 until size) {
-                for (y in 0 until size) {
-                    setPixel(
-                        x,
-                        y,
-                        if (matrix[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE,
-                    )
-                }
-            }
-        }
-    }.getOrNull()
