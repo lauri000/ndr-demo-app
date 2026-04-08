@@ -8,9 +8,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -23,6 +23,11 @@ import androidx.compose.ui.unit.dp
 import social.innode.ndr.demo.core.AppManager
 import social.innode.ndr.demo.qr.DeviceApprovalQr
 import social.innode.ndr.demo.rust.AppState
+import social.innode.ndr.demo.ui.components.IrisIcons
+import social.innode.ndr.demo.ui.components.IrisPrimaryButton
+import social.innode.ndr.demo.ui.components.IrisSectionCard
+import social.innode.ndr.demo.ui.components.IrisSecondaryButton
+import social.innode.ndr.demo.ui.theme.IrisTheme
 
 @Composable
 fun AwaitingDeviceApprovalScreen(
@@ -47,58 +52,77 @@ fun AwaitingDeviceApprovalScreen(
         modifier =
             Modifier
                 .fillMaxSize()
-                .padding(24.dp)
+                .padding(16.dp)
                 .testTag("awaitingApprovalScreen"),
-        verticalArrangement = Arrangement.spacedBy(20.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text(
-            text = "Waiting for device approval",
-            style = MaterialTheme.typography.headlineMedium,
-        )
-        Text(
-            text = "This device has already published its own invite. From the primary device, open Manage devices and scan the QR below to authorize it immediately.",
-            style = MaterialTheme.typography.bodyLarge,
-        )
-
-        Text("Owner npub", style = MaterialTheme.typography.titleMedium)
-        Text(
-            text = account.npub,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.testTag("awaitingApprovalOwnerNpub"),
-        )
-
-        Text("This device npub", style = MaterialTheme.typography.titleMedium)
-        Text(
-            text = account.deviceNpub,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.testTag("awaitingApprovalDeviceNpub"),
-        )
-
-        Box(
-            modifier = Modifier.fillMaxWidth(),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (qrBitmap != null) {
-                Image(
-                    bitmap = qrBitmap.asImageBitmap(),
-                    contentDescription = "Device npub QR code",
-                    modifier =
-                        Modifier
-                            .size(260.dp)
-                            .testTag("awaitingApprovalDeviceQrCode"),
-                )
+        IrisSectionCard {
+            Text(
+                text = "Waiting for approval",
+                style = MaterialTheme.typography.headlineSmall,
+            )
+            Text(
+                text = "This device already published its own invite. On the primary device, open Manage devices and scan the QR below.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = IrisTheme.palette.muted,
+            )
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (qrBitmap != null) {
+                    Image(
+                        bitmap = qrBitmap.asImageBitmap(),
+                        contentDescription = "Device approval QR code",
+                        modifier =
+                            Modifier
+                                .size(260.dp)
+                                .testTag("awaitingApprovalDeviceQrCode"),
+                    )
+                }
             }
         }
 
-        TextButton(
-            onClick = { clipboard.setText(AnnotatedString(account.deviceNpub)) },
-            modifier = Modifier.testTag("awaitingApprovalCopyDeviceButton"),
-        ) {
-            Text("Copy device npub")
-        }
-
-        TextButton(onClick = appManager::logout) {
-            Text("Logout")
+        IrisSectionCard {
+            Text(
+                text = "Owner npub",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                text = account.npub,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.testTag("awaitingApprovalOwnerNpub"),
+            )
+            Text(
+                text = "This device npub",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                text = account.deviceNpub,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.testTag("awaitingApprovalDeviceNpub"),
+            )
+            IrisSecondaryButton(
+                text = "Copy device npub",
+                onClick = { clipboard.setText(AnnotatedString(account.deviceNpub)) },
+                modifier = Modifier.testTag("awaitingApprovalCopyDeviceButton"),
+                icon = {
+                    Icon(
+                        imageVector = IrisIcons.Copy,
+                        contentDescription = null,
+                    )
+                },
+            )
+            IrisPrimaryButton(
+                text = "Logout",
+                onClick = appManager::logout,
+                icon = {
+                    Icon(
+                        imageVector = IrisIcons.Logout,
+                        contentDescription = null,
+                    )
+                },
+            )
         }
     }
 }

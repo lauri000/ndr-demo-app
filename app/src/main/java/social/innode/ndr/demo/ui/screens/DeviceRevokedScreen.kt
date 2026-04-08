@@ -4,7 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -13,6 +13,10 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import social.innode.ndr.demo.core.AppManager
 import social.innode.ndr.demo.rust.AppState
+import social.innode.ndr.demo.ui.components.IrisIcons
+import social.innode.ndr.demo.ui.components.IrisPrimaryButton
+import social.innode.ndr.demo.ui.components.IrisSectionCard
+import social.innode.ndr.demo.ui.theme.IrisTheme
 
 @Composable
 fun DeviceRevokedScreen(
@@ -25,34 +29,49 @@ fun DeviceRevokedScreen(
         modifier =
             Modifier
                 .fillMaxSize()
-                .padding(24.dp)
+                .padding(16.dp)
                 .testTag("deviceRevokedScreen"),
-        verticalArrangement = Arrangement.spacedBy(20.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text(
-            text = "Device removed",
-            style = MaterialTheme.typography.headlineMedium,
-        )
-        Text(
-            text =
-                "This device is no longer in the owner-signed roster. Messaging is blocked until you log out or re-link the device from a primary device.",
-            style = MaterialTheme.typography.bodyLarge,
-        )
-        account?.let {
+        IrisSectionCard {
             Text(
-                text = "Owner: ${it.npub}",
-                style = MaterialTheme.typography.bodyMedium,
+                text = "Device removed",
+                style = MaterialTheme.typography.headlineSmall,
             )
             Text(
-                text = "Device: ${it.deviceNpub}",
+                text = "This device is no longer in the owner-signed roster. Messaging is blocked until you log out and re-link it from a primary device.",
                 style = MaterialTheme.typography.bodyMedium,
+                color = IrisTheme.palette.muted,
             )
-        }
-        Button(
-            onClick = appManager::logout,
-            modifier = Modifier.testTag("deviceRevokedLogoutButton"),
-        ) {
-            Text("Logout")
+            account?.let {
+                Text(
+                    text = "Owner",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = it.npub,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    text = "Device",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = it.deviceNpub,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            IrisPrimaryButton(
+                text = "Logout",
+                onClick = appManager::logout,
+                modifier = Modifier.testTag("deviceRevokedLogoutButton"),
+                icon = {
+                    Icon(
+                        imageVector = IrisIcons.Logout,
+                        contentDescription = null,
+                    )
+                },
+            )
         }
     }
 }

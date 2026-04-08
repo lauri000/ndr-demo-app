@@ -8,31 +8,37 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import social.innode.ndr.demo.core.AppManager
 import social.innode.ndr.demo.qr.DeviceApprovalQr
 import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.AppState
+import social.innode.ndr.demo.rust.DeviceEntrySnapshot
 import social.innode.ndr.demo.rust.isValidPeerInput
 import social.innode.ndr.demo.rust.normalizePeerInput
+import social.innode.ndr.demo.ui.components.IrisAvatar
+import social.innode.ndr.demo.ui.components.IrisIcons
+import social.innode.ndr.demo.ui.components.IrisPrimaryButton
+import social.innode.ndr.demo.ui.components.IrisSectionCard
+import social.innode.ndr.demo.ui.components.IrisSecondaryButton
+import social.innode.ndr.demo.ui.components.IrisTopBar
+import social.innode.ndr.demo.ui.theme.IrisTheme
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DeviceRosterScreen(
     appManager: AppManager,
@@ -41,7 +47,14 @@ fun DeviceRosterScreen(
     val roster = appState.deviceRoster
     var deviceInput by remember { mutableStateOf("") }
     var showScanner by remember { mutableStateOf(false) }
-    val resolvedInput = roster?.let { resolveDeviceAuthorizationInput(deviceInput, it.ownerNpub, it.ownerPublicKeyHex) }
+    val resolvedInput =
+        roster?.let {
+            resolveDeviceAuthorizationInput(
+                deviceInput,
+                it.ownerNpub,
+                it.ownerPublicKeyHex,
+            )
+        }
     val normalizedInput = resolvedInput?.deviceInput.orEmpty()
     val canAddDevice =
         roster?.canManageDevices == true &&
@@ -49,19 +62,14 @@ fun DeviceRosterScreen(
             !appState.busy.updatingRoster
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                title = { Text("Manage devices") },
-                navigationIcon = {
-                    TextButton(
-                        onClick = {
-                            appManager.dispatch(
-                                AppAction.UpdateScreenStack(appState.router.screenStack.dropLast(1)),
-                            )
-                        },
-                    ) {
-                        Text("Back")
-                    }
+            IrisTopBar(
+                title = "Manage devices",
+                onBack = {
+                    appManager.dispatch(
+                        AppAction.UpdateScreenStack(appState.router.screenStack.dropLast(1)),
+                    )
                 },
             )
         },
@@ -85,84 +93,120 @@ fun DeviceRosterScreen(
                 Modifier
                     .fillMaxSize()
                     .padding(padding)
-                    .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text(
-                text = "Owner",
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Text(
-                text = roster.ownerNpub,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.testTag("deviceRosterOwnerNpub"),
-            )
-
-            Text(
-                text = "Current device",
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Text(
-                text = roster.currentDeviceNpub,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.testTag("deviceRosterCurrentDeviceNpub"),
-            )
-
-            if (roster.canManageDevices) {
+            IrisSectionCard {
                 Text(
-                    text = "Scan the QR from the device waiting for approval, or paste its device key or approval code.",
+                    text = "Account devices",
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                Text(
+                    text = "Primary devices publish the owner-signed roster. Linked devices can view it, publish their own invite, and send messages once authorized.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = IrisTheme.palette.muted,
                 )
-
-                OutlinedTextField(
-                    value = deviceInput,
-                    onValueChange = { deviceInput = it },
-                    label = { Text("Device npub, hex, or approval code") },
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .testTag("deviceRosterAddInput"),
-                    isError = deviceInput.isNotBlank() && resolvedInput?.errorMessage != null,
+                Text(
+                    text = "Owner",
+                    style = MaterialTheme.typography.titleSmall,
                 )
+                Text(
+                    text = roster.ownerNpub,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.testTag("deviceRosterOwnerNpub"),
+                )
+                Text(
+                    text = "Current device",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = roster.currentDeviceNpub,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.testTag("deviceRosterCurrentDeviceNpub"),
+                )
+            }
 
-                resolvedInput?.errorMessage?.let { error ->
-                    Text(
-                        text = error,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    TextButton(
-                        onClick = { showScanner = true },
-                        modifier = Modifier.testTag("deviceRosterScanButton"),
-                    ) {
-                        Text("Scan QR")
-                    }
-
-                    Button(
-                        onClick = {
-                            appManager.addAuthorizedDevice(normalizedInput)
-                            deviceInput = ""
-                        },
-                        enabled = canAddDevice,
-                        modifier = Modifier.testTag("deviceRosterAddButton"),
-                    ) {
-                        if (appState.busy.updatingRoster) {
-                            CircularProgressIndicator(strokeWidth = 2.dp)
+            IrisSectionCard {
+                Text(
+                    text = "Approve a new device",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    text =
+                        if (roster.canManageDevices) {
+                            "Scan the waiting device’s approval QR or paste its device npub."
                         } else {
-                            Text("Authorize device")
-                        }
+                            "This linked device can read the roster but cannot publish roster changes."
+                        },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = IrisTheme.palette.muted,
+                )
+
+                if (roster.canManageDevices) {
+                    TextField(
+                        value = deviceInput,
+                        onValueChange = { deviceInput = it },
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .testTag("deviceRosterAddInput"),
+                        placeholder = {
+                            Text(
+                                text = "Device npub, hex, or approval code",
+                                color = IrisTheme.palette.muted,
+                            )
+                        },
+                        isError = deviceInput.isNotBlank() && resolvedInput?.errorMessage != null,
+                        minLines = 2,
+                        colors =
+                            TextFieldDefaults.colors(
+                                focusedContainerColor = IrisTheme.palette.panelAlt,
+                                unfocusedContainerColor = IrisTheme.palette.panelAlt,
+                                disabledContainerColor = IrisTheme.palette.panelAlt,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                                disabledIndicatorColor = Color.Transparent,
+                            ),
+                    )
+
+                    resolvedInput?.errorMessage?.let { error ->
+                        Text(
+                            text = error,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        IrisSecondaryButton(
+                            text = "Scan QR",
+                            onClick = { showScanner = true },
+                            modifier = Modifier.testTag("deviceRosterScanButton"),
+                            icon = {
+                                Icon(
+                                    imageVector = IrisIcons.ScanQr,
+                                    contentDescription = null,
+                                )
+                            },
+                        )
+
+                        IrisPrimaryButton(
+                            text = if (appState.busy.updatingRoster) "Authorizing…" else "Authorize",
+                            onClick = {
+                                appManager.addAuthorizedDevice(normalizedInput)
+                                deviceInput = ""
+                            },
+                            enabled = canAddDevice,
+                            modifier = Modifier.testTag("deviceRosterAddButton"),
+                            icon = {
+                                Icon(
+                                    imageVector = IrisIcons.Devices,
+                                    contentDescription = null,
+                                )
+                            },
+                        )
                     }
                 }
-            } else {
-                Text(
-                    text = "This device can view the roster but cannot publish roster changes.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
 
             Text(
@@ -171,49 +215,15 @@ fun DeviceRosterScreen(
             )
 
             LazyColumn(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
+                modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 items(roster.devices, key = { it.devicePubkeyHex }) { device ->
-                    Column(
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .testTag("deviceRosterRow-${device.devicePubkeyHex.take(12)}"),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(
-                            text =
-                                when {
-                                    device.isCurrentDevice -> "${device.deviceNpub} (this device)"
-                                    else -> device.deviceNpub
-                                },
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        Text(
-                            text =
-                                buildString {
-                                    append(if (device.isAuthorized) "Authorized" else "Pending")
-                                    if (device.isStale) append(" • stale")
-                                },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        if (roster.canManageDevices && !device.isCurrentDevice) {
-                            TextButton(
-                                onClick = { appManager.removeAuthorizedDevice(device.devicePubkeyHex) },
-                                modifier =
-                                    Modifier.testTag(
-                                        "deviceRosterRemove-${device.devicePubkeyHex.take(12)}",
-                                    ),
-                            ) {
-                                Text("Remove")
-                            }
-                        }
-                    }
+                    DeviceRosterRow(
+                        device = device,
+                        canManageDevices = roster.canManageDevices,
+                        onRemove = { appManager.removeAuthorizedDevice(device.devicePubkeyHex) },
+                    )
                 }
             }
         }
@@ -223,7 +233,12 @@ fun DeviceRosterScreen(
         QrScannerDialog(
             onDismiss = { showScanner = false },
             onScanned = { scanned ->
-                val resolved = resolveDeviceAuthorizationInput(scanned, roster.ownerNpub, roster.ownerPublicKeyHex)
+                val resolved =
+                    resolveDeviceAuthorizationInput(
+                        scanned,
+                        roster.ownerNpub,
+                        roster.ownerPublicKeyHex,
+                    )
                 if (resolved.errorMessage != null) {
                     resolved.errorMessage
                 } else {
@@ -233,6 +248,79 @@ fun DeviceRosterScreen(
                     null
                 }
             },
+        )
+    }
+}
+
+@Composable
+private fun DeviceRosterRow(
+    device: DeviceEntrySnapshot,
+    canManageDevices: Boolean,
+    onRemove: () -> Unit,
+) {
+    IrisSectionCard(
+        modifier = Modifier.testTag("deviceRosterRow-${device.devicePubkeyHex.take(12)}"),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            IrisAvatar(label = device.deviceNpub, size = 42.dp)
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text =
+                        when {
+                            device.isCurrentDevice -> "${device.deviceNpub} (this device)"
+                            else -> device.deviceNpub
+                        },
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DeviceStateChip(
+                        text = if (device.isAuthorized) "Authorized" else "Pending",
+                    )
+                    if (device.isStale) {
+                        DeviceStateChip(
+                            text = "Stale",
+                            containerColor = MaterialTheme.colorScheme.error.copy(alpha = 0.14f),
+                            contentColor = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            }
+        }
+
+        if (canManageDevices && !device.isCurrentDevice) {
+            IrisSecondaryButton(
+                text = "Remove device",
+                onClick = onRemove,
+                modifier =
+                    Modifier.testTag(
+                        "deviceRosterRemove-${device.devicePubkeyHex.take(12)}",
+                    ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeviceStateChip(
+    text: String,
+    containerColor: Color = IrisTheme.palette.panelAlt,
+    contentColor: Color = MaterialTheme.colorScheme.onSurface,
+) {
+    Surface(
+        color = containerColor,
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(100.dp),
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            style = MaterialTheme.typography.labelMedium,
+            color = contentColor,
         )
     }
 }
@@ -260,31 +348,30 @@ private fun resolveDeviceAuthorizationInput(
                 normalizePeerInput(ownerNpub),
                 normalizePeerInput(ownerPublicKeyHex),
             )
-        if (!isValidPeerInput(normalizedOwner) || normalizedOwner !in acceptedOwnerInputs) {
+        if (normalizedOwner !in acceptedOwnerInputs) {
             return ResolvedDeviceAuthorizationInput(
                 deviceInput = "",
                 errorMessage = "This approval QR belongs to a different owner.",
             )
         }
 
-        val normalizedDeviceInput = normalizePeerInput(approvalPayload.deviceInput)
-        return if (isValidPeerInput(normalizedDeviceInput)) {
-            ResolvedDeviceAuthorizationInput(deviceInput = normalizedDeviceInput, errorMessage = null)
-        } else {
-            ResolvedDeviceAuthorizationInput(
+        val normalizedDevice = normalizePeerInput(approvalPayload.deviceInput)
+        if (!isValidPeerInput(normalizedDevice)) {
+            return ResolvedDeviceAuthorizationInput(
                 deviceInput = "",
-                errorMessage = "Scanned approval QR did not contain a valid device public key.",
+                errorMessage = "The approval QR did not contain a valid device key.",
             )
         }
+        return ResolvedDeviceAuthorizationInput(deviceInput = normalizedDevice, errorMessage = null)
     }
 
-    val normalizedInput = normalizePeerInput(trimmed)
-    return if (isValidPeerInput(normalizedInput)) {
-        ResolvedDeviceAuthorizationInput(deviceInput = normalizedInput, errorMessage = null)
+    val normalized = normalizePeerInput(trimmed)
+    return if (isValidPeerInput(normalized)) {
+        ResolvedDeviceAuthorizationInput(deviceInput = normalized, errorMessage = null)
     } else {
         ResolvedDeviceAuthorizationInput(
             deviceInput = "",
-            errorMessage = "Not a valid device public key.",
+            errorMessage = "Not a valid device npub or approval code.",
         )
     }
 }

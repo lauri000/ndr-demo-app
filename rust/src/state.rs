@@ -89,6 +89,9 @@ pub struct ChatThreadSnapshot {
     pub display_name: String,
     pub peer_npub: String,
     pub last_message_preview: Option<String>,
+    pub last_message_at_secs: Option<u64>,
+    pub last_message_is_outgoing: Option<bool>,
+    pub last_message_delivery: Option<DeliveryState>,
     pub unread_count: u64,
 }
 

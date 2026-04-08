@@ -3,18 +3,16 @@ package social.innode.ndr.demo.ui.screens
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -22,10 +20,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import social.innode.ndr.demo.rust.isValidPeerInput
 import social.innode.ndr.demo.rust.normalizePeerInput
+import social.innode.ndr.demo.ui.components.IrisIcons
+import social.innode.ndr.demo.ui.components.IrisPrimaryButton
+import social.innode.ndr.demo.ui.components.IrisSectionCard
+import social.innode.ndr.demo.ui.components.IrisSecondaryButton
+import social.innode.ndr.demo.ui.theme.IrisTheme
 
 @Composable
 fun WelcomeScreen(
@@ -53,105 +57,151 @@ fun WelcomeScreen(
             Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp),
+                .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text(
-            text = "Device-to-device bootstrap",
-            style = MaterialTheme.typography.headlineMedium,
-        )
-        Text(
-            text = "Generate a fresh primary account, import an existing owner key, or link a new device to an existing owner npub. The Rust app core owns relay connections, persistence, routing, and protocol state. Android renders UI, scans QR codes, and stores the encrypted account bundle.",
-            style = MaterialTheme.typography.bodyLarge,
-        )
-
-        Button(
-            onClick = onGenerateClick,
-            enabled = !uiState.isWorking,
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .testTag("generateKeyButton"),
-            contentPadding = PaddingValues(vertical = 16.dp),
-        ) {
-            if (uiState.isWorking) {
-                CircularProgressIndicator(strokeWidth = 2.dp)
-            } else {
-                Text("Generate new key")
-            }
-        }
-
-        OutlinedTextField(
-            value = uiState.importValue,
-            onValueChange = onImportValueChanged,
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .testTag("importKeyField"),
-            label = { Text("nsec or hex private key") },
-            minLines = 3,
-            enabled = !uiState.isWorking,
-        )
-
-        OutlinedButton(
-            onClick = onImportClick,
-            enabled = !uiState.isWorking,
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .testTag("importKeyButton"),
-            contentPadding = PaddingValues(vertical = 16.dp),
-        ) {
-            Text("Import existing key")
-        }
-
-        Text(
-            text = "Link existing account",
-            style = MaterialTheme.typography.titleMedium,
-        )
-        Text(
-            text = "Scan or paste the owner npub from your primary device. This new device will publish its own invite and wait for approval in the device roster.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-
-        OutlinedTextField(
-            value = uiState.linkOwnerValue,
-            onValueChange = onLinkOwnerValueChanged,
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .testTag("linkOwnerInput"),
-            label = { Text("Owner npub or hex") },
-            singleLine = true,
-            isError = uiState.linkOwnerValue.isNotBlank() && !isValidLinkValue,
-            enabled = !uiState.isWorking,
-        )
-
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedButton(
-                onClick = { showScanner = true },
+        IrisSectionCard {
+            Text(
+                text = "Iris-style private chat",
+                style = MaterialTheme.typography.headlineMedium,
+            )
+            Text(
+                text = "This Android app keeps routing, protocol state, device authorization, and relay behavior in Rust. Android handles the visual shell, QR scanning, and secure account storage.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = IrisTheme.palette.muted,
+            )
+            IrisPrimaryButton(
+                text = if (uiState.isWorking) "Creating…" else "Generate new key",
+                onClick = onGenerateClick,
                 enabled = !uiState.isWorking,
-                modifier = Modifier.testTag("linkOwnerScanQrButton"),
-            ) {
-                Text("Scan owner QR")
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .testTag("generateKeyButton"),
+            )
+        }
+
+        IrisSectionCard {
+            Text(
+                text = "Import existing key",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            TextField(
+                value = uiState.importValue,
+                onValueChange = onImportValueChanged,
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .testTag("importKeyField"),
+                placeholder = {
+                    Text(
+                        text = "nsec or hex private key",
+                        color = IrisTheme.palette.muted,
+                    )
+                },
+                minLines = 3,
+                enabled = !uiState.isWorking,
+                colors =
+                    TextFieldDefaults.colors(
+                        focusedContainerColor = IrisTheme.palette.panelAlt,
+                        unfocusedContainerColor = IrisTheme.palette.panelAlt,
+                        disabledContainerColor = IrisTheme.palette.panelAlt,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent,
+                    ),
+            )
+            IrisSecondaryButton(
+                text = "Import existing key",
+                onClick = onImportClick,
+                enabled = !uiState.isWorking,
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .testTag("importKeyButton"),
+            )
+        }
+
+        IrisSectionCard {
+            Text(
+                text = "Link existing account",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                text = "Scan the owner QR from your primary device. This device will publish its own invite, then wait for explicit approval in the owner-signed roster.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = IrisTheme.palette.muted,
+            )
+            TextField(
+                value = uiState.linkOwnerValue,
+                onValueChange = onLinkOwnerValueChanged,
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .testTag("linkOwnerInput"),
+                placeholder = {
+                    Text(
+                        text = "Owner npub or hex",
+                        color = IrisTheme.palette.muted,
+                    )
+                },
+                isError = uiState.linkOwnerValue.isNotBlank() && !isValidLinkValue,
+                enabled = !uiState.isWorking,
+                colors =
+                    TextFieldDefaults.colors(
+                        focusedContainerColor = IrisTheme.palette.panelAlt,
+                        unfocusedContainerColor = IrisTheme.palette.panelAlt,
+                        disabledContainerColor = IrisTheme.palette.panelAlt,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent,
+                    ),
+            )
+
+            if (uiState.linkOwnerValue.isNotBlank() && !isValidLinkValue) {
+                Text(
+                    text = "Scanned or pasted owner key is not valid.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
 
-            Button(
-                onClick = onLinkExistingAccountClick,
-                enabled = isValidLinkValue && !uiState.isWorking,
-                modifier = Modifier.testTag("linkExistingAccountButton"),
-            ) {
-                Text("Link existing account")
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                IrisSecondaryButton(
+                    text = "Scan owner QR",
+                    onClick = { showScanner = true },
+                    enabled = !uiState.isWorking,
+                    modifier = Modifier.testTag("linkOwnerScanQrButton"),
+                    icon = {
+                        Icon(
+                            imageVector = IrisIcons.ScanQr,
+                            contentDescription = null,
+                        )
+                    },
+                )
+                IrisPrimaryButton(
+                    text = "Link device",
+                    onClick = onLinkExistingAccountClick,
+                    enabled = isValidLinkValue && !uiState.isWorking,
+                    modifier = Modifier.testTag("linkExistingAccountButton"),
+                    icon = {
+                        Icon(
+                            imageVector = IrisIcons.Devices,
+                            contentDescription = null,
+                        )
+                    },
+                )
             }
         }
 
         uiState.errorMessage?.let { error ->
-            Text(
-                text = error,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodyMedium,
-            )
+            IrisSectionCard {
+                Text(
+                    text = error,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
         }
     }
 

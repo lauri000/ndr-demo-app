@@ -7,21 +7,28 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import social.innode.ndr.demo.ui.components.IrisIcons
+import social.innode.ndr.demo.ui.components.IrisInlineAction
+import social.innode.ndr.demo.ui.components.IrisPrimaryButton
+import social.innode.ndr.demo.ui.components.IrisSectionCard
+import social.innode.ndr.demo.ui.components.IrisSecondaryButton
+import social.innode.ndr.demo.ui.theme.IrisTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -40,74 +47,107 @@ fun MyProfileSheet(
             createQrBitmap(npub, size = 768)
         }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.background,
+    ) {
         Column(
             modifier =
                 Modifier
                     .testTag("myProfileSheet")
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text(
-                text = "My profile",
-                style = MaterialTheme.typography.headlineSmall,
-            )
-
-            Box(
-                modifier = Modifier.fillMaxWidth(),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (qrBitmap != null) {
-                    Image(
-                        bitmap = qrBitmap.asImageBitmap(),
-                        contentDescription = "My npub QR code",
-                        modifier =
-                            Modifier
-                                .size(260.dp)
-                                .testTag("myProfileQrCode"),
-                    )
+            IrisSectionCard {
+                Text(
+                    text = "My profile",
+                    style = MaterialTheme.typography.headlineSmall,
+                )
+                Text(
+                    text = "Scan this owner QR from a fresh device to start linking it. The primary device still controls roster approval.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = IrisTheme.palette.muted,
+                )
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (qrBitmap != null) {
+                        Image(
+                            bitmap = qrBitmap.asImageBitmap(),
+                            contentDescription = "My npub QR code",
+                            modifier =
+                                Modifier
+                                    .size(260.dp)
+                                    .testTag("myProfileQrCode"),
+                        )
+                    }
+                }
+                IrisInlineAction(
+                    text = "Copy owner npub",
+                    onClick = { clipboard.setText(AnnotatedString(npub)) },
+                ) {
+                    Icon(imageVector = IrisIcons.Copy, contentDescription = null)
                 }
             }
 
-            Text(
-                text = "Scan this QR from a fresh device to start linking it to this owner.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-
-            Text("npub", style = MaterialTheme.typography.titleSmall)
-            Text(
-                npub,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.testTag("myProfileNpubValue"),
-            )
-
-            Text("Public key hex", style = MaterialTheme.typography.titleSmall)
-            Text(publicKeyHex, style = MaterialTheme.typography.bodySmall)
-
-            Text("Current device npub", style = MaterialTheme.typography.titleSmall)
-            Text(deviceNpub, style = MaterialTheme.typography.bodySmall)
-
-            TextButton(onClick = { clipboard.setText(AnnotatedString(npub)) }) {
-                Text("Copy npub")
+            IrisSectionCard {
+                Text(
+                    text = "Owner npub",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    npub,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.testTag("myProfileNpubValue"),
+                )
+                Text(
+                    text = "Current device npub",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = deviceNpub,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = IrisTheme.palette.muted,
+                )
+                Text(
+                    text = "Public key hex",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = publicKeyHex,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = IrisTheme.palette.muted,
+                )
             }
 
             if (canManageDevices) {
-                TextButton(
+                IrisPrimaryButton(
+                    text = "Manage devices",
                     onClick = onManageDevices,
                     modifier = Modifier.testTag("myProfileManageDevicesButton"),
-                ) {
-                    Text("Manage devices")
-                }
+                    icon = {
+                        Icon(
+                            imageVector = IrisIcons.Devices,
+                            contentDescription = null,
+                        )
+                    },
+                )
             }
 
-            TextButton(
+            IrisSecondaryButton(
+                text = "Logout",
                 onClick = onLogout,
                 modifier = Modifier.testTag("myProfileLogoutButton"),
-            ) {
-                Text("Logout")
-            }
+                icon = {
+                    Icon(
+                        imageVector = IrisIcons.Logout,
+                        contentDescription = null,
+                    )
+                },
+            )
         }
     }
 }
