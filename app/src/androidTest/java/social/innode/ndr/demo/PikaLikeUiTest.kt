@@ -101,8 +101,16 @@ class PikaLikeUiTest {
                 )
         }
         composeRule.onNodeWithTag("deviceRosterScanButton", useUnmergedTree = true).performClick()
-
-        composeRule.waitForText(SECONDARY_DEVICE_NPUB)
+        composeRule.waitUntil(20_000) {
+            val roster =
+                (composeRule.activity.application as NdrDemoApp)
+                    .container
+                    .appManager
+                    .state
+                    .value
+                    .deviceRoster
+            roster?.devices?.any { it.deviceNpub == SECONDARY_DEVICE_NPUB && it.isAuthorized } == true
+        }
     }
 
     @Test
