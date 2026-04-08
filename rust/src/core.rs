@@ -1,15 +1,15 @@
 use crate::actions::AppAction;
 use crate::state::{
-    AccountSnapshot, AppState, ChatMessageSnapshot, ChatThreadSnapshot, CurrentChatSnapshot,
-    DeliveryState, DeviceAuthorizationState, DeviceEntrySnapshot, DeviceRosterSnapshot, Router,
-    Screen,
+    AccountSnapshot, AppState, ChatKind, ChatMessageSnapshot, ChatThreadSnapshot,
+    CurrentChatSnapshot, DeliveryState, DeviceAuthorizationState, DeviceEntrySnapshot,
+    DeviceRosterSnapshot, GroupDetailsSnapshot, GroupMemberSnapshot, Router, Screen,
 };
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 use flume::Sender;
 use nostr_double_ratchet::{
     DevicePubkey, DeviceRoster, DomainError, Error, MessageEnvelope, OwnerPubkey,
-    ProtocolContext, RelayGap, RosterEditor, SessionManager, SessionManagerSnapshot,
-    SessionState, UnixSeconds,
+    ProtocolContext, RelayGap, RosterEditor, SessionManager, SessionManagerSnapshot, SessionState,
+    UnixSeconds, GroupIncomingEvent, GroupManager, GroupManagerSnapshot, GroupSnapshot,
 };
 use nostr_double_ratchet_nostr::nostr as codec;
 use nostr_sdk::prelude::{
@@ -38,7 +38,9 @@ const FIRST_CONTACT_RETRY_DELAY_SECS: u64 = 5;
 const CATCH_UP_LOOKBACK_SECS: u64 = 30;
 const RESUBSCRIBE_CATCH_UP_DELAY_SECS: u64 = 5;
 const PROTOCOL_SUBSCRIPTION_ID: &str = "ndr-protocol";
-const APP_MESSAGE_PAYLOAD_VERSION: u8 = 1;
+const APP_DIRECT_MESSAGE_PAYLOAD_VERSION: u8 = 1;
+const APP_GROUP_MESSAGE_PAYLOAD_VERSION: u8 = 1;
+const GROUP_CHAT_PREFIX: &str = "group:";
 
 pub struct AppCore {
     update_tx: Sender<AppUpdate>,
@@ -54,6 +56,7 @@ pub struct AppCore {
     next_message_id: u64,
     pending_inbound: Vec<PendingInbound>,
     pending_outbound: Vec<PendingOutbound>,
+    pending_group_controls: Vec<PendingGroupControl>,
     recent_handshake_peers: BTreeMap<String, RecentHandshakePeer>,
     seen_event_ids: HashSet<String>,
     seen_event_order: VecDeque<String>,
@@ -67,6 +70,7 @@ struct LoggedInState {
     client: Client,
     relay_urls: Vec<RelayUrl>,
     session_manager: SessionManager,
+    group_manager: GroupManager,
     authorization_state: LocalAuthorizationState,
 }
 
@@ -117,9 +121,48 @@ struct PendingOutbound {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct AppMessagePayload {
+enum PendingGroupControlKind {
+    Create {
+        name: String,
+        member_owner_hexes: Vec<String>,
+    },
+    Rename {
+        name: String,
+    },
+    AddMembers {
+        member_owner_hexes: Vec<String>,
+    },
+    RemoveMember {
+        owner_pubkey_hex: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PendingGroupControl {
+    operation_id: String,
+    group_id: String,
+    target_owner_hexes: Vec<String>,
+    #[serde(default)]
+    prepared_publish: Option<PreparedPublishBatch>,
+    #[serde(default)]
+    reason: PendingSendReason,
+    #[serde(default)]
+    next_retry_at_secs: u64,
+    #[serde(default)]
+    in_flight: bool,
+    kind: PendingGroupControlKind,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct AppDirectMessagePayload {
     version: u8,
     chat_id: String,
+    body: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct AppGroupMessagePayload {
+    version: u8,
     body: String,
 }
 
@@ -128,6 +171,7 @@ struct RoutedChatMessage {
     chat_id: String,
     body: String,
     is_outgoing: bool,
+    author: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -185,11 +229,15 @@ struct PersistedState {
     active_chat_id: Option<String>,
     next_message_id: u64,
     session_manager: Option<SessionManagerSnapshot>,
+    #[serde(default)]
+    group_manager: Option<GroupManagerSnapshot>,
     threads: Vec<PersistedThread>,
     #[serde(default)]
     pending_inbound: Vec<PendingInbound>,
     #[serde(default)]
     pending_outbound: Vec<PendingOutbound>,
+    #[serde(default)]
+    pending_group_controls: Vec<PendingGroupControl>,
     #[serde(default)]
     seen_event_ids: Vec<String>,
     #[serde(default)]
@@ -307,6 +355,7 @@ impl AppCore {
             next_message_id: 1,
             pending_inbound: Vec::new(),
             pending_outbound: Vec::new(),
+            pending_group_controls: Vec::new(),
             recent_handshake_peers: BTreeMap::new(),
             seen_event_ids: HashSet::new(),
             seen_event_order: VecDeque::new(),
@@ -334,8 +383,20 @@ impl AppCore {
             AppAction::StartLinkedDevice { owner_input } => self.start_linked_device(&owner_input),
             AppAction::Logout => self.logout(),
             AppAction::CreateChat { peer_input } => self.create_chat(&peer_input),
+            AppAction::CreateGroup { name, member_inputs } => {
+                self.create_group(&name, &member_inputs)
+            }
             AppAction::OpenChat { chat_id } => self.open_chat(&chat_id),
             AppAction::SendMessage { chat_id, text } => self.send_message(&chat_id, &text),
+            AppAction::UpdateGroupName { group_id, name } => self.update_group_name(&group_id, &name),
+            AppAction::AddGroupMembers {
+                group_id,
+                member_inputs,
+            } => self.add_group_members(&group_id, &member_inputs),
+            AppAction::RemoveGroupMember {
+                group_id,
+                owner_pubkey_hex,
+            } => self.remove_group_member(&group_id, &owner_pubkey_hex),
             AppAction::AddAuthorizedDevice { device_input } => {
                 self.add_authorized_device(&device_input)
             }
@@ -356,6 +417,7 @@ impl AppCore {
             InternalEvent::RetryPendingOutbound => {
                 let now = unix_now();
                 self.retry_pending_outbound(now);
+                self.retry_pending_group_controls(now);
                 self.rebuild_state();
                 self.persist_best_effort();
                 self.emit_state();
@@ -389,6 +451,31 @@ impl AppCore {
                     pending.next_retry_at_secs =
                         unix_now().get().saturating_add(retry_after_secs);
                     self.schedule_pending_outbound_retry(Duration::from_secs(retry_after_secs));
+                }
+                self.schedule_next_pending_retry(unix_now().get());
+                self.rebuild_state();
+                self.persist_best_effort();
+                self.emit_state();
+            }
+            InternalEvent::GroupControlPublishFinished {
+                operation_id,
+                success,
+            } => {
+                if success {
+                    self.pending_group_controls
+                        .retain(|pending| pending.operation_id != operation_id);
+                } else if let Some(pending) = self
+                    .pending_group_controls
+                    .iter_mut()
+                    .find(|pending| pending.operation_id == operation_id)
+                {
+                    pending.in_flight = false;
+                    pending.reason = PendingSendReason::PublishRetry;
+                    pending.next_retry_at_secs =
+                        unix_now().get().saturating_add(PENDING_RETRY_DELAY_SECS);
+                    self.schedule_pending_outbound_retry(Duration::from_secs(
+                        PENDING_RETRY_DELAY_SECS,
+                    ));
                 }
                 self.schedule_next_pending_retry(unix_now().get());
                 self.rebuild_state();
@@ -525,6 +612,7 @@ impl AppCore {
         self.screen_stack.clear();
         self.pending_inbound.clear();
         self.pending_outbound.clear();
+        self.pending_group_controls.clear();
         self.recent_handshake_peers.clear();
         self.seen_event_ids.clear();
         self.seen_event_order.clear();
@@ -559,24 +647,10 @@ impl AppCore {
 
         let now = unix_now().get();
         self.prune_recent_handshake_peers(now);
-        let thread = self
-            .threads
-            .entry(chat_id.clone())
-            .or_insert_with(|| ThreadRecord {
-                chat_id: chat_id.clone(),
-                unread_count: 0,
-                updated_at_secs: now,
-                messages: Vec::new(),
-            });
-        if thread.updated_at_secs == 0 {
-            thread.updated_at_secs = now;
-        }
-        thread.unread_count = 0;
+        self.ensure_thread_record(&chat_id, now).unread_count = 0;
 
         self.active_chat_id = Some(chat_id.clone());
-        self.screen_stack = vec![Screen::Chat {
-            chat_id: chat_id.clone(),
-        }];
+        self.screen_stack = vec![Screen::Chat { chat_id }];
         self.republish_local_identity_artifacts();
         self.rebuild_state();
         self.persist_best_effort();
@@ -586,6 +660,392 @@ impl AppCore {
         self.emit_state();
     }
 
+    fn create_group(&mut self, name: &str, member_inputs: &[String]) {
+        if self.logged_in.is_none() {
+            self.state.toast = Some("Create or restore an account first.".to_string());
+            self.emit_state();
+            return;
+        }
+        if !self.can_use_chats() {
+            self.state.toast = Some(chat_unavailable_message(self.logged_in.as_ref()).to_string());
+            self.emit_state();
+            return;
+        }
+
+        let trimmed_name = name.trim();
+        if trimmed_name.is_empty() {
+            self.state.toast = Some("Group name is required.".to_string());
+            self.emit_state();
+            return;
+        }
+
+        let Some(local_owner) = self.logged_in.as_ref().map(|logged_in| logged_in.owner_pubkey) else {
+            self.state.toast = Some("Create or restore an account first.".to_string());
+            self.emit_state();
+            return;
+        };
+
+        let member_owners = match parse_owner_inputs(member_inputs, local_owner) {
+            Ok(member_owners) if !member_owners.is_empty() => member_owners,
+            Ok(_) => {
+                self.state.toast = Some("Groups need at least one other member.".to_string());
+                self.emit_state();
+                return;
+            }
+            Err(error) => {
+                self.state.toast = Some(error.to_string());
+                self.emit_state();
+                return;
+            }
+        };
+        let target_owner_hexes = sorted_owner_hexes(&member_owners);
+
+        self.state.busy.creating_group = true;
+        self.emit_state();
+
+        let now = unix_now();
+        let create_result = {
+            let logged_in = self.logged_in.as_mut().expect("checked above");
+            let mut rng = OsRng;
+            let mut ctx = ProtocolContext::new(now, &mut rng);
+            let (session_manager, group_manager) =
+                (&mut logged_in.session_manager, &mut logged_in.group_manager);
+            group_manager.create_group(
+                session_manager,
+                &mut ctx,
+                trimmed_name.to_string(),
+                member_owners,
+            )
+        };
+
+        match create_result {
+            Ok(result) => {
+                let create_kind = PendingGroupControlKind::Create {
+                    name: trimmed_name.to_string(),
+                    member_owner_hexes: target_owner_hexes.clone(),
+                };
+                let chat_id = group_chat_id(&result.group.group_id);
+                self.apply_group_snapshot_to_threads(&result.group, now.get());
+                self.active_chat_id = Some(chat_id.clone());
+                self.screen_stack = vec![Screen::Chat {
+                    chat_id: chat_id.clone(),
+                }];
+
+                if let Some(reason) = pending_reason_from_group_prepared(&result.prepared) {
+                    let operation_id = self.allocate_message_id();
+                    self.queue_pending_group_control(
+                        operation_id,
+                        result.group.group_id.clone(),
+                        target_owner_hexes,
+                        None,
+                        reason.clone(),
+                        now.get().saturating_add(PENDING_RETRY_DELAY_SECS),
+                        create_kind,
+                    );
+                    if matches!(reason, PendingSendReason::MissingRoster) {
+                        self.republish_local_identity_artifacts();
+                    }
+                } else {
+                    match build_group_prepared_publish_batch(&result.prepared) {
+                        Ok(Some(batch)) => {
+                            let operation_id = self.allocate_message_id();
+                            let publish_mode = publish_mode_for_batch(&batch);
+                            self.queue_pending_group_control(
+                                operation_id.clone(),
+                                result.group.group_id.clone(),
+                                target_owner_hexes,
+                                Some(batch.clone()),
+                                pending_reason_for_publish_mode(&publish_mode),
+                                retry_deadline_for_publish_mode(now.get(), &publish_mode),
+                                create_kind.clone(),
+                            );
+                            self.set_pending_group_control_in_flight(&operation_id, true);
+                            self.start_group_control_publish(
+                                operation_id,
+                                publish_mode,
+                                batch,
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(error) => self.state.toast = Some(error.to_string()),
+                    }
+                }
+
+                self.request_protocol_subscription_refresh();
+                self.schedule_tracked_peer_catch_up(Duration::from_secs(
+                    RESUBSCRIBE_CATCH_UP_DELAY_SECS,
+                ));
+            }
+            Err(error) => {
+                self.state.toast = Some(error.to_string());
+            }
+        }
+
+        self.schedule_next_pending_retry(now.get());
+        self.state.busy.creating_group = false;
+        self.rebuild_state();
+        self.persist_best_effort();
+        self.emit_state();
+    }
+
+    fn ensure_thread_record(&mut self, chat_id: &str, updated_at_secs: u64) -> &mut ThreadRecord {
+        let thread = self
+            .threads
+            .entry(chat_id.to_string())
+            .or_insert_with(|| ThreadRecord {
+                chat_id: chat_id.to_string(),
+                unread_count: 0,
+                updated_at_secs,
+                messages: Vec::new(),
+            });
+        if thread.updated_at_secs == 0 {
+            thread.updated_at_secs = updated_at_secs;
+        }
+        thread
+    }
+
+    fn normalize_chat_id(&self, chat_id: &str) -> Option<String> {
+        if is_group_chat_id(chat_id) {
+            let group_id = parse_group_id_from_chat_id(chat_id)?;
+            let group_chat_id = group_chat_id(&group_id);
+            let known_group = self
+                .logged_in
+                .as_ref()
+                .and_then(|logged_in| logged_in.group_manager.group(&group_id))
+                .is_some();
+            if known_group || self.threads.contains_key(&group_chat_id) {
+                return Some(group_chat_id);
+            }
+            return None;
+        }
+
+        parse_peer_input(chat_id).ok().map(|(normalized, _)| normalized)
+    }
+
+    fn prepare_group_control(
+        &mut self,
+        group_id: &str,
+        kind: &PendingGroupControlKind,
+        now: UnixSeconds,
+    ) -> anyhow::Result<(GroupSnapshot, Vec<String>, nostr_double_ratchet::GroupPreparedSend)> {
+        let logged_in = self.logged_in.as_mut().expect("logged in checked above");
+        let mut rng = OsRng;
+        let mut ctx = ProtocolContext::new(now, &mut rng);
+        let (session_manager, group_manager) =
+            (&mut logged_in.session_manager, &mut logged_in.group_manager);
+
+        match kind {
+            PendingGroupControlKind::Create {
+                name,
+                member_owner_hexes,
+            } => {
+                let members = owner_pubkeys_from_hexes(member_owner_hexes)?;
+                let result = group_manager.create_group(
+                    session_manager,
+                    &mut ctx,
+                    name.clone(),
+                    members,
+                )?;
+                return Ok((
+                    result.group.clone(),
+                    member_owner_hexes.clone(),
+                    result.prepared,
+                ));
+            }
+            PendingGroupControlKind::Rename { name } => {
+                let prepared = group_manager.update_name(
+                    session_manager,
+                    &mut ctx,
+                    group_id,
+                    name.clone(),
+                )?;
+                let snapshot = group_manager
+                    .group(group_id)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown group."))?;
+                return Ok((
+                    snapshot.clone(),
+                    sorted_owner_hexes(
+                        &snapshot
+                            .members
+                            .iter()
+                            .copied()
+                            .filter(|member| *member != logged_in.owner_pubkey)
+                            .collect::<Vec<_>>(),
+                    ),
+                    prepared,
+                ));
+            }
+            PendingGroupControlKind::AddMembers { member_owner_hexes } => {
+                let members = owner_pubkeys_from_hexes(member_owner_hexes)?;
+                let prepared = group_manager.add_members(
+                    session_manager,
+                    &mut ctx,
+                    group_id,
+                    members,
+                )?;
+                let snapshot = group_manager
+                    .group(group_id)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown group."))?;
+                return Ok((
+                    snapshot.clone(),
+                    sorted_owner_hexes(
+                        &snapshot
+                            .members
+                            .iter()
+                            .copied()
+                            .filter(|member| *member != logged_in.owner_pubkey)
+                            .collect::<Vec<_>>(),
+                    ),
+                    prepared,
+                ));
+            }
+            PendingGroupControlKind::RemoveMember { owner_pubkey_hex } => {
+                let owner = parse_owner_input(owner_pubkey_hex)?;
+                let prepared = group_manager.remove_members(
+                    session_manager,
+                    &mut ctx,
+                    group_id,
+                    vec![owner],
+                )?;
+                let snapshot = group_manager
+                    .group(group_id)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown group."))?;
+                return Ok((
+                    snapshot.clone(),
+                    sorted_owner_hexes(
+                        &snapshot
+                            .members
+                            .iter()
+                            .copied()
+                            .filter(|member| *member != logged_in.owner_pubkey)
+                            .collect::<Vec<_>>(),
+                    ),
+                    prepared,
+                ));
+            }
+        }
+    }
+
+    fn apply_group_snapshot_to_threads(&mut self, group: &GroupSnapshot, updated_at_secs: u64) {
+        let chat_id = group_chat_id(&group.group_id);
+        let thread = self.ensure_thread_record(&chat_id, updated_at_secs);
+        thread.updated_at_secs = thread.updated_at_secs.max(updated_at_secs);
+    }
+
+    fn queue_pending_group_control(
+        &mut self,
+        operation_id: String,
+        group_id: String,
+        target_owner_hexes: Vec<String>,
+        prepared_publish: Option<PreparedPublishBatch>,
+        reason: PendingSendReason,
+        next_retry_at_secs: u64,
+        kind: PendingGroupControlKind,
+    ) {
+        self.pending_group_controls.push(PendingGroupControl {
+            operation_id,
+            group_id,
+            target_owner_hexes,
+            prepared_publish,
+            reason,
+            next_retry_at_secs,
+            in_flight: false,
+            kind,
+        });
+    }
+
+    fn set_pending_group_control_in_flight(&mut self, operation_id: &str, in_flight: bool) {
+        if let Some(pending) = self
+            .pending_group_controls
+            .iter_mut()
+            .find(|pending| pending.operation_id == operation_id)
+        {
+            pending.in_flight = in_flight;
+        }
+    }
+
+    fn start_group_control_publish(
+        &mut self,
+        operation_id: String,
+        publish_mode: OutboundPublishMode,
+        batch: PreparedPublishBatch,
+    ) {
+        let Some((client, relay_urls)) = self
+            .logged_in
+            .as_ref()
+            .map(|logged_in| (logged_in.client.clone(), logged_in.relay_urls.clone()))
+        else {
+            return;
+        };
+
+        for event in batch
+            .invite_events
+            .iter()
+            .chain(batch.message_events.iter())
+        {
+            self.remember_event(event.id.to_string());
+        }
+
+        let tx = self.core_sender.clone();
+        match publish_mode {
+            OutboundPublishMode::OrdinaryFirstAck => {
+                self.runtime.spawn(async move {
+                    let success = publish_events_first_ack(
+                        &client,
+                        &relay_urls,
+                        &batch.message_events,
+                        "group control",
+                    )
+                    .await
+                    .is_ok();
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::GroupControlPublishFinished {
+                            operation_id,
+                            success,
+                        },
+                    )));
+                });
+            }
+            OutboundPublishMode::FirstContactStaged => {
+                self.runtime.spawn(async move {
+                    let invite_publish = publish_events_with_retry(
+                        &client,
+                        &relay_urls,
+                        batch.invite_events,
+                        "group control",
+                    )
+                    .await;
+                    if invite_publish.is_err() {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::GroupControlPublishFinished {
+                                operation_id,
+                                success: false,
+                            },
+                        )));
+                        return;
+                    }
+
+                    sleep(Duration::from_millis(FIRST_CONTACT_STAGE_DELAY_MS)).await;
+                    let success = publish_events_with_retry(
+                        &client,
+                        &relay_urls,
+                        batch.message_events,
+                        "group control",
+                    )
+                    .await
+                    .is_ok();
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::GroupControlPublishFinished {
+                            operation_id,
+                            success,
+                        },
+                    )));
+                });
+            }
+            OutboundPublishMode::WaitForPeer => {}
+        }
+    }
+
     fn open_chat(&mut self, chat_id: &str) {
         if !self.can_use_chats() {
             self.state.toast = Some(chat_unavailable_message(self.logged_in.as_ref()).to_string());
@@ -593,24 +1053,15 @@ impl AppCore {
             return;
         }
 
-        let Ok((chat_id, _pubkey)) = parse_peer_input(chat_id) else {
-            self.state.toast = Some("Invalid peer key.".to_string());
+        let Some(chat_id) = self.normalize_chat_id(chat_id) else {
+            self.state.toast = Some("Invalid chat id.".to_string());
             self.emit_state();
             return;
         };
 
         let now = unix_now().get();
         self.prune_recent_handshake_peers(now);
-        self.threads
-            .entry(chat_id.clone())
-            .or_insert_with(|| ThreadRecord {
-                chat_id: chat_id.clone(),
-                unread_count: 0,
-                updated_at_secs: now,
-                messages: Vec::new(),
-            })
-            .unread_count = 0;
-
+        self.ensure_thread_record(&chat_id, now).unread_count = 0;
         self.active_chat_id = Some(chat_id.clone());
         self.screen_stack = vec![Screen::Chat {
             chat_id: chat_id.clone(),
@@ -629,12 +1080,6 @@ impl AppCore {
             return;
         }
 
-        let Ok((chat_id, peer_pubkey)) = parse_peer_input(chat_id) else {
-            self.state.toast = Some("Invalid peer key.".to_string());
-            self.emit_state();
-            return;
-        };
-
         if self.logged_in.is_none() {
             self.state.toast = Some("Create or restore an account first.".to_string());
             self.emit_state();
@@ -646,31 +1091,46 @@ impl AppCore {
             return;
         }
 
+        let Some(normalized_chat_id) = self.normalize_chat_id(chat_id) else {
+            self.state.toast = Some("Invalid chat id.".to_string());
+            self.emit_state();
+            return;
+        };
+
         let now = unix_now();
         self.prune_recent_handshake_peers(now.get());
-        self.active_chat_id = Some(chat_id.clone());
+        self.active_chat_id = Some(normalized_chat_id.clone());
         self.screen_stack = vec![Screen::Chat {
-            chat_id: chat_id.clone(),
+            chat_id: normalized_chat_id.clone(),
         }];
-        self.threads
-            .entry(chat_id.clone())
-            .or_insert_with(|| ThreadRecord {
-                chat_id: chat_id.clone(),
-                unread_count: 0,
-                updated_at_secs: now.get(),
-                messages: Vec::new(),
-            });
+        self.ensure_thread_record(&normalized_chat_id, now.get());
         self.state.busy.sending_message = true;
         self.rebuild_state();
         self.emit_state();
 
-        let payload = match encode_app_message_payload(&chat_id, trimmed) {
+        if is_group_chat_id(&normalized_chat_id) {
+            self.send_group_message(&normalized_chat_id, trimmed, now);
+        } else {
+            self.send_direct_message(&normalized_chat_id, trimmed, now);
+        }
+
+        self.schedule_next_pending_retry(now.get());
+        self.state.busy.sending_message = false;
+        self.rebuild_state();
+        self.persist_best_effort();
+        self.emit_state();
+    }
+
+    fn send_direct_message(&mut self, chat_id: &str, text: &str, now: UnixSeconds) {
+        let Ok((normalized_chat_id, peer_pubkey)) = parse_peer_input(chat_id) else {
+            self.state.toast = Some("Invalid peer key.".to_string());
+            return;
+        };
+
+        let payload = match encode_app_direct_message_payload(&normalized_chat_id, text) {
             Ok(payload) => payload,
             Err(error) => {
-                self.state.busy.sending_message = false;
                 self.state.toast = Some(error.to_string());
-                self.rebuild_state();
-                self.emit_state();
                 return;
             }
         };
@@ -684,20 +1144,124 @@ impl AppCore {
                 .prepare_send(&mut ctx, owner, payload)
         };
 
+        self.handle_prepared_direct_send(&normalized_chat_id, text, now, prepared);
+    }
+
+    fn send_group_message(&mut self, chat_id: &str, text: &str, now: UnixSeconds) {
+        let Some(group_id) = parse_group_id_from_chat_id(chat_id) else {
+            self.state.toast = Some("Invalid group id.".to_string());
+            return;
+        };
+        let payload = match encode_app_group_message_payload(text) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.state.toast = Some(error.to_string());
+                return;
+            }
+        };
+
+        let prepared = {
+            let logged_in = self.logged_in.as_mut().expect("logged in checked above");
+            let mut rng = OsRng;
+            let mut ctx = ProtocolContext::new(now, &mut rng);
+            let (session_manager, group_manager) =
+                (&mut logged_in.session_manager, &mut logged_in.group_manager);
+            group_manager.send_message(session_manager, &mut ctx, &group_id, payload)
+        };
+
         match prepared {
             Ok(prepared) => {
-                if let Some(reason) = pending_reason_from_prepared(&prepared) {
+                if let Some(reason) = pending_reason_from_group_prepared(&prepared) {
                     let republish_identity = matches!(reason, PendingSendReason::MissingRoster);
                     let message = self.push_outgoing_message(
-                        &chat_id,
-                        trimmed.to_string(),
+                        chat_id,
+                        text.to_string(),
                         now.get(),
                         DeliveryState::Pending,
                     );
                     self.queue_pending_outbound(
                         message.id,
-                        chat_id.clone(),
-                        trimmed.to_string(),
+                        chat_id.to_string(),
+                        text.to_string(),
+                        None,
+                        OutboundPublishMode::WaitForPeer,
+                        reason,
+                        now.get().saturating_add(PENDING_RETRY_DELAY_SECS),
+                    );
+                    if republish_identity {
+                        self.republish_local_identity_artifacts();
+                    }
+                    self.request_protocol_subscription_refresh();
+                    self.schedule_pending_outbound_retry(Duration::from_secs(
+                        PENDING_RETRY_DELAY_SECS,
+                    ));
+                } else {
+                    match build_group_prepared_publish_batch(&prepared) {
+                        Ok(Some(batch)) => {
+                            let publish_mode = publish_mode_for_batch(&batch);
+                            let message = self.push_outgoing_message(
+                                chat_id,
+                                text.to_string(),
+                                now.get(),
+                                DeliveryState::Pending,
+                            );
+                            self.queue_pending_outbound(
+                                message.id.clone(),
+                                chat_id.to_string(),
+                                text.to_string(),
+                                Some(batch.clone()),
+                                publish_mode.clone(),
+                                pending_reason_for_publish_mode(&publish_mode),
+                                retry_deadline_for_publish_mode(now.get(), &publish_mode),
+                            );
+                            self.set_pending_outbound_in_flight(&message.id, true);
+                            self.start_publish_for_pending(
+                                message.id,
+                                chat_id.to_string(),
+                                publish_mode,
+                                batch,
+                            );
+                        }
+                        Ok(None) => {
+                            let message = self.push_outgoing_message(
+                                chat_id,
+                                text.to_string(),
+                                now.get(),
+                                DeliveryState::Failed,
+                            );
+                            self.update_message_delivery(chat_id, &message.id, DeliveryState::Failed);
+                        }
+                        Err(error) => self.state.toast = Some(error.to_string()),
+                    }
+                }
+            }
+            Err(error) => {
+                self.state.toast = Some(error.to_string());
+            }
+        }
+    }
+
+    fn handle_prepared_direct_send(
+        &mut self,
+        chat_id: &str,
+        text: &str,
+        now: UnixSeconds,
+        prepared: Result<nostr_double_ratchet::PreparedSend, Error>,
+    ) {
+        match prepared {
+            Ok(prepared) => {
+                if let Some(reason) = pending_reason_from_prepared(&prepared) {
+                    let republish_identity = matches!(reason, PendingSendReason::MissingRoster);
+                    let message = self.push_outgoing_message(
+                        chat_id,
+                        text.to_string(),
+                        now.get(),
+                        DeliveryState::Pending,
+                    );
+                    self.queue_pending_outbound(
+                        message.id,
+                        chat_id.to_string(),
+                        text.to_string(),
                         None,
                         OutboundPublishMode::WaitForPeer,
                         reason,
@@ -714,42 +1278,39 @@ impl AppCore {
                     match build_prepared_publish_batch(&prepared) {
                         Ok(Some(batch)) => {
                             let publish_mode = publish_mode_for_batch(&batch);
-                            let reason = pending_reason_for_publish_mode(&publish_mode);
-                            let next_retry_at_secs = retry_deadline_for_publish_mode(now.get(), &publish_mode);
                             let message = self.push_outgoing_message(
-                                &chat_id,
-                                trimmed.to_string(),
+                                chat_id,
+                                text.to_string(),
                                 now.get(),
                                 DeliveryState::Pending,
                             );
                             self.queue_pending_outbound(
                                 message.id.clone(),
-                                chat_id.clone(),
-                                trimmed.to_string(),
+                                chat_id.to_string(),
+                                text.to_string(),
                                 Some(batch.clone()),
                                 publish_mode.clone(),
-                                reason,
-                                next_retry_at_secs,
+                                pending_reason_for_publish_mode(&publish_mode),
+                                retry_deadline_for_publish_mode(now.get(), &publish_mode),
                             );
                             self.set_pending_outbound_in_flight(&message.id, true);
-                            self.start_publish_for_pending(message.id, chat_id, publish_mode, batch);
+                            self.start_publish_for_pending(
+                                message.id,
+                                chat_id.to_string(),
+                                publish_mode,
+                                batch,
+                            );
                         }
                         Ok(None) => {
                             let message = self.push_outgoing_message(
-                                &chat_id,
-                                trimmed.to_string(),
+                                chat_id,
+                                text.to_string(),
                                 now.get(),
                                 DeliveryState::Failed,
                             );
-                            self.update_message_delivery(
-                                &chat_id,
-                                &message.id,
-                                DeliveryState::Failed,
-                            );
+                            self.update_message_delivery(chat_id, &message.id, DeliveryState::Failed);
                         }
-                        Err(error) => {
-                            self.state.toast = Some(error.to_string());
-                        }
+                        Err(error) => self.state.toast = Some(error.to_string()),
                     }
                 }
             }
@@ -757,9 +1318,131 @@ impl AppCore {
                 self.state.toast = Some(error.to_string());
             }
         }
+    }
+
+    fn update_group_name(&mut self, group_id: &str, name: &str) {
+        self.run_group_control(
+            group_id,
+            PendingGroupControlKind::Rename {
+                name: name.trim().to_string(),
+            },
+        );
+    }
+
+    fn add_group_members(&mut self, group_id: &str, member_inputs: &[String]) {
+        let Some(local_owner) = self.logged_in.as_ref().map(|logged_in| logged_in.owner_pubkey) else {
+            self.state.toast = Some("Create or restore an account first.".to_string());
+            self.emit_state();
+            return;
+        };
+        let member_owners = match parse_owner_inputs(member_inputs, local_owner) {
+            Ok(member_owners) if !member_owners.is_empty() => member_owners,
+            Ok(_) => {
+                self.state.toast = Some("Pick at least one member to add.".to_string());
+                self.emit_state();
+                return;
+            }
+            Err(error) => {
+                self.state.toast = Some(error.to_string());
+                self.emit_state();
+                return;
+            }
+        };
+        self.run_group_control(
+            group_id,
+            PendingGroupControlKind::AddMembers {
+                member_owner_hexes: sorted_owner_hexes(&member_owners),
+            },
+        );
+    }
+
+    fn remove_group_member(&mut self, group_id: &str, owner_pubkey_hex: &str) {
+        let Ok((owner_pubkey_hex, _)) = parse_peer_input(owner_pubkey_hex) else {
+            self.state.toast = Some("Invalid member key.".to_string());
+            self.emit_state();
+            return;
+        };
+        self.run_group_control(
+            group_id,
+            PendingGroupControlKind::RemoveMember { owner_pubkey_hex },
+        );
+    }
+
+    fn run_group_control(&mut self, group_id: &str, kind: PendingGroupControlKind) {
+        if self.logged_in.is_none() {
+            self.state.toast = Some("Create or restore an account first.".to_string());
+            self.emit_state();
+            return;
+        }
+        if !self.can_use_chats() {
+            self.state.toast = Some(chat_unavailable_message(self.logged_in.as_ref()).to_string());
+            self.emit_state();
+            return;
+        }
+
+        let Some(group_id) = normalize_group_id(group_id) else {
+            self.state.toast = Some("Unknown group.".to_string());
+            self.emit_state();
+            return;
+        };
+        self.state.busy.updating_group = true;
+        self.emit_state();
+
+        let now = unix_now();
+        let control_result = self.prepare_group_control(&group_id, &kind, now);
+        match control_result {
+            Ok((snapshot, target_owner_hexes, prepared)) => {
+                self.apply_group_snapshot_to_threads(&snapshot, now.get());
+                if let Some(reason) = pending_reason_from_group_prepared(&prepared) {
+                    let operation_id = self.allocate_message_id();
+                    self.queue_pending_group_control(
+                        operation_id,
+                        group_id,
+                        target_owner_hexes,
+                        None,
+                        reason.clone(),
+                        now.get().saturating_add(PENDING_RETRY_DELAY_SECS),
+                        kind,
+                    );
+                    if matches!(reason, PendingSendReason::MissingRoster) {
+                        self.republish_local_identity_artifacts();
+                    }
+                } else {
+                    match build_group_prepared_publish_batch(&prepared) {
+                        Ok(Some(batch)) => {
+                            let operation_id = self.allocate_message_id();
+                            let publish_mode = publish_mode_for_batch(&batch);
+                            self.queue_pending_group_control(
+                                operation_id.clone(),
+                                group_id.clone(),
+                                target_owner_hexes,
+                                Some(batch.clone()),
+                                pending_reason_for_publish_mode(&publish_mode),
+                                retry_deadline_for_publish_mode(now.get(), &publish_mode),
+                                kind.clone(),
+                            );
+                            self.set_pending_group_control_in_flight(&operation_id, true);
+                            self.start_group_control_publish(
+                                operation_id,
+                                publish_mode,
+                                batch,
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(error) => self.state.toast = Some(error.to_string()),
+                    }
+                }
+
+                self.request_protocol_subscription_refresh();
+                self.schedule_tracked_peer_catch_up(Duration::from_secs(
+                    RESUBSCRIBE_CATCH_UP_DELAY_SECS,
+                ));
+            }
+            Err(error) => self.state.toast = Some(error.to_string()),
+        }
 
         self.schedule_next_pending_retry(now.get());
-        self.state.busy.sending_message = false;
+        self.state.busy.updating_group = false;
         self.rebuild_state();
         self.persist_best_effort();
         self.emit_state();
@@ -785,9 +1468,34 @@ impl AppCore {
                 self.screen_stack = vec![Screen::NewChat];
                 self.active_chat_id = None;
             }
+            Screen::NewGroup => {
+                if !self.can_use_chats() {
+                    self.state.toast =
+                        Some(chat_unavailable_message(self.logged_in.as_ref()).to_string());
+                    self.emit_state();
+                    return;
+                }
+                self.screen_stack = vec![Screen::NewGroup];
+                self.active_chat_id = None;
+            }
             Screen::Chat { chat_id } => {
                 self.open_chat(&chat_id);
                 return;
+            }
+            Screen::GroupDetails { group_id } => {
+                let Some(group_id) = normalize_group_id(&group_id) else {
+                    return;
+                };
+                let group_chat_id = group_chat_id(&group_id);
+                if self.active_chat_id.as_deref() != Some(group_chat_id.as_str()) {
+                    self.open_chat(&group_chat_id);
+                }
+                if !matches!(
+                    self.screen_stack.last(),
+                    Some(Screen::GroupDetails { group_id: current }) if current == &group_id
+                ) {
+                    self.screen_stack.push(Screen::GroupDetails { group_id });
+                }
             }
             Screen::DeviceRoster => {
                 self.screen_stack = vec![Screen::DeviceRoster];
@@ -818,11 +1526,23 @@ impl AppCore {
                         normalized_stack.push(Screen::NewChat);
                     }
                 }
+                Screen::NewGroup => {
+                    if self.can_use_chats() {
+                        normalized_stack.push(Screen::NewGroup);
+                    }
+                }
                 Screen::DeviceRoster => normalized_stack.push(Screen::DeviceRoster),
                 Screen::Chat { chat_id } => {
                     if self.can_use_chats() {
-                        if let Ok((chat_id, _)) = parse_peer_input(&chat_id) {
+                        if let Some(chat_id) = self.normalize_chat_id(&chat_id) {
                             normalized_stack.push(Screen::Chat { chat_id });
+                        }
+                    }
+                }
+                Screen::GroupDetails { group_id } => {
+                    if self.can_use_chats() {
+                        if let Some(group_id) = normalize_group_id(&group_id) {
+                            normalized_stack.push(Screen::GroupDetails { group_id });
                         }
                     }
                 }
@@ -1000,6 +1720,7 @@ impl AppCore {
                                     self.screen_stack.clear();
                                     self.pending_inbound.clear();
                                     self.pending_outbound.clear();
+                                    self.pending_group_controls.clear();
                                 }
                                 _ => {}
                             }
@@ -1195,15 +1916,11 @@ impl AppCore {
                         self.remember_event(event_id);
                         let owner_hex = message.owner_pubkey.to_string();
                         self.clear_recent_handshake_peer(&owner_hex);
-                        let routed = route_received_message(
-                            self.logged_in
-                                .as_ref()
-                                .expect("checked above")
-                                .owner_pubkey,
-                            message.owner_pubkey,
-                            &message.payload,
-                        );
-                        self.apply_routed_chat_message(routed, now.get());
+                        if let Err(error) =
+                            self.apply_decrypted_payload(message.owner_pubkey, &message.payload, now.get())
+                        {
+                            self.state.toast = Some(error.to_string());
+                        }
                         self.request_protocol_subscription_refresh();
                         self.persist_best_effort();
                         self.rebuild_state();
@@ -1263,6 +1980,7 @@ impl AppCore {
         self.active_chat_id = None;
         self.screen_stack.clear();
         self.pending_outbound.clear();
+        self.pending_group_controls.clear();
         self.recent_handshake_peers.clear();
         self.seen_event_ids.clear();
         self.seen_event_order.clear();
@@ -1294,6 +2012,7 @@ impl AppCore {
                         pending.prepared_publish.as_ref(),
                     );
                 }
+                self.pending_group_controls = persisted.pending_group_controls.clone();
                 self.pending_inbound = persisted.pending_inbound.clone();
                 self.seen_event_order = persisted
                     .seen_event_ids
@@ -1344,20 +2063,31 @@ impl AppCore {
                 .collect();
         }
 
-        let mut session_manager = persisted
+        let persisted_session_manager = persisted
+            .as_ref()
             .and_then(|persisted| {
                 if allow_protocol_restore {
-                    persisted.session_manager
+                    persisted.session_manager.clone()
                 } else {
                     None
                 }
-            })
+            });
+
+        let mut session_manager = persisted_session_manager
             .filter(|snapshot| {
                 snapshot.local_owner_pubkey == owner_pubkey && snapshot.local_device_pubkey == local_device
             })
             .map(|snapshot| SessionManager::from_snapshot(snapshot, device_secret_bytes))
             .transpose()?
             .unwrap_or_else(|| SessionManager::new(owner_pubkey, device_secret_bytes));
+
+        let group_manager = persisted
+            .as_ref()
+            .and_then(|persisted| persisted.group_manager.clone())
+            .filter(|snapshot| snapshot.local_owner_pubkey == owner_pubkey)
+            .map(GroupManager::from_snapshot)
+            .transpose()?
+            .unwrap_or_else(|| GroupManager::new(owner_pubkey));
 
         let existing_local_roster = session_manager
             .snapshot()
@@ -1391,6 +2121,7 @@ impl AppCore {
             self.screen_stack.clear();
             self.pending_inbound.clear();
             self.pending_outbound.clear();
+            self.pending_group_controls.clear();
         } else if let Some(chat_id) = self.active_chat_id.clone() {
             self.screen_stack = vec![Screen::Chat { chat_id }];
         }
@@ -1408,6 +2139,7 @@ impl AppCore {
             client,
             relay_urls,
             session_manager,
+            group_manager,
             authorization_state,
         });
         self.schedule_session_connect();
@@ -1455,15 +2187,12 @@ impl AppCore {
             };
             match receive_result {
                 Ok(Some(message)) => {
-                    let routed = route_received_message(
-                        self.logged_in
-                            .as_ref()
-                            .expect("checked above")
-                            .owner_pubkey,
-                        message.owner_pubkey,
-                        &message.payload,
-                    );
-                    self.apply_routed_chat_message(routed, now.get());
+                    if self
+                        .apply_decrypted_payload(message.owner_pubkey, &message.payload, now.get())
+                        .is_err()
+                    {
+                        still_pending.push(item);
+                    }
                 }
                 Ok(None) => still_pending.push(item),
                 Err(_) => still_pending.push(item),
@@ -1510,35 +2239,128 @@ impl AppCore {
                 continue;
             }
 
-            let owner = match parse_peer_input(&pending_message.chat_id) {
-                Ok((_, peer_pubkey)) => OwnerPubkey::from_bytes(peer_pubkey.to_bytes()),
-                Err(_) => {
+            if is_group_chat_id(&pending_message.chat_id) {
+                let Some(group_id) = parse_group_id_from_chat_id(&pending_message.chat_id) else {
                     self.update_message_delivery(
                         &pending_message.chat_id,
                         &pending_message.message_id,
                         DeliveryState::Failed,
                     );
                     continue;
-                }
-            };
+                };
+                let payload = match encode_app_group_message_payload(&pending_message.body) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        self.state.toast = Some(error.to_string());
+                        self.update_message_delivery(
+                            &pending_message.chat_id,
+                            &pending_message.message_id,
+                            DeliveryState::Failed,
+                        );
+                        continue;
+                    }
+                };
+                let prepared = {
+                    let logged_in = self.logged_in.as_mut().expect("checked above");
+                    let mut rng = OsRng;
+                    let mut ctx = ProtocolContext::new(now, &mut rng);
+                    let (session_manager, group_manager) =
+                        (&mut logged_in.session_manager, &mut logged_in.group_manager);
+                    group_manager.send_message(session_manager, &mut ctx, &group_id, payload)
+                };
 
-            let payload = match encode_app_message_payload(
-                &pending_message.chat_id,
-                &pending_message.body,
-            ) {
-                Ok(payload) => payload,
-                Err(error) => {
-                    self.state.toast = Some(error.to_string());
-                    self.update_message_delivery(
-                        &pending_message.chat_id,
-                        &pending_message.message_id,
-                        DeliveryState::Failed,
-                    );
-                    continue;
+                match prepared {
+                    Ok(prepared) => {
+                        if let Some(reason) = pending_reason_from_group_prepared(&prepared) {
+                            pending_message.reason = reason.clone();
+                            pending_message.next_retry_at_secs =
+                                now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
+                            if matches!(reason, PendingSendReason::MissingRoster) {
+                                self.republish_local_identity_artifacts();
+                            }
+                            pending_message.publish_mode = OutboundPublishMode::WaitForPeer;
+                            still_pending.push(pending_message);
+                        } else {
+                            match build_group_prepared_publish_batch(&prepared) {
+                                Ok(Some(batch)) => {
+                                    pending_message.publish_mode = publish_mode_for_batch(&batch);
+                                    pending_message.prepared_publish = Some(batch.clone());
+                                    pending_message.reason = pending_reason_for_publish_mode(
+                                        &pending_message.publish_mode,
+                                    );
+                                    pending_message.next_retry_at_secs =
+                                        retry_deadline_for_publish_mode(
+                                            now.get(),
+                                            &pending_message.publish_mode,
+                                        );
+                                    pending_message.in_flight = true;
+                                    self.start_publish_for_pending(
+                                        pending_message.message_id.clone(),
+                                        pending_message.chat_id.clone(),
+                                        pending_message.publish_mode.clone(),
+                                        batch,
+                                    );
+                                    still_pending.push(pending_message);
+                                }
+                                Ok(None) => {
+                                    pending_message.publish_mode = OutboundPublishMode::WaitForPeer;
+                                    pending_message.reason = PendingSendReason::MissingDeviceInvite;
+                                    pending_message.next_retry_at_secs =
+                                        now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
+                                    still_pending.push(pending_message);
+                                }
+                                Err(error) => {
+                                    self.state.toast = Some(error.to_string());
+                                    self.update_message_delivery(
+                                        &pending_message.chat_id,
+                                        &pending_message.message_id,
+                                        DeliveryState::Failed,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        self.state.toast = Some(error.to_string());
+                        self.update_message_delivery(
+                            &pending_message.chat_id,
+                            &pending_message.message_id,
+                            DeliveryState::Failed,
+                        );
+                    }
                 }
-            };
+                continue;
+            }
 
             let prepared = {
+                let owner = match parse_peer_input(&pending_message.chat_id) {
+                    Ok((_, peer_pubkey)) => OwnerPubkey::from_bytes(peer_pubkey.to_bytes()),
+                    Err(_) => {
+                        self.update_message_delivery(
+                            &pending_message.chat_id,
+                            &pending_message.message_id,
+                            DeliveryState::Failed,
+                        );
+                        continue;
+                    }
+                };
+
+                let payload = match encode_app_direct_message_payload(
+                    &pending_message.chat_id,
+                    &pending_message.body,
+                ) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        self.state.toast = Some(error.to_string());
+                        self.update_message_delivery(
+                            &pending_message.chat_id,
+                            &pending_message.message_id,
+                            DeliveryState::Failed,
+                        );
+                        continue;
+                    }
+                };
+
                 let logged_in = self.logged_in.as_mut().expect("checked above");
                 let mut rng = OsRng;
                 let mut ctx = ProtocolContext::new(now, &mut rng);
@@ -1613,6 +2435,80 @@ impl AppCore {
         self.schedule_next_pending_retry(now.get());
     }
 
+    fn retry_pending_group_controls(&mut self, now: UnixSeconds) {
+        if self.logged_in.is_none() || self.pending_group_controls.is_empty() {
+            return;
+        }
+
+        let pending = std::mem::take(&mut self.pending_group_controls);
+        let mut still_pending = Vec::new();
+
+        for mut control in pending {
+            if control.next_retry_at_secs > now.get() || control.in_flight {
+                still_pending.push(control);
+                continue;
+            }
+
+            if let Some(batch) = control.prepared_publish.clone() {
+                control.in_flight = true;
+                let publish_mode = publish_mode_for_batch(&batch);
+                self.start_group_control_publish(
+                    control.operation_id.clone(),
+                    publish_mode,
+                    batch,
+                );
+                still_pending.push(control);
+                continue;
+            }
+
+            match self.prepare_group_control(&control.group_id, &control.kind, now) {
+                Ok((snapshot, target_owner_hexes, prepared)) => {
+                    self.apply_group_snapshot_to_threads(&snapshot, now.get());
+                    control.target_owner_hexes = target_owner_hexes;
+                    if let Some(reason) = pending_reason_from_group_prepared(&prepared) {
+                        control.reason = reason.clone();
+                        control.next_retry_at_secs =
+                            now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
+                        if matches!(reason, PendingSendReason::MissingRoster) {
+                            self.republish_local_identity_artifacts();
+                        }
+                        still_pending.push(control);
+                    } else {
+                        match build_group_prepared_publish_batch(&prepared) {
+                            Ok(Some(batch)) => {
+                                control.prepared_publish = Some(batch.clone());
+                                control.reason = pending_reason_for_publish_mode(
+                                    &publish_mode_for_batch(&batch),
+                                );
+                                control.next_retry_at_secs = retry_deadline_for_publish_mode(
+                                    now.get(),
+                                    &publish_mode_for_batch(&batch),
+                                );
+                                control.in_flight = true;
+                                self.start_group_control_publish(
+                                    control.operation_id.clone(),
+                                    publish_mode_for_batch(&batch),
+                                    batch,
+                                );
+                                still_pending.push(control);
+                            }
+                            Ok(None) => {
+                                control.next_retry_at_secs =
+                                    now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
+                                still_pending.push(control);
+                            }
+                            Err(error) => self.state.toast = Some(error.to_string()),
+                        }
+                    }
+                }
+                Err(error) => self.state.toast = Some(error.to_string()),
+            }
+        }
+
+        self.pending_group_controls = still_pending;
+        self.schedule_next_pending_retry(now.get());
+    }
+
     fn queue_pending_outbound(
         &mut self,
         message_id: String,
@@ -1681,12 +2577,33 @@ impl AppCore {
     }
 
     fn tracked_peer_owner_hexes(&self) -> HashSet<String> {
-        let mut owners = self.threads.keys().cloned().collect::<HashSet<_>>();
+        let mut owners = self
+            .threads
+            .keys()
+            .filter(|chat_id| !is_group_chat_id(chat_id))
+            .cloned()
+            .collect::<HashSet<_>>();
         if let Some(chat_id) = self.active_chat_id.as_ref() {
-            owners.insert(chat_id.clone());
+            if !is_group_chat_id(chat_id) {
+                owners.insert(chat_id.clone());
+            }
         }
         for pending in &self.pending_outbound {
-            owners.insert(pending.chat_id.clone());
+            if !is_group_chat_id(&pending.chat_id) {
+                owners.insert(pending.chat_id.clone());
+            }
+        }
+        for pending in &self.pending_group_controls {
+            owners.extend(pending.target_owner_hexes.iter().cloned());
+        }
+        if let Some(logged_in) = self.logged_in.as_ref() {
+            for group in logged_in.group_manager.groups() {
+                for member in group.members {
+                    if member != logged_in.owner_pubkey {
+                        owners.insert(member.to_string());
+                    }
+                }
+            }
         }
         owners
     }
@@ -1731,12 +2648,17 @@ impl AppCore {
     }
 
     fn schedule_next_pending_retry(&self, now_secs: u64) {
-        let Some(next_retry_at_secs) = self
+        let next_retry_at_secs = self
             .pending_outbound
             .iter()
             .map(|pending| pending.next_retry_at_secs)
-            .min()
-        else {
+            .chain(
+                self.pending_group_controls
+                    .iter()
+                    .map(|pending| pending.next_retry_at_secs),
+            )
+            .min();
+        let Some(next_retry_at_secs) = next_retry_at_secs else {
             return;
         };
         let delay_secs = next_retry_at_secs.saturating_sub(now_secs).max(1);
@@ -2091,9 +3013,15 @@ impl AppCore {
         message
     }
 
-    fn push_incoming_message(&mut self, chat_id: &str, body: String, created_at_secs: u64) {
+    fn push_incoming_message_from(
+        &mut self,
+        chat_id: &str,
+        body: String,
+        created_at_secs: u64,
+        author: Option<String>,
+    ) {
         let message_id = self.allocate_message_id();
-        let author = owner_npub(chat_id).unwrap_or_else(|| chat_id.to_string());
+        let author = author.unwrap_or_else(|| owner_npub(chat_id).unwrap_or_else(|| chat_id.to_string()));
         let thread = self
             .threads
             .entry(chat_id.to_string())
@@ -2131,8 +3059,60 @@ impl AppCore {
                 DeliveryState::Sent,
             );
         } else {
-            self.push_incoming_message(&routed.chat_id, routed.body, created_at_secs);
+            self.push_incoming_message_from(
+                &routed.chat_id,
+                routed.body,
+                created_at_secs,
+                routed.author,
+            );
         }
+    }
+
+    fn apply_group_metadata_update(&mut self, group: GroupSnapshot, created_at_secs: u64) {
+        self.apply_group_snapshot_to_threads(&group, created_at_secs.max(group.updated_at.get()));
+    }
+
+    fn apply_decrypted_payload(
+        &mut self,
+        sender_owner: OwnerPubkey,
+        payload: &[u8],
+        created_at_secs: u64,
+    ) -> anyhow::Result<()> {
+        let local_owner = self
+            .logged_in
+            .as_ref()
+            .expect("logged in")
+            .owner_pubkey;
+
+        let group_event = {
+            let logged_in = self.logged_in.as_mut().expect("logged in");
+            logged_in.group_manager.handle_incoming(sender_owner, payload)?
+        };
+
+        match group_event {
+            Some(GroupIncomingEvent::MetadataUpdated(group)) => {
+                self.apply_group_metadata_update(group, created_at_secs);
+            }
+            Some(GroupIncomingEvent::Message(group_message)) => {
+                let decoded = decode_app_group_message_payload(&group_message.body)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid group message payload."))?;
+                self.apply_routed_chat_message(
+                    RoutedChatMessage {
+                        chat_id: group_chat_id(&group_message.group_id),
+                        body: decoded.body,
+                        is_outgoing: group_message.sender_owner == local_owner,
+                        author: owner_npub(&group_message.sender_owner.to_string()),
+                    },
+                    created_at_secs,
+                );
+            }
+            None => {
+                let routed = route_received_direct_message(local_owner, sender_owner, payload);
+                self.apply_routed_chat_message(routed, created_at_secs);
+            }
+        }
+
+        Ok(())
     }
 
     fn allocate_message_id(&mut self) -> String {
@@ -2163,12 +3143,28 @@ impl AppCore {
             .iter()
             .map(|thread| {
                 let last_message = thread.messages.last();
+                let thread_kind = chat_kind_for_id(&thread.chat_id);
+                let group_snapshot = self.group_snapshot_for_chat_id(&thread.chat_id);
+                let display_name = group_snapshot
+                    .as_ref()
+                    .map(|group| group.name.clone())
+                    .unwrap_or_else(|| {
+                        owner_npub(&thread.chat_id).unwrap_or_else(|| thread.chat_id.clone())
+                    });
+                let subtitle = group_snapshot
+                    .as_ref()
+                    .map(|group| format!("{} members", group.members.len()))
+                    .or_else(|| owner_npub(&thread.chat_id));
+                let member_count = group_snapshot
+                    .as_ref()
+                    .map(|group| group.members.len() as u64)
+                    .unwrap_or(0);
                 ChatThreadSnapshot {
                     chat_id: thread.chat_id.clone(),
-                    display_name: owner_npub(&thread.chat_id)
-                        .unwrap_or_else(|| thread.chat_id.clone()),
-                    peer_npub: owner_npub(&thread.chat_id)
-                        .unwrap_or_else(|| thread.chat_id.clone()),
+                    kind: thread_kind,
+                    display_name,
+                    subtitle,
+                    member_count,
                     last_message_preview: last_message.map(|message| message.body.clone()),
                     last_message_at_secs: last_message.map(|message| message.created_at_secs),
                     last_message_is_outgoing: last_message.map(|message| message.is_outgoing),
@@ -2182,11 +3178,37 @@ impl AppCore {
             .active_chat_id
             .as_ref()
             .and_then(|chat_id| self.threads.get(chat_id))
-            .map(|thread| CurrentChatSnapshot {
-                chat_id: thread.chat_id.clone(),
-                display_name: owner_npub(&thread.chat_id).unwrap_or_else(|| thread.chat_id.clone()),
-                peer_npub: owner_npub(&thread.chat_id).unwrap_or_else(|| thread.chat_id.clone()),
-                messages: thread.messages.clone(),
+            .map(|thread| {
+                let group_snapshot = self.group_snapshot_for_chat_id(&thread.chat_id);
+                CurrentChatSnapshot {
+                    chat_id: thread.chat_id.clone(),
+                    kind: chat_kind_for_id(&thread.chat_id),
+                    display_name: group_snapshot
+                        .as_ref()
+                        .map(|group| group.name.clone())
+                        .unwrap_or_else(|| {
+                            owner_npub(&thread.chat_id)
+                                .unwrap_or_else(|| thread.chat_id.clone())
+                        }),
+                    subtitle: group_snapshot
+                        .as_ref()
+                        .map(|group| format!("{} members", group.members.len()))
+                        .or_else(|| owner_npub(&thread.chat_id)),
+                    group_id: group_snapshot.as_ref().map(|group| group.group_id.clone()),
+                    member_count: group_snapshot
+                        .as_ref()
+                        .map(|group| group.members.len() as u64)
+                        .unwrap_or(0),
+                    messages: thread.messages.clone(),
+                }
+            });
+
+        self.state.group_details = self
+            .screen_stack
+            .last()
+            .and_then(|screen| match screen {
+                Screen::GroupDetails { group_id } => self.build_group_details_snapshot(group_id),
+                _ => None,
             });
 
         self.state.router = Router {
@@ -2293,6 +3315,49 @@ impl AppCore {
         })
     }
 
+    fn group_snapshot_for_chat_id(&self, chat_id: &str) -> Option<GroupSnapshot> {
+        let group_id = parse_group_id_from_chat_id(chat_id)?;
+        self.logged_in.as_ref()?.group_manager.group(&group_id)
+    }
+
+    fn build_group_details_snapshot(&self, group_id: &str) -> Option<GroupDetailsSnapshot> {
+        let logged_in = self.logged_in.as_ref()?;
+        let group = logged_in.group_manager.group(group_id)?;
+        let local_owner = logged_in.owner_pubkey;
+        let mut members = group
+            .members
+            .iter()
+            .map(|owner| {
+                let owner_hex = owner.to_string();
+                GroupMemberSnapshot {
+                    owner_pubkey_hex: owner_hex.clone(),
+                    npub: owner_npub_from_owner(*owner).unwrap_or_else(|| owner_hex.clone()),
+                    is_admin: group.admins.iter().any(|admin| admin == owner),
+                    is_creator: group.created_by == *owner,
+                    is_local_owner: *owner == local_owner,
+                }
+            })
+            .collect::<Vec<_>>();
+        members.sort_by(|left, right| {
+            right
+                .is_local_owner
+                .cmp(&left.is_local_owner)
+                .then_with(|| right.is_creator.cmp(&left.is_creator))
+                .then_with(|| right.is_admin.cmp(&left.is_admin))
+                .then_with(|| left.owner_pubkey_hex.cmp(&right.owner_pubkey_hex))
+        });
+
+        Some(GroupDetailsSnapshot {
+            group_id: group.group_id,
+            name: group.name,
+            created_by_npub: owner_npub_from_owner(group.created_by)
+                .unwrap_or_else(|| group.created_by.to_string()),
+            can_manage: group.admins.iter().any(|admin| admin == &local_owner),
+            revision: group.revision,
+            members,
+        })
+    }
+
     fn can_use_chats(&self) -> bool {
         matches!(
             self.logged_in
@@ -2353,10 +3418,11 @@ impl AppCore {
         };
 
         let persisted = PersistedState {
-            version: 8,
+            version: 9,
             active_chat_id: self.active_chat_id.clone(),
             next_message_id: self.next_message_id,
             session_manager: Some(logged_in.session_manager.snapshot()),
+            group_manager: Some(logged_in.group_manager.snapshot()),
             threads: self
                 .threads
                 .values()
@@ -2381,6 +3447,7 @@ impl AppCore {
                 .collect(),
             pending_inbound: self.pending_inbound.clone(),
             pending_outbound: self.pending_outbound.clone(),
+            pending_group_controls: self.pending_group_controls.clone(),
             seen_event_ids: self.seen_event_order.iter().cloned().collect(),
             authorization_state: Some(logged_in.authorization_state.into()),
         };
@@ -2686,10 +3753,17 @@ impl AppCore {
     }
 
     fn sync_active_chat_from_router(&mut self) {
-        match self.screen_stack.last() {
-            Some(Screen::Chat { chat_id }) => {
+        match self
+            .screen_stack
+            .iter()
+            .rev()
+            .find_map(|screen| match screen {
+                Screen::Chat { chat_id } => Some(chat_id.clone()),
+                _ => None,
+            }) {
+            Some(chat_id) => {
                 self.active_chat_id = Some(chat_id.clone());
-                if let Some(thread) = self.threads.get_mut(chat_id) {
+                if let Some(thread) = self.threads.get_mut(&chat_id) {
                     thread.unread_count = 0;
                 }
             }
@@ -2851,29 +3925,44 @@ fn resolve_message_sender_owner(
     None
 }
 
-fn encode_app_message_payload(chat_id: &str, body: &str) -> anyhow::Result<Vec<u8>> {
+fn encode_app_direct_message_payload(chat_id: &str, body: &str) -> anyhow::Result<Vec<u8>> {
     let (normalized_chat_id, _) = parse_peer_input(chat_id)?;
-    Ok(serde_json::to_vec(&AppMessagePayload {
-        version: APP_MESSAGE_PAYLOAD_VERSION,
+    Ok(serde_json::to_vec(&AppDirectMessagePayload {
+        version: APP_DIRECT_MESSAGE_PAYLOAD_VERSION,
         chat_id: normalized_chat_id,
         body: body.to_string(),
     })?)
 }
 
-fn decode_app_message_payload(payload: &[u8]) -> Option<AppMessagePayload> {
-    let decoded = serde_json::from_slice::<AppMessagePayload>(payload).ok()?;
-    if decoded.version != APP_MESSAGE_PAYLOAD_VERSION {
+fn decode_app_direct_message_payload(payload: &[u8]) -> Option<AppDirectMessagePayload> {
+    let decoded = serde_json::from_slice::<AppDirectMessagePayload>(payload).ok()?;
+    if decoded.version != APP_DIRECT_MESSAGE_PAYLOAD_VERSION {
         return None;
     }
     Some(decoded)
 }
 
-fn route_received_message(
+fn encode_app_group_message_payload(body: &str) -> anyhow::Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&AppGroupMessagePayload {
+        version: APP_GROUP_MESSAGE_PAYLOAD_VERSION,
+        body: body.to_string(),
+    })?)
+}
+
+fn decode_app_group_message_payload(payload: &[u8]) -> Option<AppGroupMessagePayload> {
+    let decoded = serde_json::from_slice::<AppGroupMessagePayload>(payload).ok()?;
+    if decoded.version != APP_GROUP_MESSAGE_PAYLOAD_VERSION {
+        return None;
+    }
+    Some(decoded)
+}
+
+fn route_received_direct_message(
     local_owner: OwnerPubkey,
     sender_owner: OwnerPubkey,
     payload: &[u8],
 ) -> RoutedChatMessage {
-    if let Some(decoded) = decode_app_message_payload(payload) {
+    if let Some(decoded) = decode_app_direct_message_payload(payload) {
         if sender_owner == local_owner {
             if let Ok((chat_id, _)) = parse_peer_input(&decoded.chat_id) {
                 if chat_id != local_owner.to_string() {
@@ -2881,6 +3970,7 @@ fn route_received_message(
                         chat_id,
                         body: decoded.body,
                         is_outgoing: true,
+                        author: owner_npub(&local_owner.to_string()),
                     };
                 }
             }
@@ -2890,6 +3980,7 @@ fn route_received_message(
             chat_id: sender_owner.to_string(),
             body: decoded.body,
             is_outgoing: false,
+            author: owner_npub(&sender_owner.to_string()),
         };
     }
 
@@ -2897,6 +3988,42 @@ fn route_received_message(
         chat_id: sender_owner.to_string(),
         body: String::from_utf8_lossy(payload).into_owned(),
         is_outgoing: false,
+        author: owner_npub(&sender_owner.to_string()),
+    }
+}
+
+fn is_group_chat_id(chat_id: &str) -> bool {
+    chat_id.starts_with(GROUP_CHAT_PREFIX)
+}
+
+fn group_chat_id(group_id: &str) -> String {
+    format!("{GROUP_CHAT_PREFIX}{group_id}")
+}
+
+fn parse_group_id_from_chat_id(chat_id: &str) -> Option<String> {
+    chat_id.strip_prefix(GROUP_CHAT_PREFIX).map(|group_id| group_id.to_string())
+}
+
+fn normalize_group_id(value: &str) -> Option<String> {
+    if let Some(group_id) = parse_group_id_from_chat_id(value) {
+        if !group_id.trim().is_empty() {
+            return Some(group_id);
+        }
+        return None;
+    }
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn chat_kind_for_id(chat_id: &str) -> ChatKind {
+    if is_group_chat_id(chat_id) {
+        ChatKind::Group
+    } else {
+        ChatKind::Direct
     }
 }
 
@@ -2933,8 +4060,55 @@ fn pending_reason_from_prepared(
     None
 }
 
+fn pending_reason_from_group_prepared(
+    prepared: &nostr_double_ratchet::GroupPreparedSend,
+) -> Option<PendingSendReason> {
+    if prepared
+        .relay_gaps
+        .iter()
+        .any(|gap| matches!(gap, RelayGap::MissingRoster { .. }))
+    {
+        return Some(PendingSendReason::MissingRoster);
+    }
+    if prepared
+        .relay_gaps
+        .iter()
+        .any(|gap| matches!(gap, RelayGap::MissingDeviceInvite { .. }))
+    {
+        return Some(PendingSendReason::MissingDeviceInvite);
+    }
+    if prepared.deliveries.is_empty() && prepared.invite_responses.is_empty() {
+        return Some(PendingSendReason::MissingDeviceInvite);
+    }
+    None
+}
+
 fn build_prepared_publish_batch(
     prepared: &nostr_double_ratchet::PreparedSend,
+) -> anyhow::Result<Option<PreparedPublishBatch>> {
+    let invite_events = prepared
+        .invite_responses
+        .iter()
+        .map(codec::invite_response_event)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let message_events = prepared
+        .deliveries
+        .iter()
+        .map(|delivery| codec::message_event(&delivery.envelope))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    if message_events.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(PreparedPublishBatch {
+        invite_events,
+        message_events,
+    }))
+}
+
+fn build_group_prepared_publish_batch(
+    prepared: &nostr_double_ratchet::GroupPreparedSend,
 ) -> anyhow::Result<Option<PreparedPublishBatch>> {
     let invite_events = prepared
         .invite_responses
@@ -3025,6 +4199,34 @@ pub(crate) fn normalize_peer_input_for_display(input: &str) -> String {
 fn parse_owner_input(input: &str) -> anyhow::Result<OwnerPubkey> {
     let (_, pubkey) = parse_peer_input(input)?;
     Ok(OwnerPubkey::from_bytes(pubkey.to_bytes()))
+}
+
+fn parse_owner_inputs(
+    inputs: &[String],
+    exclude_owner: OwnerPubkey,
+) -> anyhow::Result<Vec<OwnerPubkey>> {
+    let mut owners = inputs
+        .iter()
+        .map(|input| parse_owner_input(input))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    owners.retain(|owner| *owner != exclude_owner);
+    owners.sort_by_key(|owner| owner.to_string());
+    owners.dedup();
+    Ok(owners)
+}
+
+fn owner_pubkeys_from_hexes(hexes: &[String]) -> anyhow::Result<Vec<OwnerPubkey>> {
+    hexes
+        .iter()
+        .map(|hex| parse_owner_input(hex))
+        .collect::<anyhow::Result<Vec<_>>>()
+}
+
+fn sorted_owner_hexes(owners: &[OwnerPubkey]) -> Vec<String> {
+    let mut hexes = owners.iter().map(ToString::to_string).collect::<Vec<_>>();
+    hexes.sort();
+    hexes.dedup();
+    hexes
 }
 
 fn parse_device_input(input: &str) -> anyhow::Result<DevicePubkey> {
@@ -3889,6 +5091,7 @@ mod tests {
             client: Client::new(device_keys),
             relay_urls: configured_relay_urls(),
             session_manager,
+            group_manager: GroupManager::new(local_owner_from_keys(&keys_for_fill(secret_fill))),
             authorization_state: LocalAuthorizationState::Authorized,
         });
         core.rebuild_state();
@@ -4301,6 +5504,146 @@ mod tests {
             core.pending_outbound[0].reason,
             PendingSendReason::PublishRetry
         );
+    }
+
+    #[test]
+    fn create_group_routes_into_group_chat() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let data_dir = TempDir::new().expect("temp dir");
+        let (alice_manager, _bob_manager, bob_owner_hex) =
+            established_session_manager_pair(80, 81, 1_900_000_100);
+        let mut core = logged_in_core_with_manager(data_dir.path(), 80, alice_manager);
+
+        core.create_group("Trip crew", &[bob_owner_hex]);
+
+        let current_chat = core.state.current_chat.as_ref().expect("current chat");
+        assert!(current_chat.chat_id.starts_with(GROUP_CHAT_PREFIX));
+        assert!(matches!(current_chat.kind, ChatKind::Group));
+        assert_eq!(current_chat.display_name, "Trip crew");
+        assert_eq!(current_chat.member_count, 2);
+        assert_eq!(core.state.chat_list.len(), 1);
+        assert_eq!(core.pending_group_controls.len(), 1);
+    }
+
+    #[test]
+    fn incoming_group_metadata_creates_group_thread() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let data_dir = TempDir::new().expect("temp dir");
+        let (mut alice_manager, bob_manager, bob_owner_hex) =
+            established_session_manager_pair(82, 83, 1_900_000_200);
+        let alice_owner = local_owner_from_keys(&keys_for_fill(82));
+        let mut alice_groups = GroupManager::new(alice_owner);
+        let mut rng = OsRng;
+        let mut ctx = ProtocolContext::new(UnixSeconds(1_900_000_201), &mut rng);
+        let result = alice_groups
+            .create_group(
+                &mut alice_manager,
+                &mut ctx,
+                "Project".to_string(),
+                vec![parse_owner_input(&bob_owner_hex).expect("bob owner")],
+            )
+            .expect("create group");
+
+        let mut bob_core = logged_in_core_with_manager(data_dir.path(), 83, bob_manager);
+        let mut receive_rng = OsRng;
+        let mut receive_ctx = ProtocolContext::new(UnixSeconds(1_900_000_202), &mut receive_rng);
+        let received = bob_core
+            .logged_in
+            .as_mut()
+            .expect("logged in")
+            .session_manager
+            .receive(
+                &mut receive_ctx,
+                alice_owner,
+                &result.prepared.deliveries[0].envelope,
+            )
+            .expect("receive group create")
+            .expect("group create payload");
+        bob_core
+            .apply_decrypted_payload(received.owner_pubkey, &received.payload, 1_900_000_202)
+            .expect("apply group metadata");
+        bob_core.rebuild_state();
+
+        let group_chat_id = group_chat_id(&result.group.group_id);
+        let thread = bob_core.threads.get(&group_chat_id).expect("group thread");
+        assert!(thread.messages.is_empty());
+        assert_eq!(bob_core.state.chat_list[0].display_name, "Project");
+        assert!(matches!(bob_core.state.chat_list[0].kind, ChatKind::Group));
+    }
+
+    #[test]
+    fn incoming_group_message_routes_to_group_thread() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let data_dir = TempDir::new().expect("temp dir");
+        let (mut alice_manager, bob_manager, bob_owner_hex) =
+            established_session_manager_pair(84, 85, 1_900_000_300);
+        let alice_owner = local_owner_from_keys(&keys_for_fill(84));
+        let mut alice_groups = GroupManager::new(alice_owner);
+        let mut rng = OsRng;
+        let mut ctx = ProtocolContext::new(UnixSeconds(1_900_000_301), &mut rng);
+        let create = alice_groups
+            .create_group(
+                &mut alice_manager,
+                &mut ctx,
+                "Signals".to_string(),
+                vec![parse_owner_input(&bob_owner_hex).expect("bob owner")],
+            )
+            .expect("create group");
+
+        let mut bob_core = logged_in_core_with_manager(data_dir.path(), 85, bob_manager);
+        let mut receive_rng = OsRng;
+        let mut receive_ctx = ProtocolContext::new(UnixSeconds(1_900_000_302), &mut receive_rng);
+        let create_message = bob_core
+            .logged_in
+            .as_mut()
+            .expect("logged in")
+            .session_manager
+            .receive(
+                &mut receive_ctx,
+                alice_owner,
+                &create.prepared.deliveries[0].envelope,
+            )
+            .expect("receive create")
+            .expect("create payload");
+        bob_core
+            .apply_decrypted_payload(create_message.owner_pubkey, &create_message.payload, 1_900_000_302)
+            .expect("apply create");
+
+        let message_send = alice_groups
+            .send_message(
+                &mut alice_manager,
+                &mut ProtocolContext::new(UnixSeconds(1_900_000_303), &mut rng),
+                &create.group.group_id,
+                encode_app_group_message_payload("hello group").expect("payload"),
+            )
+            .expect("send group message");
+        let group_message = bob_core
+            .logged_in
+            .as_mut()
+            .expect("logged in")
+            .session_manager
+            .receive(
+                &mut ProtocolContext::new(UnixSeconds(1_900_000_304), &mut receive_rng),
+                alice_owner,
+                &message_send.deliveries[0].envelope,
+            )
+            .expect("receive group message")
+            .expect("group payload");
+        bob_core
+            .apply_decrypted_payload(group_message.owner_pubkey, &group_message.payload, 1_900_000_304)
+            .expect("apply group message");
+
+        let group_chat_id = group_chat_id(&create.group.group_id);
+        let group_thread = bob_core.threads.get(&group_chat_id).expect("group thread");
+        assert_eq!(group_thread.messages.len(), 1);
+        assert_eq!(group_thread.messages[0].body, "hello group");
+        assert!(!bob_core.threads.contains_key(&alice_owner.to_string()));
     }
 
     #[test]

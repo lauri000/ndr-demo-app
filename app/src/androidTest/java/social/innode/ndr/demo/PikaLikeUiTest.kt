@@ -117,6 +117,8 @@ class PikaLikeUiTest {
     fun create_chat_and_send_message_locally() {
         composeRule.ensureChatList()
         composeRule.onNodeWithTag("chatListNewChatButton", useUnmergedTree = true).performClick()
+        composeRule.waitForTag("chatListNewChatOption")
+        composeRule.onNodeWithTag("chatListNewChatOption", useUnmergedTree = true).performClick()
 
         composeRule.waitForTag("newChatPeerInput")
         composeRule.onNodeWithTag("newChatScanQrButton", useUnmergedTree = true).assertIsDisplayed()
@@ -139,6 +141,8 @@ class PikaLikeUiTest {
     fun scan_qr_populates_new_chat_input() {
         composeRule.ensureChatList()
         composeRule.onNodeWithTag("chatListNewChatButton", useUnmergedTree = true).performClick()
+        composeRule.waitForTag("chatListNewChatOption")
+        composeRule.onNodeWithTag("chatListNewChatOption", useUnmergedTree = true).performClick()
 
         composeRule.waitForTag("newChatPeerInput")
         composeRule.runOnUiThread {
@@ -175,6 +179,43 @@ class PikaLikeUiTest {
             .assertIsDisplayed()
     }
 
+    @Test
+    fun chat_list_new_chooser_opens_group_flow() {
+        composeRule.ensureChatList()
+        composeRule.onNodeWithTag("chatListNewChatButton", useUnmergedTree = true).performClick()
+
+        composeRule.waitForTag("chatListNewGroupOption")
+        composeRule.onNodeWithTag("chatListNewGroupOption", useUnmergedTree = true).performClick()
+
+        composeRule.waitForTag("newGroupNameInput")
+        composeRule.onNodeWithTag("newGroupCreateButton", useUnmergedTree = true).assertIsNotEnabled()
+    }
+
+    @Test
+    fun create_group_and_open_group_details() {
+        composeRule.ensureChatList()
+        composeRule.onNodeWithTag("chatListNewChatButton", useUnmergedTree = true).performClick()
+        composeRule.waitForTag("chatListNewGroupOption")
+        composeRule.onNodeWithTag("chatListNewGroupOption", useUnmergedTree = true).performClick()
+
+        composeRule.waitForTag("newGroupNameInput")
+        composeRule.onNodeWithTag("newGroupNameInput", useUnmergedTree = true)
+            .performTextInput("Trip crew")
+        composeRule.onNodeWithTag("newGroupMemberInput", useUnmergedTree = true)
+            .performTextInput(VALID_PEER_NPUB)
+        composeRule.onNodeWithTag("newGroupAddMemberButton", useUnmergedTree = true).performClick()
+        composeRule.onNodeWithTag("newGroupCreateButton", useUnmergedTree = true).assertIsEnabled()
+        composeRule.onNodeWithTag("newGroupCreateButton", useUnmergedTree = true).performClick()
+
+        composeRule.waitForTag("chatMessageInput")
+        composeRule.onNodeWithTag("chatGroupDetailsButton", useUnmergedTree = true).performClick()
+
+        composeRule.waitForTag("groupDetailsScreen")
+        composeRule.onNodeWithTag("groupDetailsNameInput", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithTag("groupDetailsAddMembersButton", useUnmergedTree = true)
+            .assertIsDisplayed()
+    }
+
     private fun androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, *>.waitForTag(
         tag: String,
         timeoutMillis: Long = 15_000,
@@ -205,8 +246,10 @@ class PikaLikeUiTest {
             hasTag("generateKeyButton") ||
                 hasTag("chatListNewChatButton") ||
                 hasTag("newChatPeerInput") ||
+                hasTag("newGroupNameInput") ||
                 hasTag("chatMessageInput") ||
-                hasTag("myProfileSheet")
+                hasTag("myProfileSheet") ||
+                hasTag("groupDetailsScreen")
         }
 
         if (hasTag("generateKeyButton")) {
@@ -219,7 +262,13 @@ class PikaLikeUiTest {
             if (hasTag("chatListNewChatButton")) {
                 return
             }
-            if (hasTag("newChatPeerInput") || hasTag("chatMessageInput") || hasTag("myProfileSheet")) {
+            if (
+                hasTag("newChatPeerInput") ||
+                hasTag("newGroupNameInput") ||
+                hasTag("chatMessageInput") ||
+                hasTag("myProfileSheet") ||
+                hasTag("groupDetailsScreen")
+            ) {
                 pressBack()
                 waitForIdle()
             }

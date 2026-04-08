@@ -32,6 +32,10 @@ pub(crate) enum InternalEvent {
         chat_id: String,
         success: bool,
     },
+    GroupControlPublishFinished {
+        operation_id: String,
+        success: bool,
+    },
     ProtocolSubscriptionRefreshCompleted {
         token: u64,
         applied: bool,

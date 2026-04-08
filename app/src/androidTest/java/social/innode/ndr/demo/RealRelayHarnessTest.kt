@@ -249,7 +249,7 @@ class RealRelayHarnessTest {
         val chat = ensureChatOpen(peerInput)
         reportStatus(
             "chat_id" to chat.chatId,
-            "peer_npub" to chat.peerNpub,
+            "peer_npub" to chat.subtitle.orEmpty(),
         )
     }
 
@@ -432,7 +432,7 @@ class RealRelayHarnessTest {
             appManager().state.value.chatList.firstOrNull { thread ->
                 matchesPeerInput(
                     chatId = thread.chatId,
-                    peerNpub = thread.peerNpub,
+                    peerNpub = thread.subtitle.orEmpty(),
                     peerInput = peerInput,
                 )
             }
@@ -443,7 +443,7 @@ class RealRelayHarnessTest {
                     .state
                     .value
                     .currentChat
-                    ?.takeIf { current -> matchesPeerInput(current.chatId, current.peerNpub, peerInput) }
+                    ?.takeIf { current -> matchesPeerInput(current.chatId, current.subtitle.orEmpty(), peerInput) }
             }
         }
 
@@ -453,7 +453,7 @@ class RealRelayHarnessTest {
                 .state
                 .value
                 .currentChat
-                ?.takeIf { current -> matchesPeerInput(current.chatId, current.peerNpub, peerInput) }
+                ?.takeIf { current -> matchesPeerInput(current.chatId, current.subtitle.orEmpty(), peerInput) }
         }
     }
 

@@ -43,7 +43,9 @@ import kotlinx.coroutines.launch
 import social.innode.ndr.demo.core.AppManager
 import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.AppState
+import social.innode.ndr.demo.rust.ChatKind
 import social.innode.ndr.demo.rust.ChatMessageSnapshot
+import social.innode.ndr.demo.rust.Screen
 import social.innode.ndr.demo.ui.components.DeliveryGlyph
 import social.innode.ndr.demo.ui.components.IrisIcons
 import social.innode.ndr.demo.ui.components.IrisTopBar
@@ -81,11 +83,32 @@ fun ChatScreen(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             IrisTopBar(
-                title = chat?.displayName ?: "Chat",
+                title =
+                    when {
+                        chat?.kind == ChatKind.GROUP && chat.subtitle != null ->
+                            "${chat.displayName} · ${chat.subtitle}"
+                        else -> chat?.displayName ?: "Chat"
+                    },
                 onBack = {
                     appManager.dispatch(
                         AppAction.UpdateScreenStack(appState.router.screenStack.dropLast(1)),
                     )
+                },
+                actions = {
+                    val groupId = chat?.groupId
+                    if (chat?.kind == ChatKind.GROUP && groupId != null) {
+                        IconButton(
+                            onClick = {
+                                appManager.pushScreen(Screen.GroupDetails(groupId))
+                            },
+                            modifier = Modifier.testTag("chatGroupDetailsButton"),
+                        ) {
+                            Icon(
+                                imageVector = IrisIcons.Devices,
+                                contentDescription = "Group details",
+                            )
+                        }
+                    }
                 },
             )
         },
@@ -158,6 +181,7 @@ fun ChatScreen(
 
                         MessageBubble(
                             message = message,
+                            chatKind = chat.kind,
                             isFirstInCluster = isFirstInCluster,
                             isLastInCluster = isLastInCluster,
                         )
@@ -211,6 +235,7 @@ fun ChatScreen(
 @Composable
 private fun MessageBubble(
     message: ChatMessageSnapshot,
+    chatKind: ChatKind,
     isFirstInCluster: Boolean,
     isLastInCluster: Boolean,
 ) {
@@ -241,6 +266,13 @@ private fun MessageBubble(
                         .testTag("chatMessage-${message.id}"),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
+                if (!message.isOutgoing && chatKind == ChatKind.GROUP) {
+                    Text(
+                        text = message.author,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = IrisTheme.palette.muted,
+                    )
+                }
                 Text(
                     text = message.body,
                     style = MaterialTheme.typography.bodyLarge,

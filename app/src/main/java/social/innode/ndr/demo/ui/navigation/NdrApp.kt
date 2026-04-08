@@ -16,7 +16,9 @@ import social.innode.ndr.demo.ui.screens.ChatListScreen
 import social.innode.ndr.demo.ui.screens.ChatScreen
 import social.innode.ndr.demo.ui.screens.DeviceRevokedScreen
 import social.innode.ndr.demo.ui.screens.DeviceRosterScreen
+import social.innode.ndr.demo.ui.screens.GroupDetailsScreen
 import social.innode.ndr.demo.ui.screens.NewChatScreen
+import social.innode.ndr.demo.ui.screens.NewGroupScreen
 import social.innode.ndr.demo.ui.screens.SplashScreen
 import social.innode.ndr.demo.ui.screens.SplashViewModel
 import social.innode.ndr.demo.ui.screens.AwaitingDeviceApprovalScreen
@@ -86,6 +88,10 @@ fun NdrApp(container: AppContainer) {
                     NewChatScreen(appManager = appManager, appState = appState)
                 }
 
+                Screen.NewGroup -> {
+                    NewGroupScreen(appManager = appManager, appState = appState)
+                }
+
                 Screen.DeviceRoster -> {
                     DeviceRosterScreen(appManager = appManager, appState = appState)
                 }
@@ -103,6 +109,14 @@ fun NdrApp(container: AppContainer) {
                         appManager = appManager,
                         appState = appState,
                         chatId = screen.chatId,
+                    )
+                }
+
+                is Screen.GroupDetails -> {
+                    GroupDetailsScreen(
+                        appManager = appManager,
+                        appState = appState,
+                        groupId = screen.groupId,
                     )
                 }
             }

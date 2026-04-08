@@ -26,8 +26,11 @@ import androidx.compose.material.icons.rounded.AddComment
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Devices
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Group
 import androidx.compose.material.icons.rounded.Logout
 import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.PersonRemove
 import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Send
@@ -415,9 +418,12 @@ fun IrisDivider(modifier: Modifier = Modifier) {
 
 object IrisIcons {
     val NewChat = Icons.Rounded.AddComment
+    val NewGroup = Icons.Rounded.Group
     val ScanQr = Icons.Rounded.QrCodeScanner
     val Send = Icons.Rounded.Send
     val Copy = Icons.Rounded.ContentCopy
     val Devices = Icons.Rounded.Devices
+    val Edit = Icons.Rounded.Edit
+    val RemoveMember = Icons.Rounded.PersonRemove
     val Logout = Icons.Rounded.Logout
 }

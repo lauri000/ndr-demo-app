@@ -3,7 +3,9 @@ pub enum Screen {
     Welcome,
     ChatList,
     NewChat,
+    NewGroup,
     Chat { chat_id: String },
+    GroupDetails { group_id: String },
     DeviceRoster,
     AwaitingDeviceApproval,
     DeviceRevoked,
@@ -21,8 +23,10 @@ pub struct BusyState {
     pub restoring_session: bool,
     pub linking_device: bool,
     pub creating_chat: bool,
+    pub creating_group: bool,
     pub sending_message: bool,
     pub updating_roster: bool,
+    pub updating_group: bool,
     pub syncing_network: bool,
 }
 
@@ -72,6 +76,12 @@ pub enum DeliveryState {
     Failed,
 }
 
+#[derive(uniffi::Enum, Clone, Debug)]
+pub enum ChatKind {
+    Direct,
+    Group,
+}
+
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct ChatMessageSnapshot {
     pub id: String,
@@ -86,8 +96,10 @@ pub struct ChatMessageSnapshot {
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct ChatThreadSnapshot {
     pub chat_id: String,
+    pub kind: ChatKind,
     pub display_name: String,
-    pub peer_npub: String,
+    pub subtitle: Option<String>,
+    pub member_count: u64,
     pub last_message_preview: Option<String>,
     pub last_message_at_secs: Option<u64>,
     pub last_message_is_outgoing: Option<bool>,
@@ -98,9 +110,31 @@ pub struct ChatThreadSnapshot {
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct CurrentChatSnapshot {
     pub chat_id: String,
+    pub kind: ChatKind,
     pub display_name: String,
-    pub peer_npub: String,
+    pub subtitle: Option<String>,
+    pub group_id: Option<String>,
+    pub member_count: u64,
     pub messages: Vec<ChatMessageSnapshot>,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct GroupMemberSnapshot {
+    pub owner_pubkey_hex: String,
+    pub npub: String,
+    pub is_admin: bool,
+    pub is_creator: bool,
+    pub is_local_owner: bool,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct GroupDetailsSnapshot {
+    pub group_id: String,
+    pub name: String,
+    pub created_by_npub: String,
+    pub can_manage: bool,
+    pub revision: u64,
+    pub members: Vec<GroupMemberSnapshot>,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
@@ -112,6 +146,7 @@ pub struct AppState {
     pub busy: BusyState,
     pub chat_list: Vec<ChatThreadSnapshot>,
     pub current_chat: Option<CurrentChatSnapshot>,
+    pub group_details: Option<GroupDetailsSnapshot>,
     pub toast: Option<String>,
 }
 
@@ -128,6 +163,7 @@ impl AppState {
             busy: BusyState::default(),
             chat_list: Vec::new(),
             current_chat: None,
+            group_details: None,
             toast: None,
         }
     }

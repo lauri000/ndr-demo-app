@@ -123,6 +123,54 @@ class AppManager(
         rust.dispatch(AppAction.CreateChat(trimmed))
     }
 
+    fun createGroup(
+        name: String,
+        memberInputs: List<String>,
+    ) {
+        val trimmedName = name.trim()
+        val trimmedMembers = memberInputs.map(String::trim).filter(String::isNotEmpty)
+        if (trimmedName.isEmpty() || trimmedMembers.isEmpty()) {
+            return
+        }
+        rust.dispatch(AppAction.CreateGroup(trimmedName, trimmedMembers))
+    }
+
+    fun updateGroupName(
+        groupId: String,
+        name: String,
+    ) {
+        val trimmedGroupId = groupId.trim()
+        val trimmedName = name.trim()
+        if (trimmedGroupId.isEmpty() || trimmedName.isEmpty()) {
+            return
+        }
+        rust.dispatch(AppAction.UpdateGroupName(trimmedGroupId, trimmedName))
+    }
+
+    fun addGroupMembers(
+        groupId: String,
+        memberInputs: List<String>,
+    ) {
+        val trimmedGroupId = groupId.trim()
+        val trimmedMembers = memberInputs.map(String::trim).filter(String::isNotEmpty)
+        if (trimmedGroupId.isEmpty() || trimmedMembers.isEmpty()) {
+            return
+        }
+        rust.dispatch(AppAction.AddGroupMembers(trimmedGroupId, trimmedMembers))
+    }
+
+    fun removeGroupMember(
+        groupId: String,
+        ownerPubkeyHex: String,
+    ) {
+        val trimmedGroupId = groupId.trim()
+        val trimmedOwner = ownerPubkeyHex.trim()
+        if (trimmedGroupId.isEmpty() || trimmedOwner.isEmpty()) {
+            return
+        }
+        rust.dispatch(AppAction.RemoveGroupMember(trimmedGroupId, trimmedOwner))
+    }
+
     fun openChat(chatId: String) {
         val trimmed = chatId.trim()
         if (trimmed.isEmpty()) {
@@ -306,12 +354,15 @@ class AppManager(
                         restoringSession = false,
                         linkingDevice = false,
                         creatingChat = false,
+                        creatingGroup = false,
                         sendingMessage = false,
                         updatingRoster = false,
+                        updatingGroup = false,
                         syncingNetwork = false,
                     )
                 chatList = emptyList()
                 currentChat = null
+                groupDetails = null
                 toast = null
             }
     }
