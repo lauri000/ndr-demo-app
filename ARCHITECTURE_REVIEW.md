@@ -10,7 +10,7 @@ Target revisions reviewed:
 - `ndr-demo-android`: post-`e9ed7ea`, including linked-device validation and three-device fanout hardening from this pass
 - `nostr-double-ratchet`: post-`9b6c9a1`
 
-This is the current architecture and code review after the app moved to the explicit owner/device model and after the three-emulator public-relay validation passed.
+This is the current architecture and code review after the app moved to the explicit owner/device model, passed three-emulator public-relay validation, and adopted the Pika-style ordinary publish path with stable protocol subscription planning.
 
 ## 1. System Topology
 
@@ -19,7 +19,8 @@ flowchart LR
   UI["Compose UI"] --> AM["AppManager"]
   AM --> FFI["UniFFI FfiApp"]
   FFI --> CORE["Rust AppCore"]
-  CORE --> NOSTR["nostr-sdk Client"]
+  CORE --> SUBS["ProtocolSubscriptionRuntime"]
+  CORE --> NOSTR["Long-lived nostr-sdk Client"]
   CORE --> SM["SessionManager"]
   CORE --> RE["RosterEditor"]
   SM --> LIB["Session / Invite / Roster"]
@@ -38,6 +39,7 @@ State and I/O ownership:
 - `AppManager` owns Android bootstrap orchestration and secure storage of the account bundle.
 - `FfiApp` is the UniFFI bridge and update channel.
 - `AppCore` owns router state, account state, device-authorization state, chat state, retry policy, persistence, relay subscriptions, and protocol orchestration.
+- `AppCore` now also owns the ordinary outbox path and canonical protocol-subscription planning.
 - `SessionManager` owns owner/device records, invites, sessions, and protocol decisions.
 - `RosterEditor` is the app-facing helper for full-snapshot roster CRUD.
 - `nostr-sdk` performs network I/O; the app core decides what to publish and subscribe to.
@@ -115,9 +117,10 @@ struct LoggedInState {
     owner_pubkey: OwnerPubkey,
     owner_keys: Option<Keys>,
     device_keys: Keys,
-    authorization_state: LocalAuthorizationState,
-    session_manager: SessionManager,
     client: Client,
+    relay_urls: Vec<RelayUrl>,
+    session_manager: SessionManager,
+    authorization_state: LocalAuthorizationState,
 }
 
 struct PendingOutbound {
@@ -125,6 +128,7 @@ struct PendingOutbound {
     chat_id: String,
     body: String,
     prepared_publish: Option<PreparedPublishBatch>,
+    publish_mode: OutboundPublishMode,
     reason: PendingSendReason,
     next_retry_at_secs: u64,
     in_flight: bool,
@@ -134,12 +138,21 @@ struct PreparedPublishBatch {
     invite_events: Vec<Event>,
     message_events: Vec<Event>,
 }
+
+struct ProtocolSubscriptionRuntime {
+    current_plan: Option<ProtocolSubscriptionPlan>,
+    applying_plan: Option<ProtocolSubscriptionPlan>,
+    refresh_in_flight: bool,
+    refresh_dirty: bool,
+    refresh_token: u64,
+}
 ```
 
 Assessment:
 - The app-facing surface now models linked-device lifecycle explicitly.
 - `AccountSnapshot` and `DeviceRosterSnapshot` are product-shaped, not protocol-shaped.
 - Kotlin is dispatching actions and rendering Rust state, not reconstructing protocol behavior.
+- The new outbox path is now also Rust-owned. Kotlin does not decide when a message is pending, sent, or retryable.
 
 ## 3. Protocol / Core Model
 
@@ -266,6 +279,27 @@ sequenceDiagram
   RELAY-->>A: "same-owner sibling copy of m3"
 ```
 
+### Ordinary established send
+
+```mermaid
+sequenceDiagram
+  participant UI as "ChatScreen"
+  participant CORE as "AppCore"
+  participant SM as "SessionManager"
+  participant CLIENT as "Long-lived Client"
+  participant RELAY as "Relays"
+
+  UI->>CORE: "SendMessage(chat_id, text)"
+  CORE->>SM: "prepare_send(...)"
+  CORE->>CORE: "append local pending message"
+  CORE-->>UI: "pending bubble renders immediately"
+  CORE->>CLIENT: "background first-ack publish"
+  CLIENT->>RELAY: "send event to configured relays"
+  RELAY-->>CLIENT: "first relay accepts"
+  CLIENT-->>CORE: "PublishFinished(success=true)"
+  CORE-->>UI: "delivery = Sent"
+```
+
 ### Revocation
 
 ```mermaid
@@ -300,6 +334,23 @@ sequenceDiagram
   RELAY-->>CORE: "accepted / retry"
 ```
 
+### Protocol subscription refresh
+
+```mermaid
+flowchart TD
+  A["create/open/send/relay event may change filters"] --> B["request_protocol_subscription_refresh()"]
+  B --> C{"refresh already running?"}
+  C -->|yes| D["mark refresh_dirty"]
+  C -->|no| E["compute canonical sorted ProtocolSubscriptionPlan"]
+  E --> F{"plan changed?"}
+  F -->|no| G["done"]
+  F -->|yes| H["unsubscribe stable protocol id"]
+  H --> I["subscribe new filters with same id"]
+  I --> J{"refresh_dirty set while running?"}
+  J -->|yes| E
+  J -->|no| K["done"]
+```
+
 ## 5. Code Review Findings
 
 ### P0: protocol persistence is still plaintext
@@ -316,6 +367,22 @@ Impact:
 
 Recommended fix direction:
 - encrypt the Rust snapshot at rest or split secret protocol material away from the plain JSON snapshot.
+
+### P2: tracked-peer catch-up still reconnects on demand
+
+Status:
+- Still open as a narrower runtime cost after the ordinary-send refactor.
+
+Why it matters:
+- Ordinary publishes no longer reconnect aggressively, but `fetch_recent_messages_for_owner(...)` still calls `connect_with_timeout(...)` before catch-up fetches.
+- This is off the main send path now, but it can still introduce avoidable latency spikes during restore or catch-up.
+
+Impact:
+- Much better chat-send responsiveness.
+- Remaining lag can still show up around catch-up and history refresh rather than ordinary sends.
+
+Recommended fix direction:
+- move catch-up fetches fully onto the session-scoped connectivity model too, or gate reconnect attempts behind actual disconnected-client state instead of unconditional reconnect.
 
 ### P2: strongest relay harness still bypasses the full camera-to-chat UI path
 
@@ -381,12 +448,17 @@ Key outcomes:
 - linked-device onboarding works without restart
 - same-owner sibling fanout works in both directions
 - revocation works and blocks the revoked device immediately
+- ordinary established sends now render locally first and publish in the background
+- protocol subscription refresh is now canonicalized and coalesced instead of churny raw-filter equality
 
 Key implementation points:
 - chat payloads now carry app-level routing metadata so sibling devices place messages in the correct peer thread
 - authorization state is persisted so a fresh linked device does not get misclassified as revoked before approval
 - recent-handshake tracking and invite subscriptions update fast enough for same-owner sibling sync
 - the relay harness now has explicit linked-device, add/remove roster, authorization-wait, and revoke-wait entry points
+- `LoggedInState` stores parsed relay URLs and reuses a long-lived session client
+- `PendingOutbound` persists `publish_mode` so retry does not re-run `prepare_send(...)`
+- `ProtocolSubscriptionPlan` turns unstable `HashSet`-driven filter generation into sorted, deduped subscription plans
 
 ## 8. Next Multi-Device Agenda
 
@@ -404,9 +476,10 @@ flowchart TD
 
 Recommended next steps:
 1. history sync for newly linked devices
-2. explicit device-management UX polish for stale/revoked/sibling status
-3. one combined QR-camera-to-message acceptance test
-4. encrypted protocol persistence at rest
+2. move catch-up fetches onto the same stable session-connect model
+3. explicit device-management UX polish for stale/revoked/sibling status
+4. one combined QR-camera-to-message acceptance test
+5. encrypted protocol persistence at rest
 
 ## 9. References
 

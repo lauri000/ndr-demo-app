@@ -13,8 +13,8 @@ use nostr_double_ratchet::{
 };
 use nostr_double_ratchet_nostr::nostr as codec;
 use nostr_sdk::prelude::{
-    Client, Event, Filter, Keys, Kind, PublicKey, RelayPoolNotification, SubscriptionId, Timestamp,
-    ToBech32,
+    Client, Event, Filter, Keys, Kind, PublicKey, RelayPoolNotification, RelayUrl,
+    SubscriptionId, Timestamp, ToBech32,
 };
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -57,7 +57,7 @@ pub struct AppCore {
     recent_handshake_peers: BTreeMap<String, RecentHandshakePeer>,
     seen_event_ids: HashSet<String>,
     seen_event_order: VecDeque<String>,
-    protocol_subscription_filters: Option<Vec<Filter>>,
+    protocol_subscription_runtime: ProtocolSubscriptionRuntime,
 }
 
 struct LoggedInState {
@@ -65,6 +65,7 @@ struct LoggedInState {
     owner_keys: Option<Keys>,
     device_keys: Keys,
     client: Client,
+    relay_urls: Vec<RelayUrl>,
     session_manager: SessionManager,
     authorization_state: LocalAuthorizationState,
 }
@@ -90,6 +91,14 @@ struct PreparedPublishBatch {
     message_events: Vec<Event>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+enum OutboundPublishMode {
+    FirstContactStaged,
+    OrdinaryFirstAck,
+    #[default]
+    WaitForPeer,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct PendingOutbound {
     message_id: String,
@@ -97,6 +106,8 @@ struct PendingOutbound {
     body: String,
     #[serde(default)]
     prepared_publish: Option<PreparedPublishBatch>,
+    #[serde(default)]
+    publish_mode: OutboundPublishMode,
     #[serde(default)]
     reason: PendingSendReason,
     #[serde(default)]
@@ -148,6 +159,23 @@ struct StagedOutboundSend {
     chat_id: String,
     invite_events: Vec<Event>,
     message_events: Vec<Event>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProtocolSubscriptionPlan {
+    roster_authors: Vec<String>,
+    invite_authors: Vec<String>,
+    invite_response_recipient: Option<String>,
+    message_authors: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ProtocolSubscriptionRuntime {
+    current_plan: Option<ProtocolSubscriptionPlan>,
+    applying_plan: Option<ProtocolSubscriptionPlan>,
+    refresh_in_flight: bool,
+    refresh_dirty: bool,
+    refresh_token: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -282,7 +310,7 @@ impl AppCore {
             recent_handshake_peers: BTreeMap::new(),
             seen_event_ids: HashSet::new(),
             seen_event_order: VecDeque::new(),
-            protocol_subscription_filters: None,
+            protocol_subscription_runtime: ProtocolSubscriptionRuntime::default(),
         }
     }
 
@@ -341,7 +369,7 @@ impl AppCore {
                     self.handle_relay_event(event);
                 }
             }
-            InternalEvent::StagedSendFinished {
+            InternalEvent::PublishFinished {
                 message_id,
                 chat_id,
                 success,
@@ -357,17 +385,33 @@ impl AppCore {
                 {
                     pending.in_flight = false;
                     pending.reason = PendingSendReason::PublishRetry;
-                    pending.next_retry_at_secs = unix_now()
-                        .get()
-                        .saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS);
-                    self.schedule_pending_outbound_retry(Duration::from_secs(
-                        FIRST_CONTACT_RETRY_DELAY_SECS,
-                    ));
+                    let retry_after_secs = retry_delay_for_publish_mode(&pending.publish_mode);
+                    pending.next_retry_at_secs =
+                        unix_now().get().saturating_add(retry_after_secs);
+                    self.schedule_pending_outbound_retry(Duration::from_secs(retry_after_secs));
                 }
                 self.schedule_next_pending_retry(unix_now().get());
                 self.rebuild_state();
                 self.persist_best_effort();
                 self.emit_state();
+            }
+            InternalEvent::ProtocolSubscriptionRefreshCompleted {
+                token,
+                applied,
+                plan,
+            } => {
+                if token != self.protocol_subscription_runtime.refresh_token {
+                    return;
+                }
+                self.protocol_subscription_runtime.refresh_in_flight = false;
+                self.protocol_subscription_runtime.applying_plan = None;
+                if applied {
+                    self.protocol_subscription_runtime.current_plan = plan;
+                }
+                if self.protocol_subscription_runtime.refresh_dirty {
+                    self.protocol_subscription_runtime.refresh_dirty = false;
+                    self.request_protocol_subscription_refresh();
+                }
             }
             InternalEvent::SyncComplete => {
                 self.state.busy.syncing_network = false;
@@ -484,7 +528,7 @@ impl AppCore {
         self.recent_handshake_peers.clear();
         self.seen_event_ids.clear();
         self.seen_event_order.clear();
-        self.protocol_subscription_filters = None;
+        self.protocol_subscription_runtime = ProtocolSubscriptionRuntime::default();
         self.next_message_id = 1;
         self.state = AppState::empty();
         self.clear_persistence_best_effort();
@@ -536,7 +580,7 @@ impl AppCore {
         self.republish_local_identity_artifacts();
         self.rebuild_state();
         self.persist_best_effort();
-        self.resubscribe_to_protocol_events();
+        self.request_protocol_subscription_refresh();
         self.schedule_tracked_peer_catch_up(Duration::from_secs(RESUBSCRIBE_CATCH_UP_DELAY_SECS));
         self.state.busy.creating_chat = false;
         self.emit_state();
@@ -574,7 +618,7 @@ impl AppCore {
         self.republish_local_identity_artifacts();
         self.rebuild_state();
         self.persist_best_effort();
-        self.resubscribe_to_protocol_events();
+        self.request_protocol_subscription_refresh();
         self.schedule_tracked_peer_catch_up(Duration::from_secs(RESUBSCRIBE_CATCH_UP_DELAY_SECS));
         self.emit_state();
     }
@@ -655,20 +699,23 @@ impl AppCore {
                         chat_id.clone(),
                         trimmed.to_string(),
                         None,
+                        OutboundPublishMode::WaitForPeer,
                         reason,
                         now.get().saturating_add(PENDING_RETRY_DELAY_SECS),
                     );
                     if republish_identity {
                         self.republish_local_identity_artifacts();
                     }
-                    self.resubscribe_to_protocol_events();
+                    self.request_protocol_subscription_refresh();
                     self.schedule_pending_outbound_retry(Duration::from_secs(
                         PENDING_RETRY_DELAY_SECS,
                     ));
                 } else {
                     match build_prepared_publish_batch(&prepared) {
                         Ok(Some(batch)) => {
-                            let reason = pending_reason_for_batch(&batch);
+                            let publish_mode = publish_mode_for_batch(&batch);
+                            let reason = pending_reason_for_publish_mode(&publish_mode);
+                            let next_retry_at_secs = retry_deadline_for_publish_mode(now.get(), &publish_mode);
                             let message = self.push_outgoing_message(
                                 &chat_id,
                                 trimmed.to_string(),
@@ -680,11 +727,12 @@ impl AppCore {
                                 chat_id.clone(),
                                 trimmed.to_string(),
                                 Some(batch.clone()),
+                                publish_mode.clone(),
                                 reason,
-                                now.get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS),
+                                next_retry_at_secs,
                             );
                             self.set_pending_outbound_in_flight(&message.id, true);
-                            self.start_publish_for_pending(message.id, chat_id, batch);
+                            self.start_publish_for_pending(message.id, chat_id, publish_mode, batch);
                         }
                         Ok(None) => {
                             let message = self.push_outgoing_message(
@@ -833,7 +881,7 @@ impl AppCore {
         };
 
         self.publish_roster_update(updated_roster);
-        self.resubscribe_to_protocol_events();
+        self.request_protocol_subscription_refresh();
         self.persist_best_effort();
         self.state.busy.updating_roster = false;
         self.rebuild_state();
@@ -885,7 +933,7 @@ impl AppCore {
         };
 
         self.publish_roster_update(updated_roster);
-        self.resubscribe_to_protocol_events();
+        self.request_protocol_subscription_refresh();
         self.persist_best_effort();
         self.state.busy.updating_roster = false;
         self.rebuild_state();
@@ -967,7 +1015,7 @@ impl AppCore {
                     self.remember_event(event_id);
                     self.retry_pending_inbound(now);
                     self.retry_pending_outbound(now);
-                    self.resubscribe_to_protocol_events();
+                    self.request_protocol_subscription_refresh();
                     if is_local_owner
                         && matches!(
                             self.logged_in
@@ -1034,7 +1082,7 @@ impl AppCore {
                             self.remember_event(event_id.clone());
                             self.retry_pending_inbound(now);
                             self.retry_pending_outbound(now);
-                            self.resubscribe_to_protocol_events();
+                            self.request_protocol_subscription_refresh();
                             self.persist_best_effort();
                         }
                         self.rebuild_state();
@@ -1088,7 +1136,7 @@ impl AppCore {
                         self.apply_owner_migrations(&migrated_owner_hexes);
                         self.retry_pending_inbound(now);
                         self.retry_pending_outbound(now);
-                        self.resubscribe_to_protocol_events();
+                        self.request_protocol_subscription_refresh();
                         self.fetch_recent_messages_for_owner(processed.owner_pubkey, now);
                         for (_, migrated_owner_hex) in migrated_owner_hexes {
                             if migrated_owner_hex != owner_hex {
@@ -1156,7 +1204,7 @@ impl AppCore {
                             &message.payload,
                         );
                         self.apply_routed_chat_message(routed, now.get());
-                        self.resubscribe_to_protocol_events();
+                        self.request_protocol_subscription_refresh();
                         self.persist_best_effort();
                         self.rebuild_state();
                         self.emit_state();
@@ -1218,7 +1266,7 @@ impl AppCore {
         self.recent_handshake_peers.clear();
         self.seen_event_ids.clear();
         self.seen_event_order.clear();
-        self.protocol_subscription_filters = None;
+        self.protocol_subscription_runtime = ProtocolSubscriptionRuntime::default();
         self.next_message_id = 1;
 
         let device_secret_bytes = device_keys.secret_key().to_secret_bytes();
@@ -1240,6 +1288,12 @@ impl AppCore {
             self.next_message_id = persisted.next_message_id.max(1);
             if allow_protocol_restore {
                 self.pending_outbound = persisted.pending_outbound.clone();
+                for pending in &mut self.pending_outbound {
+                    pending.publish_mode = migrate_publish_mode(
+                        pending.publish_mode.clone(),
+                        pending.prepared_publish.as_ref(),
+                    );
+                }
                 self.pending_inbound = persisted.pending_inbound.clone();
                 self.seen_event_order = persisted
                     .seen_event_ids
@@ -1342,6 +1396,9 @@ impl AppCore {
         }
 
         let client = Client::new(device_keys.clone());
+        let relay_urls = configured_relay_urls();
+        self.runtime
+            .block_on(ensure_session_relays_configured(&client, &relay_urls));
         self.start_notifications_loop(client.clone());
 
         self.logged_in = Some(LoggedInState {
@@ -1349,9 +1406,11 @@ impl AppCore {
             owner_keys: owner_keys.clone(),
             device_keys: device_keys.clone(),
             client,
+            relay_urls,
             session_manager,
             authorization_state,
         });
+        self.schedule_session_connect();
 
         self.emit_account_bundle_update(owner_keys.as_ref(), &device_keys);
         self.republish_local_identity_artifacts();
@@ -1361,7 +1420,7 @@ impl AppCore {
         self.state.busy.syncing_network = true;
         self.rebuild_state();
         self.persist_best_effort();
-        self.resubscribe_to_protocol_events();
+        self.request_protocol_subscription_refresh();
         if authorization_state == LocalAuthorizationState::Authorized {
             self.schedule_tracked_peer_catch_up(Duration::from_secs(
                 RESUBSCRIBE_CATCH_UP_DELAY_SECS,
@@ -1434,13 +1493,17 @@ impl AppCore {
             }
 
             if let Some(batch) = pending_message.prepared_publish.clone() {
-                pending_message.reason = pending_reason_for_batch(&batch);
+                pending_message.publish_mode =
+                    migrate_publish_mode(pending_message.publish_mode.clone(), Some(&batch));
+                pending_message.reason =
+                    pending_reason_for_publish_mode(&pending_message.publish_mode);
                 pending_message.next_retry_at_secs =
-                    now.get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS);
+                    retry_deadline_for_publish_mode(now.get(), &pending_message.publish_mode);
                 pending_message.in_flight = true;
                 self.start_publish_for_pending(
                     pending_message.message_id.clone(),
                     pending_message.chat_id.clone(),
+                    pending_message.publish_mode.clone(),
                     batch,
                 );
                 still_pending.push(pending_message);
@@ -1493,23 +1556,32 @@ impl AppCore {
                         if matches!(reason, PendingSendReason::MissingRoster) {
                             self.republish_local_identity_artifacts();
                         }
+                        pending_message.publish_mode = OutboundPublishMode::WaitForPeer;
                         still_pending.push(pending_message);
                     } else {
                         match build_prepared_publish_batch(&prepared) {
                             Ok(Some(batch)) => {
+                                pending_message.publish_mode =
+                                    publish_mode_for_batch(&batch);
                                 pending_message.prepared_publish = Some(batch.clone());
-                                pending_message.reason = pending_reason_for_batch(&batch);
-                                pending_message.next_retry_at_secs =
-                                    now.get().saturating_add(FIRST_CONTACT_RETRY_DELAY_SECS);
+                                pending_message.reason = pending_reason_for_publish_mode(
+                                    &pending_message.publish_mode,
+                                );
+                                pending_message.next_retry_at_secs = retry_deadline_for_publish_mode(
+                                    now.get(),
+                                    &pending_message.publish_mode,
+                                );
                                 pending_message.in_flight = true;
                                 self.start_publish_for_pending(
                                     pending_message.message_id.clone(),
                                     pending_message.chat_id.clone(),
+                                    pending_message.publish_mode.clone(),
                                     batch,
                                 );
                                 still_pending.push(pending_message);
                             }
                             Ok(None) => {
+                                pending_message.publish_mode = OutboundPublishMode::WaitForPeer;
                                 pending_message.reason = PendingSendReason::MissingDeviceInvite;
                                 pending_message.next_retry_at_secs =
                                     now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
@@ -1547,6 +1619,7 @@ impl AppCore {
         chat_id: String,
         body: String,
         prepared_publish: Option<PreparedPublishBatch>,
+        publish_mode: OutboundPublishMode,
         reason: PendingSendReason,
         next_retry_at_secs: u64,
     ) {
@@ -1555,6 +1628,7 @@ impl AppCore {
             chat_id,
             body,
             prepared_publish,
+            publish_mode,
             reason,
             next_retry_at_secs,
             in_flight: false,
@@ -1675,31 +1749,35 @@ impl AppCore {
         chat_id: String,
         message_events: Vec<Event>,
     ) {
-        self.resubscribe_to_protocol_events();
-        self.publish_message_batch(message_id, chat_id, message_events);
+        self.start_ordinary_publish(message_id, chat_id, message_events);
     }
 
     fn start_publish_for_pending(
         &mut self,
         message_id: String,
         chat_id: String,
+        publish_mode: OutboundPublishMode,
         batch: PreparedPublishBatch,
     ) {
+        self.request_protocol_subscription_refresh();
         if batch.message_events.is_empty() {
             return;
         }
 
-        if batch.invite_events.is_empty() {
-            self.start_pending_message_publish(message_id, chat_id, batch.message_events);
-            return;
+        match publish_mode {
+            OutboundPublishMode::OrdinaryFirstAck => {
+                self.start_pending_message_publish(message_id, chat_id, batch.message_events);
+            }
+            OutboundPublishMode::FirstContactStaged => {
+                self.start_staged_first_contact_send(StagedOutboundSend {
+                    message_id,
+                    chat_id,
+                    invite_events: batch.invite_events,
+                    message_events: batch.message_events,
+                });
+            }
+            OutboundPublishMode::WaitForPeer => {}
         }
-
-        self.start_staged_first_contact_send(StagedOutboundSend {
-            message_id,
-            chat_id,
-            invite_events: batch.invite_events,
-            message_events: batch.message_events,
-        });
     }
 
     fn reconcile_recent_handshake_peers(&mut self) -> Vec<(String, String)> {
@@ -1787,15 +1865,14 @@ impl AppCore {
     }
 
     fn start_staged_first_contact_send(&mut self, staged: StagedOutboundSend) {
-        let Some(client) = self
+        let Some((client, relay_urls)) = self
             .logged_in
             .as_ref()
-            .map(|logged_in| logged_in.client.clone())
+            .map(|logged_in| (logged_in.client.clone(), logged_in.relay_urls.clone()))
         else {
             return;
         };
 
-        self.resubscribe_to_protocol_events();
         for event in staged
             .invite_events
             .iter()
@@ -1806,16 +1883,16 @@ impl AppCore {
 
         let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
-            for relay in configured_relays() {
-                let _ = client.add_relay(relay).await;
-            }
-            client.connect_with_timeout(Duration::from_secs(5)).await;
-
-            let invite_publish =
-                publish_events_with_retry(&client, staged.invite_events, "invite response").await;
+            let invite_publish = publish_events_with_retry(
+                &client,
+                &relay_urls,
+                staged.invite_events,
+                "invite response",
+            )
+            .await;
             if invite_publish.is_err() {
                 let _ = tx.send(CoreMsg::Internal(Box::new(
-                    InternalEvent::StagedSendFinished {
+                    InternalEvent::PublishFinished {
                         message_id: staged.message_id,
                         chat_id: staged.chat_id,
                         success: false,
@@ -1826,11 +1903,16 @@ impl AppCore {
 
             sleep(Duration::from_millis(FIRST_CONTACT_STAGE_DELAY_MS)).await;
 
-            let success = publish_events_with_retry(&client, staged.message_events, "message")
-                .await
-                .is_ok();
+            let success = publish_events_with_retry(
+                &client,
+                &relay_urls,
+                staged.message_events,
+                "message",
+            )
+            .await
+            .is_ok();
             let _ = tx.send(CoreMsg::Internal(Box::new(
-                InternalEvent::StagedSendFinished {
+                InternalEvent::PublishFinished {
                     message_id: staged.message_id,
                     chat_id: staged.chat_id,
                     success,
@@ -1839,11 +1921,11 @@ impl AppCore {
         });
     }
 
-    fn publish_message_batch(&mut self, message_id: String, chat_id: String, events: Vec<Event>) {
-        let Some(client) = self
+    fn start_ordinary_publish(&mut self, message_id: String, chat_id: String, events: Vec<Event>) {
+        let Some((client, relay_urls)) = self
             .logged_in
             .as_ref()
-            .map(|logged_in| logged_in.client.clone())
+            .map(|logged_in| (logged_in.client.clone(), logged_in.relay_urls.clone()))
         else {
             return;
         };
@@ -1854,15 +1936,11 @@ impl AppCore {
 
         let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
-            for relay in configured_relays() {
-                let _ = client.add_relay(relay).await;
-            }
-            client.connect_with_timeout(Duration::from_secs(5)).await;
-            let success = publish_events_with_retry(&client, events, "message")
+            let success = publish_events_first_ack(&client, &relay_urls, &events, "message")
                 .await
                 .is_ok();
             let _ = tx.send(CoreMsg::Internal(Box::new(
-                InternalEvent::StagedSendFinished {
+                InternalEvent::PublishFinished {
                     message_id,
                     chat_id,
                     success,
@@ -2275,7 +2353,7 @@ impl AppCore {
         };
 
         let persisted = PersistedState {
-            version: 7,
+            version: 8,
             active_chat_id: self.active_chat_id.clone(),
             next_message_id: self.next_message_id,
             session_manager: Some(logged_in.session_manager.snapshot()),
@@ -2339,6 +2417,18 @@ impl AppCore {
         });
     }
 
+    fn schedule_session_connect(&self) {
+        let Some(logged_in) = self.logged_in.as_ref() else {
+            return;
+        };
+        let client = logged_in.client.clone();
+        let relay_urls = logged_in.relay_urls.clone();
+        self.runtime.spawn(async move {
+            ensure_session_relays_configured(&client, &relay_urls).await;
+            client.connect().await;
+        });
+    }
+
     fn publish_local_identity_artifacts(&self) {
         let Some(logged_in) = self.logged_in.as_ref() else {
             return;
@@ -2358,14 +2448,10 @@ impl AppCore {
         let device_keys = logged_in.device_keys.clone();
         let owner_pubkey = logged_in.owner_pubkey;
         let client = logged_in.client.clone();
+        let relay_urls = logged_in.relay_urls.clone();
         let tx = self.core_sender.clone();
 
         self.runtime.spawn(async move {
-            for relay in configured_relays() {
-                let _ = client.add_relay(relay).await;
-            }
-            client.connect_with_timeout(Duration::from_secs(5)).await;
-
             if let (Some(keys), Some(roster)) = (owner_keys, local_roster) {
                 let roster_event = match codec::roster_unsigned_event(owner_pubkey, &roster)
                     .and_then(|unsigned| unsigned.sign_with_keys(&keys).map_err(Into::into))
@@ -2380,7 +2466,7 @@ impl AppCore {
                 };
                 if let Some(roster_event) = roster_event {
                     if let Err(error) =
-                        publish_event_with_retry(&client, roster_event, "roster").await
+                        publish_event_with_retry(&client, &relay_urls, roster_event, "roster").await
                     {
                         let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
                             format!("Roster publish failed: {error}"),
@@ -2403,7 +2489,7 @@ impl AppCore {
                 };
                 if let Some(invite_event) = invite_event {
                     if let Err(error) =
-                        publish_event_with_retry(&client, invite_event, "invite").await
+                        publish_event_with_retry(&client, &relay_urls, invite_event, "invite").await
                     {
                         let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
                             format!("Invite publish failed: {error}"),
@@ -2425,19 +2511,17 @@ impl AppCore {
         };
         let owner_pubkey = logged_in.owner_pubkey;
         let client = logged_in.client.clone();
+        let relay_urls = logged_in.relay_urls.clone();
         let tx = self.core_sender.clone();
 
         self.runtime.spawn(async move {
-            for relay in configured_relays() {
-                let _ = client.add_relay(relay).await;
-            }
-            client.connect_with_timeout(Duration::from_secs(5)).await;
-
             match codec::roster_unsigned_event(owner_pubkey, &roster)
                 .and_then(|unsigned| unsigned.sign_with_keys(&owner_keys).map_err(Into::into))
             {
                 Ok(event) => {
-                    if let Err(error) = publish_event_with_retry(&client, event, "roster").await {
+                    if let Err(error) =
+                        publish_event_with_retry(&client, &relay_urls, event, "roster").await
+                    {
                         let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
                             format!("Roster publish failed: {error}"),
                         ))));
@@ -2458,90 +2542,81 @@ impl AppCore {
         self.publish_local_identity_artifacts();
     }
 
-    fn resubscribe_to_protocol_events(&mut self) {
+    fn request_protocol_subscription_refresh(&mut self) {
         let Some(logged_in) = self.logged_in.as_ref() else {
-            self.protocol_subscription_filters = None;
+            self.protocol_subscription_runtime = ProtocolSubscriptionRuntime::default();
             return;
         };
-        let filters = self.protocol_filters();
-        if self.protocol_subscription_filters.as_ref() == Some(&filters) {
+
+        if self.protocol_subscription_runtime.refresh_in_flight {
+            self.protocol_subscription_runtime.refresh_dirty = true;
+            return;
+        }
+
+        let plan = self.compute_protocol_subscription_plan();
+        if self.protocol_subscription_runtime.current_plan == plan {
             return;
         }
 
         let client = logged_in.client.clone();
         let subscription_id = SubscriptionId::new(PROTOCOL_SUBSCRIPTION_ID);
-        let previous_filters = self.protocol_subscription_filters.replace(filters.clone());
+        self.protocol_subscription_runtime.refresh_in_flight = true;
+        self.protocol_subscription_runtime.refresh_dirty = false;
+        self.protocol_subscription_runtime.refresh_token =
+            self.protocol_subscription_runtime.refresh_token.wrapping_add(1);
+        let token = self.protocol_subscription_runtime.refresh_token;
+        self.protocol_subscription_runtime.applying_plan = plan.clone();
+        let had_previous = self.protocol_subscription_runtime.current_plan.is_some();
+        let filters = plan
+            .as_ref()
+            .map(build_protocol_filters)
+            .unwrap_or_default();
+        let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
-            client.connect_with_timeout(Duration::from_secs(5)).await;
-            if previous_filters.is_some() {
-                client.unsubscribe(subscription_id.clone()).await;
+            let mut applied = true;
+            if had_previous {
+                let _ = client.unsubscribe(subscription_id.clone()).await;
             }
             if !filters.is_empty() {
-                let _ = client
+                applied = client
                     .subscribe_with_id(subscription_id, filters, None)
-                    .await;
+                    .await
+                    .is_ok();
             }
+            let _ = tx.send(CoreMsg::Internal(Box::new(
+                InternalEvent::ProtocolSubscriptionRefreshCompleted {
+                    token,
+                    applied,
+                    plan,
+                },
+            )));
         });
     }
 
-    fn protocol_filters(&self) -> Vec<Filter> {
-        let mut filters = Vec::new();
-
-        let roster_authors = self
-            .known_roster_owner_hexes()
-            .into_iter()
-            .filter_map(|hex| PublicKey::parse(&hex).ok())
-            .collect::<Vec<_>>();
-        if !roster_authors.is_empty() {
-            filters.push(
-                Filter::new()
-                    .kind(Kind::from(codec::ROSTER_EVENT_KIND as u16))
-                    .authors(roster_authors),
-            );
-        }
-
-        let invite_authors = self
-            .known_invite_author_hexes()
-            .into_iter()
-            .filter_map(|hex| PublicKey::parse(&hex).ok())
-            .collect::<Vec<_>>();
-        if !invite_authors.is_empty() {
-            filters.push(
-                Filter::new()
-                    .kind(Kind::from(codec::INVITE_EVENT_KIND as u16))
-                    .authors(invite_authors),
-            );
-        }
-
-        let invite_response_filter = self
+    fn compute_protocol_subscription_plan(&self) -> Option<ProtocolSubscriptionPlan> {
+        let roster_authors = sorted_hexes(self.known_roster_owner_hexes());
+        let invite_authors = sorted_hexes(self.known_invite_author_hexes());
+        let message_authors = sorted_hexes(self.known_message_author_hexes());
+        let invite_response_recipient = self
             .logged_in
             .as_ref()
             .and_then(|logged_in| logged_in.session_manager.snapshot().local_invite)
-            .and_then(|invite| {
-                PublicKey::parse(invite.inviter_ephemeral_public_key.to_string()).ok()
-            })
-            .map(|recipient| {
-                Filter::new()
-                    .kind(Kind::from(codec::INVITE_RESPONSE_KIND as u16))
-                    .pubkey(recipient)
-            })
-            .unwrap_or_else(|| Filter::new().kind(Kind::from(codec::INVITE_RESPONSE_KIND as u16)));
-        filters.push(invite_response_filter);
+            .map(|invite| invite.inviter_ephemeral_public_key.to_string());
 
-        let message_authors = self
-            .known_message_author_hexes()
-            .into_iter()
-            .filter_map(|hex| PublicKey::parse(&hex).ok())
-            .collect::<Vec<_>>();
-        if !message_authors.is_empty() {
-            filters.push(
-                Filter::new()
-                    .kind(Kind::from(codec::MESSAGE_EVENT_KIND as u16))
-                    .authors(message_authors),
-            );
+        if roster_authors.is_empty()
+            && invite_authors.is_empty()
+            && message_authors.is_empty()
+            && invite_response_recipient.is_none()
+        {
+            return None;
         }
 
-        filters
+        Some(ProtocolSubscriptionPlan {
+            roster_authors,
+            invite_authors,
+            invite_response_recipient,
+            message_authors,
+        })
     }
 
     fn known_roster_owner_hexes(&self) -> HashSet<String> {
@@ -2665,6 +2740,89 @@ fn configured_relays() -> Vec<String> {
             .map(|relay| (*relay).to_string())
             .collect(),
     }
+}
+
+fn configured_relay_urls() -> Vec<RelayUrl> {
+    let parsed: Vec<RelayUrl> = configured_relays()
+        .into_iter()
+        .filter_map(|relay| RelayUrl::parse(relay).ok())
+        .collect();
+    if parsed.is_empty() {
+        DEFAULT_RELAYS
+            .iter()
+            .filter_map(|relay| RelayUrl::parse(*relay).ok())
+            .collect()
+    } else {
+        parsed
+    }
+}
+
+async fn ensure_session_relays_configured(client: &Client, relay_urls: &[RelayUrl]) {
+    for relay in relay_urls {
+        let _ = client.add_relay(relay.clone()).await;
+    }
+}
+
+fn sorted_hexes(values: HashSet<String>) -> Vec<String> {
+    let mut sorted = values.into_iter().collect::<Vec<_>>();
+    sorted.sort();
+    sorted.dedup();
+    sorted
+}
+
+fn build_protocol_filters(plan: &ProtocolSubscriptionPlan) -> Vec<Filter> {
+    let mut filters = Vec::new();
+
+    let roster_authors = plan
+        .roster_authors
+        .iter()
+        .filter_map(|hex| PublicKey::parse(hex).ok())
+        .collect::<Vec<_>>();
+    if !roster_authors.is_empty() {
+        filters.push(
+            Filter::new()
+                .kind(Kind::from(codec::ROSTER_EVENT_KIND as u16))
+                .authors(roster_authors),
+        );
+    }
+
+    let invite_authors = plan
+        .invite_authors
+        .iter()
+        .filter_map(|hex| PublicKey::parse(hex).ok())
+        .collect::<Vec<_>>();
+    if !invite_authors.is_empty() {
+        filters.push(
+            Filter::new()
+                .kind(Kind::from(codec::INVITE_EVENT_KIND as u16))
+                .authors(invite_authors),
+        );
+    }
+
+    if let Some(recipient_hex) = plan.invite_response_recipient.as_ref() {
+        if let Ok(recipient) = PublicKey::parse(recipient_hex) {
+            filters.push(
+                Filter::new()
+                    .kind(Kind::from(codec::INVITE_RESPONSE_KIND as u16))
+                    .pubkey(recipient),
+            );
+        }
+    }
+
+    let message_authors = plan
+        .message_authors
+        .iter()
+        .filter_map(|hex| PublicKey::parse(hex).ok())
+        .collect::<Vec<_>>();
+    if !message_authors.is_empty() {
+        filters.push(
+            Filter::new()
+                .kind(Kind::from(codec::MESSAGE_EVENT_KIND as u16))
+                .authors(message_authors),
+        );
+    }
+
+    filters
 }
 
 fn resolve_message_sender_owner(
@@ -2799,12 +2957,45 @@ fn build_prepared_publish_batch(
     }))
 }
 
-fn pending_reason_for_batch(batch: &PreparedPublishBatch) -> PendingSendReason {
+fn publish_mode_for_batch(batch: &PreparedPublishBatch) -> OutboundPublishMode {
     if batch.invite_events.is_empty() {
-        PendingSendReason::PublishRetry
+        OutboundPublishMode::OrdinaryFirstAck
     } else {
-        PendingSendReason::PublishingFirstContact
+        OutboundPublishMode::FirstContactStaged
     }
+}
+
+fn migrate_publish_mode(
+    current: OutboundPublishMode,
+    batch: Option<&PreparedPublishBatch>,
+) -> OutboundPublishMode {
+    match current {
+        OutboundPublishMode::WaitForPeer => batch
+            .map(publish_mode_for_batch)
+            .unwrap_or(OutboundPublishMode::WaitForPeer),
+        other => other,
+    }
+}
+
+fn pending_reason_for_publish_mode(mode: &OutboundPublishMode) -> PendingSendReason {
+    match mode {
+        OutboundPublishMode::FirstContactStaged => PendingSendReason::PublishingFirstContact,
+        OutboundPublishMode::OrdinaryFirstAck => PendingSendReason::PublishRetry,
+        OutboundPublishMode::WaitForPeer => PendingSendReason::MissingDeviceInvite,
+    }
+}
+
+fn retry_delay_for_publish_mode(mode: &OutboundPublishMode) -> u64 {
+    match mode {
+        OutboundPublishMode::FirstContactStaged => FIRST_CONTACT_RETRY_DELAY_SECS,
+        OutboundPublishMode::OrdinaryFirstAck | OutboundPublishMode::WaitForPeer => {
+            PENDING_RETRY_DELAY_SECS
+        }
+    }
+}
+
+fn retry_deadline_for_publish_mode(now_secs: u64, mode: &OutboundPublishMode) -> u64 {
+    now_secs.saturating_add(retry_delay_for_publish_mode(mode))
 }
 
 pub(crate) fn parse_peer_input(input: &str) -> anyhow::Result<(String, PublicKey)> {
@@ -2939,47 +3130,18 @@ fn unix_now() -> UnixSeconds {
 
 async fn publish_event_with_retry(
     client: &Client,
+    relay_urls: &[RelayUrl],
     event: Event,
     label: &str,
 ) -> anyhow::Result<()> {
-    let mut last_error = "no relays available".to_string();
+    let mut last_error = "no relays configured".to_string();
 
     for attempt in 0..5 {
-        client.connect_with_timeout(Duration::from_secs(8)).await;
-        wait_for_connected_relays(client, Duration::from_secs(4)).await;
-
-        let relays = client.relays().await;
-        let mut connected = 0usize;
-        let mut accepted = 0usize;
-        let mut failures: Vec<String> = Vec::new();
-
-        for (url, relay) in relays {
-            if !relay.is_connected() {
-                failures.push(format!("{url}=status:{}", relay.status()));
-                continue;
-            }
-
-            connected += 1;
-            match relay.send_event(event.clone()).await {
-                Ok(_) => accepted += 1,
-                Err(error) => failures.push(format!("{url}={error}")),
-            }
+        client.connect().await;
+        match publish_event_once(client, relay_urls, &event).await {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = error.to_string(),
         }
-
-        if accepted > 0 {
-            return Ok(());
-        }
-
-        last_error = if connected == 0 {
-            format!(
-                "no connected relays ({})",
-                relay_status_summary(client).await
-            )
-        } else if failures.is_empty() {
-            "connected relays did not accept event".to_string()
-        } else {
-            failures.join("; ")
-        };
 
         if attempt < 4 {
             sleep(Duration::from_millis(750 * (attempt + 1) as u64)).await;
@@ -2991,42 +3153,109 @@ async fn publish_event_with_retry(
 
 async fn publish_events_with_retry(
     client: &Client,
+    relay_urls: &[RelayUrl],
     events: Vec<Event>,
     label: &str,
 ) -> anyhow::Result<()> {
     for event in events {
-        publish_event_with_retry(client, event, label).await?;
+        publish_event_with_retry(client, relay_urls, event, label).await?;
     }
     Ok(())
 }
 
-async fn wait_for_connected_relays(client: &Client, timeout: Duration) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
-
-    loop {
-        let relays = client.relays().await;
-        if relays.values().any(|relay| relay.is_connected()) {
-            return true;
-        }
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        sleep(Duration::from_millis(250)).await;
+async fn publish_events_first_ack(
+    client: &Client,
+    relay_urls: &[RelayUrl],
+    events: &[Event],
+    label: &str,
+) -> anyhow::Result<()> {
+    for event in events {
+        publish_event_first_ack(client, relay_urls, event, label).await?;
     }
+    Ok(())
 }
 
-async fn relay_status_summary(client: &Client) -> String {
-    let relays = client.relays().await;
-    if relays.is_empty() {
-        return "no relays added".to_string();
+async fn publish_event_first_ack(
+    client: &Client,
+    relay_urls: &[RelayUrl],
+    event: &Event,
+    label: &str,
+) -> anyhow::Result<()> {
+    if relay_urls.is_empty() {
+        return Err(anyhow::anyhow!("{label}: no relays configured"));
     }
 
-    let mut states: Vec<String> = relays
-        .into_iter()
-        .map(|(url, relay)| format!("{url}={}", relay.status()))
-        .collect();
-    states.sort();
-    states.join(", ")
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<(), String>>(relay_urls.len().max(1));
+
+    for relay_url in relay_urls.iter().cloned() {
+        let client = client.clone();
+        let event = event.clone();
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let result = match client.send_event_to([relay_url.clone()], event).await {
+                Ok(output) if !output.success.is_empty() => Ok(()),
+                Ok(output) => Err(output
+                    .failed
+                    .values()
+                    .flatten()
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| "no relay accepted event".to_string())),
+                Err(error) => Err(error.to_string()),
+            };
+            let _ = tx.send(result).await;
+        });
+    }
+    drop(tx);
+
+    let mut first_error = None;
+    while let Some(result) = rx.recv().await {
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "{label}: {}",
+        first_error.unwrap_or_else(|| "publish failed".to_string())
+    ))
+}
+
+async fn publish_event_once(
+    client: &Client,
+    relay_urls: &[RelayUrl],
+    event: &Event,
+) -> anyhow::Result<()> {
+    if relay_urls.is_empty() {
+        return Err(anyhow::anyhow!("no relays configured"));
+    }
+
+    let output = client
+        .send_event_to(relay_urls.to_vec(), event.clone())
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    if output.success.is_empty() {
+        let reasons = output
+            .failed
+            .values()
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>();
+        Err(anyhow::anyhow!(
+            if reasons.is_empty() {
+                "no relay accepted event".to_string()
+            } else {
+                reasons.join("; ")
+            }
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -3658,6 +3887,7 @@ mod tests {
             owner_keys: Some(owner_keys),
             device_keys: device_keys.clone(),
             client: Client::new(device_keys),
+            relay_urls: configured_relay_urls(),
             session_manager,
             authorization_state: LocalAuthorizationState::Authorized,
         });
@@ -3672,12 +3902,10 @@ mod tests {
             .expect("publish runtime");
         runtime.block_on(async {
             let client = Client::new(keys.clone());
-            client
-                .add_relay("ws://127.0.0.1:4848")
-                .await
-                .expect("add relay");
-            client.connect_with_timeout(Duration::from_secs(5)).await;
-            publish_event_with_retry(&client, event, "test publish")
+            let relay_urls = vec![RelayUrl::parse("ws://127.0.0.1:4848").expect("relay url")];
+            ensure_session_relays_configured(&client, &relay_urls).await;
+            client.connect().await;
+            publish_event_with_retry(&client, &relay_urls, event, "test publish")
                 .await
                 .expect("publish event");
             let _ = client.shutdown().await;
@@ -3954,6 +4182,93 @@ mod tests {
     }
 
     #[test]
+    fn protocol_subscription_plan_sorts_roster_authors_stably() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let data_dir = TempDir::new().expect("temp dir");
+        let mut core = test_core(data_dir.path());
+        start_primary_test_session(&mut core, 71, false, false).expect("start session");
+
+        let owner_a = local_owner_from_keys(&keys_for_fill(90)).to_string();
+        let owner_b = local_owner_from_keys(&keys_for_fill(89)).to_string();
+
+        core.threads.insert(
+            owner_a.clone(),
+            ThreadRecord {
+                chat_id: owner_a.clone(),
+                unread_count: 0,
+                updated_at_secs: 10,
+                messages: Vec::new(),
+            },
+        );
+        core.threads.insert(
+            owner_b.clone(),
+            ThreadRecord {
+                chat_id: owner_b.clone(),
+                unread_count: 0,
+                updated_at_secs: 20,
+                messages: Vec::new(),
+            },
+        );
+        core.pending_outbound.push(PendingOutbound {
+            message_id: "dup-owner-a".to_string(),
+            chat_id: owner_a.clone(),
+            body: "pending".to_string(),
+            prepared_publish: None,
+            publish_mode: OutboundPublishMode::WaitForPeer,
+            reason: PendingSendReason::MissingRoster,
+            next_retry_at_secs: 123,
+            in_flight: false,
+        });
+        core.recent_handshake_peers.insert(
+            "device-b".to_string(),
+            RecentHandshakePeer {
+                owner_hex: owner_b.clone(),
+                device_hex: "device-b".to_string(),
+                observed_at_secs: 50,
+            },
+        );
+
+        let plan = core
+            .compute_protocol_subscription_plan()
+            .expect("subscription plan");
+        let mut expected = vec![
+            core.logged_in
+                .as_ref()
+                .expect("logged in")
+                .owner_pubkey
+                .to_string(),
+            owner_a,
+            owner_b,
+        ];
+        expected.sort();
+        expected.dedup();
+
+        assert_eq!(plan.roster_authors, expected);
+    }
+
+    #[test]
+    fn protocol_subscription_refresh_marks_dirty_while_refresh_is_in_flight() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let data_dir = TempDir::new().expect("temp dir");
+        let mut core = test_core(data_dir.path());
+        start_primary_test_session(&mut core, 72, false, false).expect("start session");
+
+        core.protocol_subscription_runtime.refresh_in_flight = true;
+        core.protocol_subscription_runtime.refresh_dirty = false;
+        let token_before = core.protocol_subscription_runtime.refresh_token;
+
+        core.request_protocol_subscription_refresh();
+
+        assert!(core.protocol_subscription_runtime.refresh_dirty);
+        assert!(core.protocol_subscription_runtime.refresh_in_flight);
+        assert_eq!(core.protocol_subscription_runtime.refresh_token, token_before);
+    }
+
+    #[test]
     fn established_send_stays_pending_until_publish_ack() {
         let _guard = relay_test_lock()
             .lock()
@@ -3976,7 +4291,12 @@ mod tests {
             .expect("outgoing message");
         assert_eq!(last_message.body, "offline direct send");
         assert!(matches!(last_message.delivery, DeliveryState::Pending));
+        assert!(!core.state.busy.sending_message);
         assert_eq!(core.pending_outbound.len(), 1);
+        assert_eq!(
+            core.pending_outbound[0].publish_mode,
+            OutboundPublishMode::OrdinaryFirstAck
+        );
         assert_eq!(
             core.pending_outbound[0].reason,
             PendingSendReason::PublishRetry
@@ -3999,11 +4319,21 @@ mod tests {
         let message_id = core.pending_outbound[0].message_id.clone();
         let event_ids_before = pending_publish_event_ids(&core, &message_id);
 
-        core.handle_internal(InternalEvent::StagedSendFinished {
+        core.handle_internal(InternalEvent::PublishFinished {
             message_id: message_id.clone(),
             chat_id: chat_id.clone(),
             success: false,
         });
+
+        let pending_after_failure = core
+            .pending_outbound
+            .iter()
+            .find(|pending| pending.message_id == message_id)
+            .expect("pending outbound after failure");
+        assert_eq!(pending_after_failure.publish_mode, OutboundPublishMode::OrdinaryFirstAck);
+        assert_eq!(pending_after_failure.reason, PendingSendReason::PublishRetry);
+        assert!(!pending_after_failure.in_flight);
+        assert!(pending_after_failure.next_retry_at_secs > 0);
 
         let snapshot_before_retry = core
             .logged_in
@@ -4038,6 +4368,121 @@ mod tests {
                 .expect("pending outbound after retry")
                 .in_flight
         );
+    }
+
+    #[test]
+    fn publish_finished_success_marks_message_sent_and_clears_pending() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::custom("ws://127.0.0.1:59999");
+        let data_dir = TempDir::new().expect("temp dir");
+        let (alice_manager, _bob_manager, chat_id) =
+            established_session_manager_pair(79, 80, 1_900_000_300);
+        let mut core = logged_in_core_with_manager(data_dir.path(), 79, alice_manager);
+
+        core.send_message(&chat_id, "mark me sent");
+        let message_id = core.pending_outbound[0].message_id.clone();
+
+        core.handle_internal(InternalEvent::PublishFinished {
+            message_id: message_id.clone(),
+            chat_id: chat_id.clone(),
+            success: true,
+        });
+
+        assert!(core.pending_outbound.is_empty());
+        let last_message = core
+            .state
+            .current_chat
+            .as_ref()
+            .expect("current chat")
+            .messages
+            .last()
+            .expect("message");
+        assert_eq!(last_message.id, message_id);
+        assert!(matches!(last_message.delivery, DeliveryState::Sent));
+    }
+
+    #[test]
+    fn publish_events_first_ack_succeeds_when_any_relay_accepts() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::custom("ws://127.0.0.1:4848,ws://127.0.0.1:59999");
+        let _relay = TestRelay::start();
+        let owner_keys = keys_for_fill(81);
+        let device_keys = device_keys_for_fill(81);
+        let owner = local_owner_from_keys(&owner_keys);
+        let roster = DeviceRoster::new(
+            UnixSeconds(1_900_000_400),
+            vec![AuthorizedDevice::new(
+                local_device_from_keys(&device_keys),
+                UnixSeconds(1_900_000_400),
+            )],
+        );
+        let event = codec::roster_unsigned_event(owner, &roster)
+            .expect("roster event")
+            .sign_with_keys(&owner_keys)
+            .expect("sign roster");
+        let client = Client::new(device_keys);
+        let relay_urls = configured_relay_urls();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        runtime.block_on(async {
+            ensure_session_relays_configured(&client, &relay_urls).await;
+            client.connect().await;
+            publish_events_first_ack(&client, &relay_urls, &[event.clone()], "test first ack")
+                .await
+                .expect("first ack publish");
+            let _ = client.shutdown().await;
+        });
+
+        let events = fetch_local_relay_events(vec![Filter::new().kind(Kind::from(
+            codec::ROSTER_EVENT_KIND as u16,
+        ))]);
+        assert!(events.iter().any(|candidate| candidate.id == event.id));
+    }
+
+    #[test]
+    fn publish_events_first_ack_fails_when_all_relays_fail() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::custom("ws://127.0.0.1:59999");
+        let owner_keys = keys_for_fill(82);
+        let device_keys = device_keys_for_fill(82);
+        let owner = local_owner_from_keys(&owner_keys);
+        let roster = DeviceRoster::new(
+            UnixSeconds(1_900_000_500),
+            vec![AuthorizedDevice::new(
+                local_device_from_keys(&device_keys),
+                UnixSeconds(1_900_000_500),
+            )],
+        );
+        let event = codec::roster_unsigned_event(owner, &roster)
+            .expect("roster event")
+            .sign_with_keys(&owner_keys)
+            .expect("sign roster");
+        let client = Client::new(device_keys);
+        let relay_urls = configured_relay_urls();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let result = runtime.block_on(async {
+            ensure_session_relays_configured(&client, &relay_urls).await;
+            client.connect().await;
+            let result =
+                publish_events_first_ack(&client, &relay_urls, &[event], "test first ack").await;
+            let _ = client.shutdown().await;
+            result
+        });
+
+        assert!(result.is_err());
     }
 
     #[test]

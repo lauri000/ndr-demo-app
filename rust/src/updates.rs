@@ -1,4 +1,5 @@
 use crate::actions::AppAction;
+use crate::core::ProtocolSubscriptionPlan;
 use crate::state::AppState;
 use nostr_sdk::prelude::Event;
 
@@ -15,21 +16,26 @@ pub enum AppUpdate {
 }
 
 #[derive(Debug)]
-pub enum CoreMsg {
+pub(crate) enum CoreMsg {
     Action(AppAction),
     Internal(Box<InternalEvent>),
 }
 
 #[derive(Debug)]
-pub enum InternalEvent {
+pub(crate) enum InternalEvent {
     RelayEvent(Event),
     RetryPendingOutbound,
     FetchTrackedPeerCatchUp,
     FetchCatchUpEvents(Vec<Event>),
-    StagedSendFinished {
+    PublishFinished {
         message_id: String,
         chat_id: String,
         success: bool,
+    },
+    ProtocolSubscriptionRefreshCompleted {
+        token: u64,
+        applied: bool,
+        plan: Option<ProtocolSubscriptionPlan>,
     },
     SyncComplete,
     Toast(String),
