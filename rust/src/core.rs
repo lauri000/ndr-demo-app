@@ -38,6 +38,7 @@ const FIRST_CONTACT_RETRY_DELAY_SECS: u64 = 5;
 const CATCH_UP_LOOKBACK_SECS: u64 = 30;
 const RESUBSCRIBE_CATCH_UP_DELAY_SECS: u64 = 5;
 const PROTOCOL_SUBSCRIPTION_ID: &str = "ndr-protocol";
+const APP_MESSAGE_PAYLOAD_VERSION: u8 = 1;
 
 pub struct AppCore {
     update_tx: Sender<AppUpdate>,
@@ -104,6 +105,20 @@ struct PendingOutbound {
     in_flight: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct AppMessagePayload {
+    version: u8,
+    chat_id: String,
+    body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RoutedChatMessage {
+    chat_id: String,
+    body: String,
+    is_outgoing: bool,
+}
+
 #[derive(Clone, Debug)]
 struct RecentHandshakePeer {
     owner_hex: String,
@@ -149,6 +164,8 @@ struct PersistedState {
     pending_outbound: Vec<PendingOutbound>,
     #[serde(default)]
     seen_event_ids: Vec<String>,
+    #[serde(default)]
+    authorization_state: Option<PersistedAuthorizationState>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -181,6 +198,13 @@ enum PersistedDeliveryState {
     Failed,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+enum PersistedAuthorizationState {
+    Authorized,
+    AwaitingApproval,
+    Revoked,
+}
+
 impl From<PersistedDeliveryState> for DeliveryState {
     fn from(value: PersistedDeliveryState) -> Self {
         match value {
@@ -199,6 +223,26 @@ impl From<&DeliveryState> for PersistedDeliveryState {
             DeliveryState::Sent => Self::Sent,
             DeliveryState::Received => Self::Received,
             DeliveryState::Failed => Self::Failed,
+        }
+    }
+}
+
+impl From<LocalAuthorizationState> for PersistedAuthorizationState {
+    fn from(value: LocalAuthorizationState) -> Self {
+        match value {
+            LocalAuthorizationState::Authorized => Self::Authorized,
+            LocalAuthorizationState::AwaitingApproval => Self::AwaitingApproval,
+            LocalAuthorizationState::Revoked => Self::Revoked,
+        }
+    }
+}
+
+impl From<PersistedAuthorizationState> for LocalAuthorizationState {
+    fn from(value: PersistedAuthorizationState) -> Self {
+        match value {
+            PersistedAuthorizationState::Authorized => Self::Authorized,
+            PersistedAuthorizationState::AwaitingApproval => Self::AwaitingApproval,
+            PersistedAuthorizationState::Revoked => Self::Revoked,
         }
     }
 }
@@ -576,6 +620,16 @@ impl AppCore {
         self.rebuild_state();
         self.emit_state();
 
+        let payload = match encode_app_message_payload(&chat_id, trimmed) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.state.busy.sending_message = false;
+                self.state.toast = Some(error.to_string());
+                self.rebuild_state();
+                self.emit_state();
+                return;
+            }
+        };
         let owner = OwnerPubkey::from_bytes(peer_pubkey.to_bytes());
         let prepared = {
             let logged_in = self.logged_in.as_mut().expect("logged in checked above");
@@ -583,7 +637,7 @@ impl AppCore {
             let mut ctx = ProtocolContext::new(now, &mut rng);
             logged_in
                 .session_manager
-                .prepare_send(&mut ctx, owner, trimmed.as_bytes().to_vec())
+                .prepare_send(&mut ctx, owner, payload)
         };
 
         match prepared {
@@ -773,6 +827,7 @@ impl AppCore {
                 logged_in.owner_pubkey,
                 local_device_from_keys(&logged_in.device_keys),
                 &logged_in.session_manager,
+                Some(logged_in.authorization_state),
             );
             roster
         };
@@ -824,6 +879,7 @@ impl AppCore {
                 logged_in.owner_pubkey,
                 local_device_from_keys(&logged_in.device_keys),
                 &logged_in.session_manager,
+                Some(logged_in.authorization_state),
             );
             roster
         };
@@ -879,6 +935,7 @@ impl AppCore {
                                 logged_in.owner_pubkey,
                                 local_device_from_keys(&logged_in.device_keys),
                                 &logged_in.session_manager,
+                                Some(previous),
                             );
                             match (previous, logged_in.authorization_state) {
                                 (
@@ -1090,11 +1147,15 @@ impl AppCore {
                         self.remember_event(event_id);
                         let owner_hex = message.owner_pubkey.to_string();
                         self.clear_recent_handshake_peer(&owner_hex);
-                        self.push_incoming_message(
-                            &owner_hex,
-                            String::from_utf8_lossy(&message.payload).into_owned(),
-                            now.get(),
+                        let routed = route_received_message(
+                            self.logged_in
+                                .as_ref()
+                                .expect("checked above")
+                                .owner_pubkey,
+                            message.owner_pubkey,
+                            &message.payload,
                         );
+                        self.apply_routed_chat_message(routed, now.get());
                         self.resubscribe_to_protocol_events();
                         self.persist_best_effort();
                         self.rebuild_state();
@@ -1169,6 +1230,10 @@ impl AppCore {
         } else {
             None
         };
+        let persisted_authorization_state = persisted
+            .as_ref()
+            .and_then(|persisted| persisted.authorization_state.clone())
+            .map(Into::into);
 
         if let Some(persisted) = &persisted {
             self.active_chat_id = persisted.active_chat_id.clone();
@@ -1253,7 +1318,13 @@ impl AppCore {
         }
 
         let authorization_state =
-            derive_local_authorization_state(owner_keys.is_some(), owner_pubkey, local_device, &session_manager);
+            derive_local_authorization_state(
+                owner_keys.is_some(),
+                owner_pubkey,
+                local_device,
+                &session_manager,
+                persisted_authorization_state,
+            );
 
         if authorization_state != LocalAuthorizationState::Revoked {
             let mut rng = OsRng;
@@ -1325,11 +1396,15 @@ impl AppCore {
             };
             match receive_result {
                 Ok(Some(message)) => {
-                    self.push_incoming_message(
-                        &message.owner_pubkey.to_string(),
-                        String::from_utf8_lossy(&message.payload).into_owned(),
-                        now.get(),
+                    let routed = route_received_message(
+                        self.logged_in
+                            .as_ref()
+                            .expect("checked above")
+                            .owner_pubkey,
+                        message.owner_pubkey,
+                        &message.payload,
                     );
+                    self.apply_routed_chat_message(routed, now.get());
                 }
                 Ok(None) => still_pending.push(item),
                 Err(_) => still_pending.push(item),
@@ -1384,15 +1459,29 @@ impl AppCore {
                 }
             };
 
+            let payload = match encode_app_message_payload(
+                &pending_message.chat_id,
+                &pending_message.body,
+            ) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    self.state.toast = Some(error.to_string());
+                    self.update_message_delivery(
+                        &pending_message.chat_id,
+                        &pending_message.message_id,
+                        DeliveryState::Failed,
+                    );
+                    continue;
+                }
+            };
+
             let prepared = {
                 let logged_in = self.logged_in.as_mut().expect("checked above");
                 let mut rng = OsRng;
                 let mut ctx = ProtocolContext::new(now, &mut rng);
-                logged_in.session_manager.prepare_send(
-                    &mut ctx,
-                    owner,
-                    pending_message.body.as_bytes().to_vec(),
-                )
+                logged_in
+                    .session_manager
+                    .prepare_send(&mut ctx, owner, payload)
             };
 
             match prepared {
@@ -1951,6 +2040,23 @@ impl AppCore {
         });
     }
 
+    fn apply_routed_chat_message(
+        &mut self,
+        routed: RoutedChatMessage,
+        created_at_secs: u64,
+    ) {
+        if routed.is_outgoing {
+            self.push_outgoing_message(
+                &routed.chat_id,
+                routed.body,
+                created_at_secs,
+                DeliveryState::Sent,
+            );
+        } else {
+            self.push_incoming_message(&routed.chat_id, routed.body, created_at_secs);
+        }
+    }
+
     fn allocate_message_id(&mut self) -> String {
         let id = self.next_message_id;
         self.next_message_id = self.next_message_id.saturating_add(1);
@@ -2161,7 +2267,7 @@ impl AppCore {
         };
 
         let persisted = PersistedState {
-            version: 6,
+            version: 7,
             active_chat_id: self.active_chat_id.clone(),
             next_message_id: self.next_message_id,
             session_manager: Some(logged_in.session_manager.snapshot()),
@@ -2190,6 +2296,7 @@ impl AppCore {
             pending_inbound: self.pending_inbound.clone(),
             pending_outbound: self.pending_outbound.clone(),
             seen_event_ids: self.seen_event_order.iter().cloned().collect(),
+            authorization_state: Some(logged_in.authorization_state.into()),
         };
 
         if let Ok(bytes) = serde_json::to_vec_pretty(&persisted) {
@@ -2471,12 +2578,16 @@ impl AppCore {
         let mut authors = HashSet::new();
         if let Some(logged_in) = self.logged_in.as_ref() {
             let selected_owners = self.protocol_owner_hexes();
+            let local_owner_hex = logged_in.owner_pubkey.to_string();
             for user in logged_in
                 .session_manager
                 .snapshot()
                 .users
                 .into_iter()
-                .filter(|user| selected_owners.contains(&user.owner_pubkey.to_string()))
+                .filter(|user| {
+                    let owner_hex = user.owner_pubkey.to_string();
+                    owner_hex == local_owner_hex || selected_owners.contains(&owner_hex)
+                })
             {
                 for device in user.devices {
                     if let Some(session) = device.active_session.as_ref() {
@@ -2572,6 +2683,55 @@ fn resolve_message_sender_owner(
     }
 
     None
+}
+
+fn encode_app_message_payload(chat_id: &str, body: &str) -> anyhow::Result<Vec<u8>> {
+    let (normalized_chat_id, _) = parse_peer_input(chat_id)?;
+    Ok(serde_json::to_vec(&AppMessagePayload {
+        version: APP_MESSAGE_PAYLOAD_VERSION,
+        chat_id: normalized_chat_id,
+        body: body.to_string(),
+    })?)
+}
+
+fn decode_app_message_payload(payload: &[u8]) -> Option<AppMessagePayload> {
+    let decoded = serde_json::from_slice::<AppMessagePayload>(payload).ok()?;
+    if decoded.version != APP_MESSAGE_PAYLOAD_VERSION {
+        return None;
+    }
+    Some(decoded)
+}
+
+fn route_received_message(
+    local_owner: OwnerPubkey,
+    sender_owner: OwnerPubkey,
+    payload: &[u8],
+) -> RoutedChatMessage {
+    if let Some(decoded) = decode_app_message_payload(payload) {
+        if sender_owner == local_owner {
+            if let Ok((chat_id, _)) = parse_peer_input(&decoded.chat_id) {
+                if chat_id != local_owner.to_string() {
+                    return RoutedChatMessage {
+                        chat_id,
+                        body: decoded.body,
+                        is_outgoing: true,
+                    };
+                }
+            }
+        }
+
+        return RoutedChatMessage {
+            chat_id: sender_owner.to_string(),
+            body: decoded.body,
+            is_outgoing: false,
+        };
+    }
+
+    RoutedChatMessage {
+        chat_id: sender_owner.to_string(),
+        body: String::from_utf8_lossy(payload).into_owned(),
+        is_outgoing: false,
+    }
 }
 
 fn collect_expected_senders(session: &SessionState, out: &mut HashSet<String>) {
@@ -2719,6 +2879,7 @@ fn derive_local_authorization_state(
     owner_pubkey: OwnerPubkey,
     local_device_pubkey: DevicePubkey,
     session_manager: &SessionManager,
+    previous_state: Option<LocalAuthorizationState>,
 ) -> LocalAuthorizationState {
     let local_roster = session_manager
         .snapshot()
@@ -2730,8 +2891,16 @@ fn derive_local_authorization_state(
         Some(roster) => {
             if roster.get_device(&local_device_pubkey).is_some() {
                 LocalAuthorizationState::Authorized
-            } else {
+            } else if has_owner_signing_authority {
+                LocalAuthorizationState::Authorized
+            } else if matches!(
+                previous_state,
+                Some(LocalAuthorizationState::Authorized)
+                    | Some(LocalAuthorizationState::Revoked)
+            ) {
                 LocalAuthorizationState::Revoked
+            } else {
+                LocalAuthorizationState::AwaitingApproval
             }
         }
         None if has_owner_signing_authority => LocalAuthorizationState::Authorized,
@@ -4674,5 +4843,232 @@ mod tests {
             Some("dedupe")
         );
         assert!(restored_state.toast.is_none());
+    }
+
+    #[test]
+    fn linked_device_fanout_and_revocation_work_on_local_relay() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::local_only();
+        let _relay = TestRelay::start();
+        let primary_dir = TempDir::new().expect("primary dir");
+        let linked_dir = TempDir::new().expect("linked dir");
+        let peer_dir = TempDir::new().expect("peer dir");
+
+        let primary = app_with_dir(primary_dir.path(), 71);
+        let primary_account = wait_for_state(&primary, "primary account", |state| {
+            state.account.is_some()
+        })
+        .account
+        .expect("primary account");
+
+        let linked = FfiApp::new(
+            linked_dir.path().to_string_lossy().into_owned(),
+            String::new(),
+            "test".to_string(),
+        );
+        linked.dispatch(AppAction::StartLinkedDevice {
+            owner_input: primary_account.npub.clone(),
+        });
+
+        let linked_account =
+            wait_for_state(&linked, "linked awaiting approval", |state| {
+                state
+                    .account
+                    .as_ref()
+                    .map(|account| {
+                        matches!(
+                            account.authorization_state,
+                            DeviceAuthorizationState::AwaitingApproval
+                        )
+                    })
+                    .unwrap_or(false)
+            })
+            .account
+            .expect("linked account");
+
+        primary.dispatch(AppAction::AddAuthorizedDevice {
+            device_input: linked_account.device_npub.clone(),
+        });
+
+        wait_for_state(&linked, "linked authorized", |state| {
+            state
+                .account
+                .as_ref()
+                .map(|account| {
+                    matches!(
+                        account.authorization_state,
+                        DeviceAuthorizationState::Authorized
+                    )
+                })
+                .unwrap_or(false)
+        });
+
+        let peer = app_with_dir(peer_dir.path(), 72);
+        let peer_account = wait_for_state(&peer, "peer account", |state| {
+            state.account.is_some()
+        })
+        .account
+        .expect("peer account");
+
+        let peer_chat_id = peer_account.public_key_hex.clone();
+        let primary_chat_id = primary_account.public_key_hex.clone();
+
+        primary.dispatch(AppAction::CreateChat {
+            peer_input: peer_account.npub.clone(),
+        });
+        wait_for_state(&primary, "primary chat with peer", |state| {
+            state
+                .current_chat
+                .as_ref()
+                .map(|chat| chat.chat_id == peer_chat_id)
+                .unwrap_or(false)
+        });
+
+        primary.dispatch(AppAction::SendMessage {
+            chat_id: peer_chat_id.clone(),
+            text: "m1".to_string(),
+        });
+
+        wait_for_state(&peer, "peer received m1", |state| {
+            state.chat_list.iter().any(|thread| {
+                thread.chat_id == primary_chat_id
+                    && thread.last_message_preview.as_deref() == Some("m1")
+            })
+        });
+        let linked_after_m1 = wait_for_state(&linked, "linked received synced m1", |state| {
+            state.chat_list.iter().any(|thread| {
+                thread.chat_id == peer_chat_id
+                    && thread.last_message_preview.as_deref() == Some("m1")
+            })
+        });
+        assert!(linked_after_m1.chat_list.iter().any(|thread| {
+            thread.chat_id == peer_chat_id && thread.last_message_preview.as_deref() == Some("m1")
+        }));
+
+        peer.dispatch(AppAction::OpenChat {
+            chat_id: primary_chat_id.clone(),
+        });
+        wait_for_state(&peer, "peer chat open", |state| {
+            state
+                .current_chat
+                .as_ref()
+                .map(|chat| chat.chat_id == primary_chat_id)
+                .unwrap_or(false)
+        });
+        peer.dispatch(AppAction::SendMessage {
+            chat_id: primary_chat_id.clone(),
+            text: "m2".to_string(),
+        });
+
+        wait_for_state(&primary, "primary received m2", |state| {
+            state.chat_list.iter().any(|thread| {
+                thread.chat_id == peer_chat_id
+                    && thread.last_message_preview.as_deref() == Some("m2")
+            })
+        });
+        let linked_after_m2 = wait_for_state(&linked, "linked received m2", |state| {
+            state.chat_list.iter().any(|thread| {
+                thread.chat_id == peer_chat_id
+                    && thread.last_message_preview.as_deref() == Some("m2")
+            })
+        });
+        linked.dispatch(AppAction::OpenChat {
+            chat_id: peer_chat_id.clone(),
+        });
+        let linked_chat = wait_for_state(&linked, "linked chat open", |state| {
+            state
+                .current_chat
+                .as_ref()
+                .map(|chat| {
+                    chat.chat_id == peer_chat_id
+                        && chat.messages.iter().any(|message| {
+                            message.body == "m1" && message.is_outgoing
+                        })
+                        && chat.messages.iter().any(|message| {
+                            message.body == "m2" && !message.is_outgoing
+                        })
+                })
+                .unwrap_or(false)
+        })
+        .current_chat
+        .expect("linked chat");
+        assert_eq!(linked_chat.chat_id, peer_chat_id);
+        assert!(linked_after_m2.chat_list.iter().any(|thread| {
+            thread.chat_id == peer_chat_id && thread.last_message_preview.as_deref() == Some("m2")
+        }));
+
+        linked.dispatch(AppAction::SendMessage {
+            chat_id: peer_chat_id.clone(),
+            text: "m3".to_string(),
+        });
+
+        wait_for_state(&peer, "peer received m3", |state| {
+            state
+                .current_chat
+                .as_ref()
+                .map(|chat| {
+                    chat.chat_id == primary_chat_id
+                        && chat.messages.iter().any(|message| {
+                            message.body == "m3" && !message.is_outgoing
+                        })
+                })
+                .unwrap_or(false)
+        });
+        primary.dispatch(AppAction::OpenChat {
+            chat_id: peer_chat_id.clone(),
+        });
+        wait_for_state(&primary, "primary received synced m3", |state| {
+            state
+                .current_chat
+                .as_ref()
+                .map(|chat| {
+                    chat.chat_id == peer_chat_id
+                        && chat.messages.iter().any(|message| {
+                            message.body == "m3" && message.is_outgoing
+                        })
+                })
+                .unwrap_or(false)
+        });
+
+        primary.dispatch(AppAction::RemoveAuthorizedDevice {
+            device_pubkey_hex: linked_account.device_public_key_hex.clone(),
+        });
+        wait_for_state(&linked, "linked revoked", |state| {
+            state
+                .account
+                .as_ref()
+                .map(|account| {
+                    matches!(
+                        account.authorization_state,
+                        DeviceAuthorizationState::Revoked
+                    )
+                })
+                .unwrap_or(false)
+        });
+
+        let before_count = linked
+            .state()
+            .current_chat
+            .as_ref()
+            .map(|chat| chat.messages.len())
+            .unwrap_or(0);
+        linked.dispatch(AppAction::SendMessage {
+            chat_id: peer_chat_id.clone(),
+            text: "blocked".to_string(),
+        });
+        let blocked_state = wait_for_state(&linked, "linked send blocked", |state| {
+            state.toast.as_deref()
+                == Some("This device has been removed from the roster. Log out to continue.")
+        });
+        assert_eq!(
+            blocked_state
+                .current_chat
+                .as_ref()
+                .map(|chat| chat.messages.len())
+                .unwrap_or(0),
+            before_count
+        );
     }
 }

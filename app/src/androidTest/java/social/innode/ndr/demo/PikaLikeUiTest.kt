@@ -49,6 +49,31 @@ class PikaLikeUiTest {
     }
 
     @Test
+    fun manage_devices_adds_and_removes_device_row() {
+        composeRule.ensureChatList()
+        composeRule.onNodeWithTag("chatListProfileButton", useUnmergedTree = true).performClick()
+        composeRule.waitForTag("myProfileManageDevicesButton")
+        composeRule.onNodeWithTag("myProfileManageDevicesButton", useUnmergedTree = true)
+            .performClick()
+
+        composeRule.waitForTag("deviceRosterAddInput")
+        composeRule.onNodeWithTag("deviceRosterAddInput", useUnmergedTree = true)
+            .performTextInput(SECONDARY_DEVICE_NPUB)
+        composeRule.onNodeWithTag("deviceRosterAddButton", useUnmergedTree = true)
+            .performClick()
+
+        composeRule.waitForText(SECONDARY_DEVICE_NPUB)
+        composeRule.onNodeWithText("Remove", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithText("Remove", useUnmergedTree = true).performClick()
+        composeRule.waitUntil(15_000) {
+            composeRule
+                .onAllNodesWithText(SECONDARY_DEVICE_NPUB, useUnmergedTree = true)
+                .fetchSemanticsNodes()
+                .isEmpty()
+        }
+    }
+
+    @Test
     fun create_chat_and_send_message_locally() {
         composeRule.ensureChatList()
         composeRule.onNodeWithTag("chatListNewChatButton", useUnmergedTree = true).performClick()
@@ -131,6 +156,8 @@ class PikaLikeUiTest {
     companion object {
         private const val VALID_PEER_NPUB =
             "npub18w35g6gn47qwmryulxzvfucmujvrqqljjpapyl8x0rqaljh6f2usml77dj"
+        private const val SECONDARY_DEVICE_NPUB =
+            "npub1m40q2j9vq7yrmgaf4q4f5a30gq2r6hwhzmu7t4j50c5f8ga2g8vs3hmzdt"
     }
 
     private fun androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, *>.ensureChatList() {
