@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import social.innode.ndr.demo.core.AppManager
+import social.innode.ndr.demo.qr.DeviceApprovalQr
 import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.AppState
 import social.innode.ndr.demo.rust.isValidPeerInput
@@ -40,11 +41,11 @@ fun DeviceRosterScreen(
     val roster = appState.deviceRoster
     var deviceInput by remember { mutableStateOf("") }
     var showScanner by remember { mutableStateOf(false) }
-    val normalizedInput = normalizePeerInput(deviceInput)
+    val resolvedInput = roster?.let { resolveDeviceAuthorizationInput(deviceInput, it.ownerNpub, it.ownerPublicKeyHex) }
+    val normalizedInput = resolvedInput?.deviceInput.orEmpty()
     val canAddDevice =
         roster?.canManageDevices == true &&
             normalizedInput.isNotBlank() &&
-            isValidPeerInput(normalizedInput) &&
             !appState.busy.updatingRoster
 
     Scaffold(
@@ -108,16 +109,30 @@ fun DeviceRosterScreen(
             )
 
             if (roster.canManageDevices) {
+                Text(
+                    text = "Scan the QR from the device waiting for approval, or paste its device key or approval code.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
                 OutlinedTextField(
                     value = deviceInput,
                     onValueChange = { deviceInput = it },
-                    label = { Text("Device npub or hex") },
+                    label = { Text("Device npub, hex, or approval code") },
                     modifier =
                         Modifier
                             .fillMaxWidth()
                             .testTag("deviceRosterAddInput"),
-                    isError = deviceInput.isNotBlank() && !isValidPeerInput(normalizedInput),
+                    isError = deviceInput.isNotBlank() && resolvedInput?.errorMessage != null,
                 )
+
+                resolvedInput?.errorMessage?.let { error ->
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     TextButton(
@@ -204,13 +219,72 @@ fun DeviceRosterScreen(
         }
     }
 
-    if (showScanner) {
+    if (showScanner && roster != null) {
         QrScannerDialog(
             onDismiss = { showScanner = false },
             onScanned = { scanned ->
-                deviceInput = normalizePeerInput(scanned)
-                showScanner = false
+                val resolved = resolveDeviceAuthorizationInput(scanned, roster.ownerNpub, roster.ownerPublicKeyHex)
+                if (resolved.errorMessage != null) {
+                    resolved.errorMessage
+                } else {
+                    appManager.addAuthorizedDevice(resolved.deviceInput)
+                    deviceInput = ""
+                    showScanner = false
+                    null
+                }
             },
+        )
+    }
+}
+
+private data class ResolvedDeviceAuthorizationInput(
+    val deviceInput: String,
+    val errorMessage: String?,
+)
+
+private fun resolveDeviceAuthorizationInput(
+    rawInput: String,
+    ownerNpub: String,
+    ownerPublicKeyHex: String,
+): ResolvedDeviceAuthorizationInput {
+    val trimmed = rawInput.trim()
+    if (trimmed.isEmpty()) {
+        return ResolvedDeviceAuthorizationInput(deviceInput = "", errorMessage = null)
+    }
+
+    val approvalPayload = DeviceApprovalQr.decode(trimmed)
+    if (approvalPayload != null) {
+        val normalizedOwner = normalizePeerInput(approvalPayload.ownerInput)
+        val acceptedOwnerInputs =
+            setOf(
+                normalizePeerInput(ownerNpub),
+                normalizePeerInput(ownerPublicKeyHex),
+            )
+        if (!isValidPeerInput(normalizedOwner) || normalizedOwner !in acceptedOwnerInputs) {
+            return ResolvedDeviceAuthorizationInput(
+                deviceInput = "",
+                errorMessage = "This approval QR belongs to a different owner.",
+            )
+        }
+
+        val normalizedDeviceInput = normalizePeerInput(approvalPayload.deviceInput)
+        return if (isValidPeerInput(normalizedDeviceInput)) {
+            ResolvedDeviceAuthorizationInput(deviceInput = normalizedDeviceInput, errorMessage = null)
+        } else {
+            ResolvedDeviceAuthorizationInput(
+                deviceInput = "",
+                errorMessage = "Scanned approval QR did not contain a valid device public key.",
+            )
+        }
+    }
+
+    val normalizedInput = normalizePeerInput(trimmed)
+    return if (isValidPeerInput(normalizedInput)) {
+        ResolvedDeviceAuthorizationInput(deviceInput = normalizedInput, errorMessage = null)
+    } else {
+        ResolvedDeviceAuthorizationInput(
+            deviceInput = "",
+            errorMessage = "Not a valid device public key.",
         )
     }
 }

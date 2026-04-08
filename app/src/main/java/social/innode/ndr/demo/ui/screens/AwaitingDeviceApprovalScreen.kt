@@ -21,6 +21,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import social.innode.ndr.demo.core.AppManager
+import social.innode.ndr.demo.qr.DeviceApprovalQr
 import social.innode.ndr.demo.rust.AppState
 
 @Composable
@@ -30,9 +31,16 @@ fun AwaitingDeviceApprovalScreen(
 ) {
     val account = appState.account ?: return
     val clipboard = LocalClipboardManager.current
+    val approvalQrValue =
+        remember(account.npub, account.deviceNpub) {
+            DeviceApprovalQr.encode(
+                ownerInput = account.npub,
+                deviceInput = account.deviceNpub,
+            )
+        }
     val qrBitmap =
-        remember(account.deviceNpub) {
-            createQrBitmap(account.deviceNpub, size = 768)
+        remember(approvalQrValue) {
+            createQrBitmap(approvalQrValue, size = 768)
         }
 
     Column(
@@ -48,7 +56,7 @@ fun AwaitingDeviceApprovalScreen(
             style = MaterialTheme.typography.headlineMedium,
         )
         Text(
-            text = "This device has the owner identity and has already published its own invite. Approve it from the primary device by adding the device npub below to the roster.",
+            text = "This device has already published its own invite. From the primary device, open Manage devices and scan the QR below to authorize it immediately.",
             style = MaterialTheme.typography.bodyLarge,
         )
 

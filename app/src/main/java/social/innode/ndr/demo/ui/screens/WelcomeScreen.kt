@@ -159,8 +159,14 @@ fun WelcomeScreen(
         QrScannerDialog(
             onDismiss = { showScanner = false },
             onScanned = { scanned ->
-                onLinkOwnerValueChanged(normalizePeerInput(scanned))
-                showScanner = false
+                val normalized = normalizePeerInput(scanned)
+                if (!isValidPeerInput(normalized)) {
+                    "Scanned QR did not contain a valid owner public key."
+                } else {
+                    onLinkOwnerValueChanged(normalized)
+                    showScanner = false
+                    null
+                }
             },
         )
     }

@@ -70,6 +70,12 @@ fun MyProfileSheet(
                 }
             }
 
+            Text(
+                text = "Scan this QR from a fresh device to start linking it to this owner.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
             Text("npub", style = MaterialTheme.typography.titleSmall)
             Text(
                 npub,

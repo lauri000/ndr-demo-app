@@ -16,6 +16,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import social.innode.ndr.demo.qr.DeviceApprovalQr
 import social.innode.ndr.demo.ui.screens.QrScannerTestOverrides
 
 @RunWith(AndroidJUnit4::class)
@@ -71,6 +72,37 @@ class PikaLikeUiTest {
                 .fetchSemanticsNodes()
                 .isEmpty()
         }
+    }
+
+    @Test
+    fun scan_device_approval_qr_authorizes_device() {
+        composeRule.ensureChatList()
+        composeRule.onNodeWithTag("chatListProfileButton", useUnmergedTree = true).performClick()
+        composeRule.waitForTag("myProfileManageDevicesButton")
+        composeRule.onNodeWithTag("myProfileManageDevicesButton", useUnmergedTree = true)
+            .performClick()
+
+        composeRule.waitForTag("deviceRosterOwnerNpub")
+        val ownerNpub =
+            (composeRule.activity.application as NdrDemoApp)
+                .container
+                .appManager
+                .state
+                .value
+                .deviceRoster
+                ?.ownerNpub
+                .orEmpty()
+
+        composeRule.runOnUiThread {
+            QrScannerTestOverrides.nextScannedValue =
+                DeviceApprovalQr.encode(
+                    ownerInput = ownerNpub,
+                    deviceInput = SECONDARY_DEVICE_NPUB,
+                )
+        }
+        composeRule.onNodeWithTag("deviceRosterScanButton", useUnmergedTree = true).performClick()
+
+        composeRule.waitForText(SECONDARY_DEVICE_NPUB)
     }
 
     @Test

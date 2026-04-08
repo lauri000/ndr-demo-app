@@ -36,8 +36,6 @@ import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
-import social.innode.ndr.demo.rust.isValidPeerInput
-import social.innode.ndr.demo.rust.normalizePeerInput
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -55,12 +53,12 @@ internal object QrScannerTestOverrides {
 @Composable
 fun QrScannerDialog(
     onDismiss: () -> Unit,
-    onScanned: (String) -> Unit,
+    onScanned: (String) -> String?,
 ) {
     val injectedScan = remember { QrScannerTestOverrides.consume() }
     LaunchedEffect(injectedScan) {
         if (!injectedScan.isNullOrBlank()) {
-            onScanned(normalizePeerInput(injectedScan))
+            onScanned(injectedScan.trim())
         }
     }
     if (!injectedScan.isNullOrBlank()) {
@@ -191,12 +189,10 @@ fun QrScannerDialog(
                         return@addOnSuccessListener
                     }
 
-                    val normalized = normalizePeerInput(raw)
-                    if (isValidPeerInput(normalized)) {
-                        onScanned(normalized)
-                    } else {
+                    val errorMessage = onScanned(raw)
+                    if (errorMessage != null) {
                         didEmit.set(false)
-                        error = "Scanned QR did not contain a valid public key."
+                        error = errorMessage
                     }
                 }.addOnFailureListener {
                     // Keep scanning unless the user dismisses.

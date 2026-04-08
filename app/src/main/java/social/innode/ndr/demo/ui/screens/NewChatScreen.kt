@@ -132,8 +132,14 @@ fun NewChatScreen(
         QrScannerDialog(
             onDismiss = { showScanner = false },
             onScanned = { scanned ->
-                peerInput = normalizePeerInput(scanned)
-                showScanner = false
+                val normalized = normalizePeerInput(scanned)
+                if (!isValidPeerInput(normalized)) {
+                    "Scanned QR did not contain a valid public key."
+                } else {
+                    peerInput = normalized
+                    showScanner = false
+                    null
+                }
             },
         )
     }
