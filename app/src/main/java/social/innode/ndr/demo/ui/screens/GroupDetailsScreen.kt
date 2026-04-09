@@ -101,10 +101,17 @@ fun GroupDetailsScreen(
                     color = IrisTheme.palette.muted,
                 )
                 Text(
-                    text = "Created by ${details.createdByNpub}",
+                    text = "Created by ${details.createdByDisplayName}",
                     style = MaterialTheme.typography.bodySmall,
                     color = IrisTheme.palette.muted,
                 )
+                if (details.createdByDisplayName != details.createdByNpub) {
+                    Text(
+                        text = details.createdByNpub,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = IrisTheme.palette.muted,
+                    )
+                }
             }
 
             IrisSectionCard {
@@ -122,9 +129,16 @@ fun GroupDetailsScreen(
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
                             Text(
-                                text = member.npub,
+                                text = member.displayName,
                                 style = MaterialTheme.typography.bodyMedium,
                             )
+                            if (member.displayName != member.npub) {
+                                Text(
+                                    text = member.npub,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = IrisTheme.palette.muted,
+                                )
+                            }
                             Text(
                                 text =
                                     buildString {

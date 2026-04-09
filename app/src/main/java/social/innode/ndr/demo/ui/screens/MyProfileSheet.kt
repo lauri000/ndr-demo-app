@@ -44,6 +44,7 @@ import social.innode.ndr.demo.ui.theme.IrisTheme
 fun MyProfileSheet(
     appManager: AppManager,
     npub: String,
+    displayName: String,
     publicKeyHex: String,
     deviceNpub: String,
     canManageDevices: Boolean,
@@ -75,8 +76,13 @@ fun MyProfileSheet(
         ) {
             IrisSectionCard {
                 Text(
-                    text = "My profile",
+                    text = displayName,
                     style = MaterialTheme.typography.headlineSmall,
+                )
+                Text(
+                    text = "My profile",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = IrisTheme.palette.muted,
                 )
                 Text(
                     text = "Scan this owner QR from a fresh device to start linking it. The primary device still controls roster approval.",

@@ -41,6 +41,7 @@ pub enum DeviceAuthorizationState {
 pub struct AccountSnapshot {
     pub public_key_hex: String,
     pub npub: String,
+    pub display_name: String,
     pub device_public_key_hex: String,
     pub device_npub: String,
     pub has_owner_signing_authority: bool,
@@ -121,6 +122,7 @@ pub struct CurrentChatSnapshot {
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct GroupMemberSnapshot {
     pub owner_pubkey_hex: String,
+    pub display_name: String,
     pub npub: String,
     pub is_admin: bool,
     pub is_creator: bool,
@@ -131,6 +133,7 @@ pub struct GroupMemberSnapshot {
 pub struct GroupDetailsSnapshot {
     pub group_id: String,
     pub name: String,
+    pub created_by_display_name: String,
     pub created_by_npub: String,
     pub can_manage: bool,
     pub revision: u64,

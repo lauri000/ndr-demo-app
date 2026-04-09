@@ -52,6 +52,7 @@ fun NdrApp(container: AppContainer) {
         AccountBootstrapState.NeedsLogin -> {
             WelcomeScreen(
                 uiState = welcomeUiState,
+                onNameValueChanged = welcomeViewModel::onNameValueChanged,
                 onImportValueChanged = welcomeViewModel::onImportValueChanged,
                 onLinkOwnerValueChanged = welcomeViewModel::onLinkOwnerValueChanged,
                 onGenerateClick = welcomeViewModel::generate,
@@ -71,6 +72,7 @@ fun NdrApp(container: AppContainer) {
                 Screen.Welcome -> {
                     WelcomeScreen(
                         uiState = welcomeUiState,
+                        onNameValueChanged = welcomeViewModel::onNameValueChanged,
                         onImportValueChanged = welcomeViewModel::onImportValueChanged,
                         onLinkOwnerValueChanged = welcomeViewModel::onLinkOwnerValueChanged,
                         onGenerateClick = welcomeViewModel::generate,

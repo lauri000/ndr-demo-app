@@ -79,7 +79,11 @@ class AppManager(
     }
 
     fun createAccount() {
-        rust.dispatch(AppAction.CreateAccount)
+        createAccount("")
+    }
+
+    fun createAccount(name: String) {
+        rust.dispatch(AppAction.CreateAccount(name.trim()))
     }
 
     fun restoreSession(nsecOrHex: String) {

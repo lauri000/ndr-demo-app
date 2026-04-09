@@ -66,7 +66,7 @@ fun ChatListScreen(
                                     .testTag("chatListProfileButton")
                                     .clickable { showProfile = true },
                         ) {
-                            IrisAvatar(label = account.npub, emphasize = true, size = 44.dp)
+                            IrisAvatar(label = account.displayName, emphasize = true, size = 44.dp)
                         }
                     }
                 },
@@ -186,6 +186,7 @@ fun ChatListScreen(
         MyProfileSheet(
             appManager = appManager,
             npub = account.npub,
+            displayName = account.displayName,
             publicKeyHex = account.publicKeyHex,
             deviceNpub = account.deviceNpub,
             canManageDevices = account.hasOwnerSigningAuthority,

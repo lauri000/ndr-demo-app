@@ -6,15 +6,16 @@ use crate::state::{
 };
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 use flume::Sender;
+use nostr::EventBuilder;
 use nostr_double_ratchet::{
-    DevicePubkey, DeviceRoster, DomainError, Error, MessageEnvelope, OwnerPubkey,
-    ProtocolContext, RelayGap, RosterEditor, SessionManager, SessionManagerSnapshot, SessionState,
-    UnixSeconds, GroupIncomingEvent, GroupManager, GroupManagerSnapshot, GroupSnapshot,
+    DevicePubkey, DeviceRoster, DomainError, Error, GroupIncomingEvent, GroupManager,
+    GroupManagerSnapshot, GroupSnapshot, MessageEnvelope, OwnerPubkey, ProtocolContext, RelayGap,
+    RosterEditor, SessionManager, SessionManagerSnapshot, SessionState, UnixSeconds,
 };
 use nostr_double_ratchet_nostr::nostr as codec;
 use nostr_sdk::prelude::{
-    Client, Event, Filter, Keys, Kind, PublicKey, RelayPoolNotification, RelayUrl,
-    SubscriptionId, Timestamp, ToBech32,
+    Client, Event, Filter, Keys, Kind, PublicKey, RelayPoolNotification, RelayUrl, SubscriptionId,
+    Timestamp, ToBech32,
 };
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -66,6 +67,7 @@ pub struct AppCore {
     pending_inbound: Vec<PendingInbound>,
     pending_outbound: Vec<PendingOutbound>,
     pending_group_controls: Vec<PendingGroupControl>,
+    owner_profiles: BTreeMap<String, OwnerProfileRecord>,
     recent_handshake_peers: BTreeMap<String, RecentHandshakePeer>,
     seen_event_ids: HashSet<String>,
     seen_event_order: VecDeque<String>,
@@ -175,6 +177,24 @@ struct AppDirectMessagePayload {
 struct AppGroupMessagePayload {
     version: u8,
     body: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct OwnerProfileRecord {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    updated_at_secs: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct NostrProfileMetadata {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,6 +378,8 @@ struct PersistedState {
     session_manager: Option<SessionManagerSnapshot>,
     #[serde(default)]
     group_manager: Option<GroupManagerSnapshot>,
+    #[serde(default)]
+    owner_profiles: BTreeMap<String, OwnerProfileRecord>,
     threads: Vec<PersistedThread>,
     #[serde(default)]
     pending_inbound: Vec<PendingInbound>,
@@ -483,6 +505,7 @@ impl AppCore {
             pending_inbound: Vec::new(),
             pending_outbound: Vec::new(),
             pending_group_controls: Vec::new(),
+            owner_profiles: BTreeMap::new(),
             recent_handshake_peers: BTreeMap::new(),
             seen_event_ids: HashSet::new(),
             seen_event_order: VecDeque::new(),
@@ -505,7 +528,7 @@ impl AppCore {
     fn handle_action(&mut self, action: AppAction) {
         self.state.toast = None;
         match action {
-            AppAction::CreateAccount => self.create_account(),
+            AppAction::CreateAccount { name } => self.create_account(&name),
             AppAction::RestoreSession { owner_nsec } => self.restore_primary_session(&owner_nsec),
             AppAction::RestoreAccountBundle {
                 owner_nsec,
@@ -515,12 +538,15 @@ impl AppCore {
             AppAction::StartLinkedDevice { owner_input } => self.start_linked_device(&owner_input),
             AppAction::Logout => self.logout(),
             AppAction::CreateChat { peer_input } => self.create_chat(&peer_input),
-            AppAction::CreateGroup { name, member_inputs } => {
-                self.create_group(&name, &member_inputs)
-            }
+            AppAction::CreateGroup {
+                name,
+                member_inputs,
+            } => self.create_group(&name, &member_inputs),
             AppAction::OpenChat { chat_id } => self.open_chat(&chat_id),
             AppAction::SendMessage { chat_id, text } => self.send_message(&chat_id, &text),
-            AppAction::UpdateGroupName { group_id, name } => self.update_group_name(&group_id, &name),
+            AppAction::UpdateGroupName { group_id, name } => {
+                self.update_group_name(&group_id, &name)
+            }
             AppAction::AddGroupMembers {
                 group_id,
                 member_inputs,
@@ -586,8 +612,7 @@ impl AppCore {
                     pending.in_flight = false;
                     pending.reason = PendingSendReason::PublishRetry;
                     let retry_after_secs = retry_delay_for_publish_mode(&pending.publish_mode);
-                    pending.next_retry_at_secs =
-                        unix_now().get().saturating_add(retry_after_secs);
+                    pending.next_retry_at_secs = unix_now().get().saturating_add(retry_after_secs);
                     self.schedule_pending_outbound_retry(Duration::from_secs(retry_after_secs));
                 }
                 self.schedule_next_pending_retry(unix_now().get());
@@ -657,15 +682,19 @@ impl AppCore {
         }
     }
 
-    fn create_account(&mut self) {
+    fn create_account(&mut self, name: &str) {
         self.state.busy.creating_account = true;
         self.emit_state();
 
         let owner_keys = Keys::generate();
         let device_keys = Keys::generate();
+        let trimmed_name = name.trim().to_string();
 
         if let Err(error) = self.start_primary_session(owner_keys, device_keys, false, false) {
             self.state.toast = Some(error.to_string());
+        } else if !trimmed_name.is_empty() {
+            self.set_local_profile_name(&trimmed_name);
+            self.republish_local_identity_artifacts();
         }
 
         self.state.busy.creating_account = false;
@@ -679,7 +708,9 @@ impl AppCore {
 
         let result = Keys::parse(owner_nsec.trim())
             .map_err(|error| anyhow::anyhow!(error.to_string()))
-            .and_then(|owner_keys| self.start_primary_session(owner_keys, Keys::generate(), true, false));
+            .and_then(|owner_keys| {
+                self.start_primary_session(owner_keys, Keys::generate(), true, false)
+            });
 
         if let Err(error) = result {
             self.state.toast = Some(error.to_string());
@@ -701,7 +732,10 @@ impl AppCore {
             format!(
                 "owner_pubkey_hex={} has_owner_nsec={}",
                 owner_pubkey_hex.trim(),
-                owner_nsec.as_ref().map(|value| !value.trim().is_empty()).unwrap_or(false),
+                owner_nsec
+                    .as_ref()
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false),
             ),
         );
         self.state.busy.restoring_session = true;
@@ -711,8 +745,8 @@ impl AppCore {
             let owner_pubkey = parse_owner_input(owner_pubkey_hex)?;
             let owner_keys = match owner_nsec {
                 Some(secret) => {
-                    let keys =
-                        Keys::parse(secret.trim()).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                    let keys = Keys::parse(secret.trim())
+                        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
                     let derived_owner = OwnerPubkey::from_bytes(keys.public_key().to_bytes());
                     if derived_owner != owner_pubkey {
                         return Err(anyhow::anyhow!(
@@ -745,8 +779,9 @@ impl AppCore {
         self.state.busy.linking_device = true;
         self.emit_state();
 
-        let result = parse_owner_input(owner_input)
-            .and_then(|owner_pubkey| self.start_session(owner_pubkey, None, Keys::generate(), false, false));
+        let result = parse_owner_input(owner_input).and_then(|owner_pubkey| {
+            self.start_session(owner_pubkey, None, Keys::generate(), false, false)
+        });
         if let Err(error) = result {
             self.state.toast = Some(error.to_string());
         }
@@ -772,6 +807,7 @@ impl AppCore {
         self.pending_inbound.clear();
         self.pending_outbound.clear();
         self.pending_group_controls.clear();
+        self.owner_profiles.clear();
         self.recent_handshake_peers.clear();
         self.seen_event_ids.clear();
         self.seen_event_order.clear();
@@ -842,7 +878,11 @@ impl AppCore {
             return;
         }
 
-        let Some(local_owner) = self.logged_in.as_ref().map(|logged_in| logged_in.owner_pubkey) else {
+        let Some(local_owner) = self
+            .logged_in
+            .as_ref()
+            .map(|logged_in| logged_in.owner_pubkey)
+        else {
             self.state.toast = Some("Create or restore an account first.".to_string());
             self.emit_state();
             return;
@@ -921,11 +961,7 @@ impl AppCore {
                                 create_kind.clone(),
                             );
                             self.set_pending_group_control_in_flight(&operation_id, true);
-                            self.start_group_control_publish(
-                                operation_id,
-                                publish_mode,
-                                batch,
-                            );
+                            self.start_group_control_publish(operation_id, publish_mode, batch);
                         }
                         Ok(None) => {}
                         Err(error) => self.state.toast = Some(error.to_string()),
@@ -980,7 +1016,9 @@ impl AppCore {
             return None;
         }
 
-        parse_peer_input(chat_id).ok().map(|(normalized, _)| normalized)
+        parse_peer_input(chat_id)
+            .ok()
+            .map(|(normalized, _)| normalized)
     }
 
     fn prepare_group_control(
@@ -988,7 +1026,11 @@ impl AppCore {
         group_id: &str,
         kind: &PendingGroupControlKind,
         now: UnixSeconds,
-    ) -> anyhow::Result<(GroupSnapshot, Vec<String>, nostr_double_ratchet::GroupPreparedSend)> {
+    ) -> anyhow::Result<(
+        GroupSnapshot,
+        Vec<String>,
+        nostr_double_ratchet::GroupPreparedSend,
+    )> {
         let logged_in = self.logged_in.as_mut().expect("logged in checked above");
         let mut rng = OsRng;
         let mut ctx = ProtocolContext::new(now, &mut rng);
@@ -1001,12 +1043,8 @@ impl AppCore {
                 member_owner_hexes,
             } => {
                 let members = owner_pubkeys_from_hexes(member_owner_hexes)?;
-                let result = group_manager.create_group(
-                    session_manager,
-                    &mut ctx,
-                    name.clone(),
-                    members,
-                )?;
+                let result =
+                    group_manager.create_group(session_manager, &mut ctx, name.clone(), members)?;
                 return Ok((
                     result.group.clone(),
                     member_owner_hexes.clone(),
@@ -1014,12 +1052,8 @@ impl AppCore {
                 ));
             }
             PendingGroupControlKind::Rename { name } => {
-                let prepared = group_manager.update_name(
-                    session_manager,
-                    &mut ctx,
-                    group_id,
-                    name.clone(),
-                )?;
+                let prepared =
+                    group_manager.update_name(session_manager, &mut ctx, group_id, name.clone())?;
                 let snapshot = group_manager
                     .group(group_id)
                     .ok_or_else(|| anyhow::anyhow!("Unknown group."))?;
@@ -1038,12 +1072,8 @@ impl AppCore {
             }
             PendingGroupControlKind::AddMembers { member_owner_hexes } => {
                 let members = owner_pubkeys_from_hexes(member_owner_hexes)?;
-                let prepared = group_manager.add_members(
-                    session_manager,
-                    &mut ctx,
-                    group_id,
-                    members,
-                )?;
+                let prepared =
+                    group_manager.add_members(session_manager, &mut ctx, group_id, members)?;
                 let snapshot = group_manager
                     .group(group_id)
                     .ok_or_else(|| anyhow::anyhow!("Unknown group."))?;
@@ -1092,7 +1122,11 @@ impl AppCore {
         group_id: &str,
         kind: &PendingGroupControlKind,
         now: UnixSeconds,
-    ) -> anyhow::Result<(GroupSnapshot, Vec<String>, nostr_double_ratchet::GroupPreparedSend)> {
+    ) -> anyhow::Result<(
+        GroupSnapshot,
+        Vec<String>,
+        nostr_double_ratchet::GroupPreparedSend,
+    )> {
         let logged_in = self.logged_in.as_mut().expect("logged in checked above");
         let mut rng = OsRng;
         let mut ctx = ProtocolContext::new(now, &mut rng);
@@ -1101,8 +1135,7 @@ impl AppCore {
 
         match kind {
             PendingGroupControlKind::Create {
-                member_owner_hexes,
-                ..
+                member_owner_hexes, ..
             } => {
                 let members = owner_pubkeys_from_hexes(member_owner_hexes)?;
                 let prepared = group_manager.retry_create_group(
@@ -1117,7 +1150,8 @@ impl AppCore {
                 Ok((snapshot, member_owner_hexes.clone(), prepared))
             }
             PendingGroupControlKind::Rename { .. } => {
-                let prepared = group_manager.retry_update_name(session_manager, &mut ctx, group_id)?;
+                let prepared =
+                    group_manager.retry_update_name(session_manager, &mut ctx, group_id)?;
                 let snapshot = group_manager
                     .group(group_id)
                     .ok_or_else(|| anyhow::anyhow!("Unknown group."))?;
@@ -1350,7 +1384,11 @@ impl AppCore {
         };
         self.push_debug_log(
             "chat.send",
-            format!("chat_id={} is_group={}", normalized_chat_id, is_group_chat_id(&normalized_chat_id)),
+            format!(
+                "chat_id={} is_group={}",
+                normalized_chat_id,
+                is_group_chat_id(&normalized_chat_id)
+            ),
         );
 
         let now = unix_now();
@@ -1430,7 +1468,11 @@ impl AppCore {
                 if let Some(reason) = pending_reason_from_group_prepared(&prepared) {
                     self.push_debug_log(
                         "group.send.pending",
-                        format!("chat_id={} reason={reason:?} gaps={}", chat_id, summarize_relay_gaps(&prepared.relay_gaps)),
+                        format!(
+                            "chat_id={} reason={reason:?} gaps={}",
+                            chat_id,
+                            summarize_relay_gaps(&prepared.relay_gaps)
+                        ),
                     );
                     let pending_reason = reason.clone();
                     let message = self.push_outgoing_message(
@@ -1487,7 +1529,11 @@ impl AppCore {
                                 now.get(),
                                 DeliveryState::Failed,
                             );
-                            self.update_message_delivery(chat_id, &message.id, DeliveryState::Failed);
+                            self.update_message_delivery(
+                                chat_id,
+                                &message.id,
+                                DeliveryState::Failed,
+                            );
                         }
                         Err(error) => self.state.toast = Some(error.to_string()),
                     }
@@ -1511,7 +1557,11 @@ impl AppCore {
                 if let Some(reason) = pending_reason_from_prepared(&prepared) {
                     self.push_debug_log(
                         "direct.send.pending",
-                        format!("chat_id={} reason={reason:?} gaps={}", chat_id, summarize_relay_gaps(&prepared.relay_gaps)),
+                        format!(
+                            "chat_id={} reason={reason:?} gaps={}",
+                            chat_id,
+                            summarize_relay_gaps(&prepared.relay_gaps)
+                        ),
                     );
                     let pending_reason = reason.clone();
                     let message = self.push_outgoing_message(
@@ -1568,7 +1618,11 @@ impl AppCore {
                                 now.get(),
                                 DeliveryState::Failed,
                             );
-                            self.update_message_delivery(chat_id, &message.id, DeliveryState::Failed);
+                            self.update_message_delivery(
+                                chat_id,
+                                &message.id,
+                                DeliveryState::Failed,
+                            );
                         }
                         Err(error) => self.state.toast = Some(error.to_string()),
                     }
@@ -1590,7 +1644,11 @@ impl AppCore {
     }
 
     fn add_group_members(&mut self, group_id: &str, member_inputs: &[String]) {
-        let Some(local_owner) = self.logged_in.as_ref().map(|logged_in| logged_in.owner_pubkey) else {
+        let Some(local_owner) = self
+            .logged_in
+            .as_ref()
+            .map(|logged_in| logged_in.owner_pubkey)
+        else {
             self.state.toast = Some("Create or restore an account first.".to_string());
             self.emit_state();
             return;
@@ -1680,11 +1738,7 @@ impl AppCore {
                                 kind.clone(),
                             );
                             self.set_pending_group_control_in_flight(&operation_id, true);
-                            self.start_group_control_publish(
-                                operation_id,
-                                publish_mode,
-                                batch,
-                            );
+                            self.start_group_control_publish(operation_id, publish_mode, batch);
                         }
                         Ok(None) => {}
                         Err(error) => self.state.toast = Some(error.to_string()),
@@ -1920,7 +1974,9 @@ impl AppCore {
 
     fn acknowledge_revoked_device(&mut self) {
         if matches!(
-            self.logged_in.as_ref().map(|logged_in| logged_in.authorization_state),
+            self.logged_in
+                .as_ref()
+                .map(|logged_in| logged_in.authorization_state),
             Some(LocalAuthorizationState::Revoked)
         ) {
             self.screen_stack.clear();
@@ -1940,13 +1996,20 @@ impl AppCore {
         }
 
         let kind = event.kind.as_u16() as u32;
-        self.push_debug_log(
-            "relay.event",
-            format!("kind_raw={} id={event_id}", kind),
-        );
+        self.push_debug_log("relay.event", format!("kind_raw={} id={event_id}", kind));
         let now = unix_now();
         self.prune_recent_handshake_peers(now.get());
         match kind {
+            0 => {
+                if self.apply_profile_metadata_event(&event) {
+                    self.remember_event(event_id);
+                    self.persist_best_effort();
+                    self.rebuild_state();
+                    self.emit_state();
+                    return;
+                }
+                self.remember_event(event_id);
+            }
             codec::ROSTER_EVENT_KIND => {
                 if let Ok(decoded) = codec::parse_roster_event(&event) {
                     self.debug_event_counters.roster_events += 1;
@@ -1986,8 +2049,9 @@ impl AppCore {
                                         "relay.roster.local",
                                         "local device transitioned to Revoked".to_string(),
                                     ));
-                                    self.state.toast =
-                                        Some("This device was removed from the roster.".to_string());
+                                    self.state.toast = Some(
+                                        "This device was removed from the roster.".to_string(),
+                                    );
                                     self.active_chat_id = None;
                                     self.screen_stack.clear();
                                     self.pending_inbound.clear();
@@ -2044,10 +2108,9 @@ impl AppCore {
 
                 if let Ok(invite) = codec::parse_invite_event(&event) {
                     self.debug_event_counters.invite_events += 1;
-                    let invite_owner =
-                        invite
-                            .inviter_owner_pubkey
-                            .unwrap_or_else(|| OwnerPubkey::from_bytes(invite.inviter_device_pubkey.to_bytes()));
+                    let invite_owner = invite.inviter_owner_pubkey.unwrap_or_else(|| {
+                        OwnerPubkey::from_bytes(invite.inviter_device_pubkey.to_bytes())
+                    });
                     let (local_owner, local_device) = {
                         let logged_in = self.logged_in.as_ref().expect("checked above");
                         (
@@ -2065,7 +2128,9 @@ impl AppCore {
                                 .expect("checked above")
                                 .session_manager,
                         )
-                        .and_then(|roster| roster.get_device(&invite.inviter_device_pubkey).copied())
+                        .and_then(|roster| {
+                            roster.get_device(&invite.inviter_device_pubkey).copied()
+                        })
                         .is_some()
                     } else {
                         true
@@ -2212,14 +2277,20 @@ impl AppCore {
                     Ok(Some(message)) => {
                         self.push_debug_log(
                             "relay.message.received",
-                            format!("owner={} bytes={}", message.owner_pubkey, message.payload.len()),
+                            format!(
+                                "owner={} bytes={}",
+                                message.owner_pubkey,
+                                message.payload.len()
+                            ),
                         );
                         self.remember_event(event_id);
                         let owner_hex = message.owner_pubkey.to_string();
                         self.clear_recent_handshake_peer(&owner_hex);
-                        if let Err(error) =
-                            self.apply_decrypted_payload(message.owner_pubkey, &message.payload, now.get())
-                        {
+                        if let Err(error) = self.apply_decrypted_payload(
+                            message.owner_pubkey,
+                            &message.payload,
+                            now.get(),
+                        ) {
                             if is_retryable_group_payload_error(&error) {
                                 self.push_debug_log(
                                     "relay.message.pending",
@@ -2315,6 +2386,7 @@ impl AppCore {
         self.screen_stack.clear();
         self.pending_outbound.clear();
         self.pending_group_controls.clear();
+        self.owner_profiles.clear();
         self.recent_handshake_peers.clear();
         self.seen_event_ids.clear();
         self.seen_event_order.clear();
@@ -2344,6 +2416,7 @@ impl AppCore {
         if let Some(persisted) = &persisted {
             self.active_chat_id = persisted.active_chat_id.clone();
             self.next_message_id = persisted.next_message_id.max(1);
+            self.owner_profiles = persisted.owner_profiles.clone();
             if allow_protocol_restore {
                 self.pending_outbound = persisted.pending_outbound.clone();
                 for pending in &mut self.pending_outbound {
@@ -2413,19 +2486,18 @@ impl AppCore {
                 .collect();
         }
 
-        let persisted_session_manager = persisted
-            .as_ref()
-            .and_then(|persisted| {
-                if allow_protocol_restore {
-                    persisted.session_manager.clone()
-                } else {
-                    None
-                }
-            });
+        let persisted_session_manager = persisted.as_ref().and_then(|persisted| {
+            if allow_protocol_restore {
+                persisted.session_manager.clone()
+            } else {
+                None
+            }
+        });
 
         let mut session_manager = persisted_session_manager
             .filter(|snapshot| {
-                snapshot.local_owner_pubkey == owner_pubkey && snapshot.local_device_pubkey == local_device
+                snapshot.local_owner_pubkey == owner_pubkey
+                    && snapshot.local_device_pubkey == local_device
             })
             .map(|snapshot| SessionManager::from_snapshot(snapshot, device_secret_bytes))
             .transpose()?
@@ -2451,14 +2523,13 @@ impl AppCore {
             session_manager.apply_local_roster(roster_editor.build(now));
         }
 
-        let authorization_state =
-            derive_local_authorization_state(
-                owner_keys.is_some(),
-                owner_pubkey,
-                local_device,
-                &session_manager,
-                persisted_authorization_state,
-            );
+        let authorization_state = derive_local_authorization_state(
+            owner_keys.is_some(),
+            owner_pubkey,
+            local_device,
+            &session_manager,
+            persisted_authorization_state,
+        );
         self.push_debug_log(
             "session.authorization",
             format!("state={authorization_state:?} owner={owner_pubkey} device={local_device}"),
@@ -2761,16 +2832,15 @@ impl AppCore {
                     } else {
                         match build_prepared_publish_batch(&prepared) {
                             Ok(Some(batch)) => {
-                                pending_message.publish_mode =
-                                    publish_mode_for_batch(&batch);
+                                pending_message.publish_mode = publish_mode_for_batch(&batch);
                                 pending_message.prepared_publish = Some(batch.clone());
-                                pending_message.reason = pending_reason_for_publish_mode(
-                                    &pending_message.publish_mode,
-                                );
-                                pending_message.next_retry_at_secs = retry_deadline_for_publish_mode(
-                                    now.get(),
-                                    &pending_message.publish_mode,
-                                );
+                                pending_message.reason =
+                                    pending_reason_for_publish_mode(&pending_message.publish_mode);
+                                pending_message.next_retry_at_secs =
+                                    retry_deadline_for_publish_mode(
+                                        now.get(),
+                                        &pending_message.publish_mode,
+                                    );
                                 pending_message.in_flight = true;
                                 self.start_publish_for_pending(
                                     pending_message.message_id.clone(),
@@ -2795,8 +2865,8 @@ impl AppCore {
                                 self.nudge_protocol_state_for_pending_reason(
                                     &pending_message.reason,
                                 );
-                                    still_pending.push(pending_message);
-                                }
+                                still_pending.push(pending_message);
+                            }
                             Err(error) => {
                                 self.state.toast = Some(error.to_string());
                                 self.update_message_delivery(
@@ -2840,11 +2910,7 @@ impl AppCore {
             if let Some(batch) = control.prepared_publish.clone() {
                 control.in_flight = true;
                 let publish_mode = publish_mode_for_batch(&batch);
-                self.start_group_control_publish(
-                    control.operation_id.clone(),
-                    publish_mode,
-                    batch,
-                );
+                self.start_group_control_publish(control.operation_id.clone(), publish_mode, batch);
                 still_pending.push(control);
                 continue;
             }
@@ -3148,8 +3214,9 @@ impl AppCore {
 
                 match self.threads.get_mut(new_owner_hex) {
                     Some(existing) => {
-                        existing.unread_count =
-                            existing.unread_count.saturating_add(old_thread.unread_count);
+                        existing.unread_count = existing
+                            .unread_count
+                            .saturating_add(old_thread.unread_count);
                         existing.updated_at_secs =
                             existing.updated_at_secs.max(old_thread.updated_at_secs);
                         existing.messages.extend(old_thread.messages);
@@ -3222,14 +3289,10 @@ impl AppCore {
 
             sleep(Duration::from_millis(FIRST_CONTACT_STAGE_DELAY_MS)).await;
 
-            let success = publish_events_with_retry(
-                &client,
-                &relay_urls,
-                staged.message_events,
-                "message",
-            )
-            .await
-            .is_ok();
+            let success =
+                publish_events_with_retry(&client, &relay_urls, staged.message_events, "message")
+                    .await
+                    .is_ok();
             let _ = tx.send(CoreMsg::Internal(Box::new(
                 InternalEvent::PublishFinished {
                     message_id: staged.message_id,
@@ -3325,16 +3388,15 @@ impl AppCore {
         let plan_summary = summarize_protocol_plan(Some(&plan));
         self.runtime.spawn(async move {
             client.connect_with_timeout(Duration::from_secs(5)).await;
-            match client.fetch_events(filters, Some(Duration::from_secs(5))).await {
+            match client
+                .fetch_events(filters, Some(Duration::from_secs(5)))
+                .await
+            {
                 Ok(events) => {
                     let collected = events.into_iter().collect::<Vec<_>>();
                     let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::DebugLog {
                         category: "protocol.catch_up.result".to_string(),
-                        detail: format!(
-                            "{} events={}",
-                            plan_summary,
-                            collected.len(),
-                        ),
+                        detail: format!("{} events={}", plan_summary, collected.len(),),
                     })));
                     if !collected.is_empty() {
                         let _ = tx.send(CoreMsg::Internal(Box::new(
@@ -3353,10 +3415,7 @@ impl AppCore {
     }
 
     fn nudge_protocol_state_for_pending_reason(&mut self, reason: &PendingSendReason) {
-        self.push_debug_log(
-            "protocol.nudge",
-            format!("reason={reason:?}"),
-        );
+        self.push_debug_log("protocol.nudge", format!("reason={reason:?}"));
         match reason {
             PendingSendReason::MissingRoster => {
                 self.republish_local_identity_artifacts();
@@ -3459,7 +3518,7 @@ impl AppCore {
                 .state
                 .account
                 .as_ref()
-                .map(|account| account.npub.clone())
+                .map(|account| account.display_name.clone())
                 .unwrap_or_else(|| "me".to_string()),
             body,
             is_outgoing: true,
@@ -3490,7 +3549,7 @@ impl AppCore {
         author: Option<String>,
     ) {
         let message_id = self.allocate_message_id();
-        let author = author.unwrap_or_else(|| owner_npub(chat_id).unwrap_or_else(|| chat_id.to_string()));
+        let author = author.unwrap_or_else(|| self.owner_display_label(chat_id));
         let thread = self
             .threads
             .entry(chat_id.to_string())
@@ -3515,11 +3574,7 @@ impl AppCore {
         });
     }
 
-    fn apply_routed_chat_message(
-        &mut self,
-        routed: RoutedChatMessage,
-        created_at_secs: u64,
-    ) {
+    fn apply_routed_chat_message(&mut self, routed: RoutedChatMessage, created_at_secs: u64) {
         if routed.is_outgoing {
             self.push_outgoing_message(
                 &routed.chat_id,
@@ -3537,6 +3592,42 @@ impl AppCore {
         }
     }
 
+    fn route_received_direct_message(
+        &self,
+        local_owner: OwnerPubkey,
+        sender_owner: OwnerPubkey,
+        payload: &[u8],
+    ) -> RoutedChatMessage {
+        if let Some(decoded) = decode_app_direct_message_payload(payload) {
+            if sender_owner == local_owner {
+                if let Ok((chat_id, _)) = parse_peer_input(&decoded.chat_id) {
+                    if chat_id != local_owner.to_string() {
+                        return RoutedChatMessage {
+                            chat_id,
+                            body: decoded.body,
+                            is_outgoing: true,
+                            author: Some(self.owner_display_label(&local_owner.to_string())),
+                        };
+                    }
+                }
+            }
+
+            return RoutedChatMessage {
+                chat_id: sender_owner.to_string(),
+                body: decoded.body,
+                is_outgoing: false,
+                author: Some(self.owner_display_label(&sender_owner.to_string())),
+            };
+        }
+
+        RoutedChatMessage {
+            chat_id: sender_owner.to_string(),
+            body: String::from_utf8_lossy(payload).into_owned(),
+            is_outgoing: false,
+            author: Some(self.owner_display_label(&sender_owner.to_string())),
+        }
+    }
+
     fn apply_group_metadata_update(&mut self, group: GroupSnapshot, created_at_secs: u64) {
         self.apply_group_snapshot_to_threads(&group, created_at_secs.max(group.updated_at.get()));
     }
@@ -3547,15 +3638,13 @@ impl AppCore {
         payload: &[u8],
         created_at_secs: u64,
     ) -> anyhow::Result<()> {
-        let local_owner = self
-            .logged_in
-            .as_ref()
-            .expect("logged in")
-            .owner_pubkey;
+        let local_owner = self.logged_in.as_ref().expect("logged in").owner_pubkey;
 
         let group_event = {
             let logged_in = self.logged_in.as_mut().expect("logged in");
-            logged_in.group_manager.handle_incoming(sender_owner, payload)?
+            logged_in
+                .group_manager
+                .handle_incoming(sender_owner, payload)?
         };
 
         match group_event {
@@ -3570,13 +3659,15 @@ impl AppCore {
                         chat_id: group_chat_id(&group_message.group_id),
                         body: decoded.body,
                         is_outgoing: group_message.sender_owner == local_owner,
-                        author: owner_npub(&group_message.sender_owner.to_string()),
+                        author: Some(
+                            self.owner_display_label(&group_message.sender_owner.to_string()),
+                        ),
                     },
                     created_at_secs,
                 );
             }
             None => {
-                let routed = route_received_direct_message(local_owner, sender_owner, payload);
+                let routed = self.route_received_direct_message(local_owner, sender_owner, payload);
                 self.apply_routed_chat_message(routed, created_at_secs);
             }
         }
@@ -3617,13 +3708,11 @@ impl AppCore {
                 let display_name = group_snapshot
                     .as_ref()
                     .map(|group| group.name.clone())
-                    .unwrap_or_else(|| {
-                        owner_npub(&thread.chat_id).unwrap_or_else(|| thread.chat_id.clone())
-                    });
+                    .unwrap_or_else(|| self.owner_display_label(&thread.chat_id));
                 let subtitle = group_snapshot
                     .as_ref()
                     .map(|group| format!("{} members", group.members.len()))
-                    .or_else(|| owner_npub(&thread.chat_id));
+                    .or_else(|| self.owner_secondary_identifier(&thread.chat_id));
                 let member_count = group_snapshot
                     .as_ref()
                     .map(|group| group.members.len() as u64)
@@ -3655,14 +3744,11 @@ impl AppCore {
                     display_name: group_snapshot
                         .as_ref()
                         .map(|group| group.name.clone())
-                        .unwrap_or_else(|| {
-                            owner_npub(&thread.chat_id)
-                                .unwrap_or_else(|| thread.chat_id.clone())
-                        }),
+                        .unwrap_or_else(|| self.owner_display_label(&thread.chat_id)),
                     subtitle: group_snapshot
                         .as_ref()
                         .map(|group| format!("{} members", group.members.len()))
-                        .or_else(|| owner_npub(&thread.chat_id)),
+                        .or_else(|| self.owner_secondary_identifier(&thread.chat_id)),
                     group_id: group_snapshot.as_ref().map(|group| group.group_id.clone()),
                     member_count: group_snapshot
                         .as_ref()
@@ -3672,13 +3758,10 @@ impl AppCore {
                 }
             });
 
-        self.state.group_details = self
-            .screen_stack
-            .last()
-            .and_then(|screen| match screen {
-                Screen::GroupDetails { group_id } => self.build_group_details_snapshot(group_id),
-                _ => None,
-            });
+        self.state.group_details = self.screen_stack.last().and_then(|screen| match screen {
+            Screen::GroupDetails { group_id } => self.build_group_details_snapshot(group_id),
+            _ => None,
+        });
 
         self.state.router = Router {
             default_screen,
@@ -3689,8 +3772,11 @@ impl AppCore {
     fn build_account_snapshot(&self) -> Option<AccountSnapshot> {
         let logged_in = self.logged_in.as_ref()?;
         let owner_public_key_hex = logged_in.owner_pubkey.to_string();
-        let owner_npub =
-            owner_npub_from_owner(logged_in.owner_pubkey).unwrap_or_else(|| owner_public_key_hex.clone());
+        let owner_npub = owner_npub_from_owner(logged_in.owner_pubkey)
+            .unwrap_or_else(|| owner_public_key_hex.clone());
+        let display_name = self
+            .owner_display_name(&owner_public_key_hex)
+            .unwrap_or_else(|| owner_npub.clone());
         let device_public_key_hex = logged_in.device_keys.public_key().to_hex();
         let device_npub = logged_in
             .device_keys
@@ -3701,11 +3787,69 @@ impl AppCore {
         Some(AccountSnapshot {
             public_key_hex: owner_public_key_hex,
             npub: owner_npub,
+            display_name,
             device_public_key_hex,
             device_npub,
             has_owner_signing_authority: logged_in.owner_keys.is_some(),
             authorization_state: public_authorization_state(logged_in.authorization_state),
         })
+    }
+
+    fn set_local_profile_name(&mut self, name: &str) {
+        let Some(local_owner_hex) = self
+            .logged_in
+            .as_ref()
+            .map(|logged_in| logged_in.owner_pubkey.to_string())
+        else {
+            return;
+        };
+
+        let Some(record) = build_owner_profile_record(name) else {
+            return;
+        };
+
+        self.owner_profiles.insert(local_owner_hex.clone(), record);
+        self.push_debug_log("profile.local.set", format!("owner={local_owner_hex}"));
+        self.persist_best_effort();
+    }
+
+    fn apply_profile_metadata_event(&mut self, event: &Event) -> bool {
+        let owner_hex = event.pubkey.to_hex();
+        let Some(record) = parse_owner_profile_record(&event.content, event.created_at.as_u64())
+        else {
+            return false;
+        };
+
+        if let Some(existing) = self.owner_profiles.get(&owner_hex) {
+            if existing.updated_at_secs > record.updated_at_secs {
+                return false;
+            }
+        }
+
+        self.owner_profiles.insert(owner_hex.clone(), record);
+        self.push_debug_log("relay.metadata", format!("owner={owner_hex}"));
+        true
+    }
+
+    fn owner_display_name(&self, owner_hex: &str) -> Option<String> {
+        self.owner_profiles
+            .get(owner_hex)
+            .and_then(OwnerProfileRecord::preferred_label)
+    }
+
+    fn owner_display_label(&self, owner_hex: &str) -> String {
+        self.owner_display_name(owner_hex)
+            .or_else(|| owner_npub(owner_hex))
+            .unwrap_or_else(|| owner_hex.to_string())
+    }
+
+    fn owner_secondary_identifier(&self, owner_hex: &str) -> Option<String> {
+        let npub = owner_npub(owner_hex)?;
+        match self.owner_display_name(owner_hex) {
+            Some(label) if label != npub => Some(npub),
+            Some(_) => None,
+            None => Some(npub),
+        }
     }
 
     fn build_device_roster_snapshot(&self) -> Option<DeviceRosterSnapshot> {
@@ -3725,45 +3869,56 @@ impl AppCore {
             if let Some(roster) = user.roster.as_ref() {
                 for authorized_device in roster.devices() {
                     let device_pubkey_hex = authorized_device.device_pubkey.to_string();
-                    entries.entry(device_pubkey_hex.clone()).or_insert(DeviceEntrySnapshot {
-                        device_pubkey_hex: device_pubkey_hex.clone(),
-                        device_npub: device_npub(&device_pubkey_hex)
-                            .unwrap_or_else(|| device_pubkey_hex.clone()),
-                        is_current_device: device_pubkey_hex == current_device_pubkey_hex,
-                        is_authorized: true,
-                        is_stale: false,
-                        last_activity_secs: None,
-                    });
+                    entries
+                        .entry(device_pubkey_hex.clone())
+                        .or_insert(DeviceEntrySnapshot {
+                            device_pubkey_hex: device_pubkey_hex.clone(),
+                            device_npub: device_npub(&device_pubkey_hex)
+                                .unwrap_or_else(|| device_pubkey_hex.clone()),
+                            is_current_device: device_pubkey_hex == current_device_pubkey_hex,
+                            is_authorized: true,
+                            is_stale: false,
+                            last_activity_secs: None,
+                        });
                 }
             }
 
             for device in user.devices {
                 let device_pubkey_hex = device.device_pubkey.to_string();
-                let entry = entries
-                    .entry(device_pubkey_hex.clone())
-                    .or_insert(DeviceEntrySnapshot {
-                        device_pubkey_hex: device_pubkey_hex.clone(),
-                        device_npub: device_npub(&device_pubkey_hex)
-                            .unwrap_or_else(|| device_pubkey_hex.clone()),
-                        is_current_device: device_pubkey_hex == current_device_pubkey_hex,
-                        is_authorized: device.authorized,
-                        is_stale: device.is_stale,
-                        last_activity_secs: device.last_activity.map(UnixSeconds::get),
-                    });
+                let entry =
+                    entries
+                        .entry(device_pubkey_hex.clone())
+                        .or_insert(DeviceEntrySnapshot {
+                            device_pubkey_hex: device_pubkey_hex.clone(),
+                            device_npub: device_npub(&device_pubkey_hex)
+                                .unwrap_or_else(|| device_pubkey_hex.clone()),
+                            is_current_device: device_pubkey_hex == current_device_pubkey_hex,
+                            is_authorized: device.authorized,
+                            is_stale: device.is_stale,
+                            last_activity_secs: device.last_activity.map(UnixSeconds::get),
+                        });
                 entry.is_authorized = device.authorized;
                 entry.is_stale = device.is_stale;
                 entry.last_activity_secs = device.last_activity.map(UnixSeconds::get);
             }
         }
 
-        entries.entry(current_device_pubkey_hex.clone()).or_insert(DeviceEntrySnapshot {
-            device_pubkey_hex: current_device_pubkey_hex.clone(),
-            device_npub: current_device_npub.clone(),
-            is_current_device: true,
-            is_authorized: matches!(logged_in.authorization_state, LocalAuthorizationState::Authorized),
-            is_stale: matches!(logged_in.authorization_state, LocalAuthorizationState::Revoked),
-            last_activity_secs: None,
-        });
+        entries
+            .entry(current_device_pubkey_hex.clone())
+            .or_insert(DeviceEntrySnapshot {
+                device_pubkey_hex: current_device_pubkey_hex.clone(),
+                device_npub: current_device_npub.clone(),
+                is_current_device: true,
+                is_authorized: matches!(
+                    logged_in.authorization_state,
+                    LocalAuthorizationState::Authorized
+                ),
+                is_stale: matches!(
+                    logged_in.authorization_state,
+                    LocalAuthorizationState::Revoked
+                ),
+                last_activity_secs: None,
+            });
 
         let mut devices = entries.into_values().collect::<Vec<_>>();
         devices.sort_by(|left, right| {
@@ -3800,6 +3955,7 @@ impl AppCore {
                 let owner_hex = owner.to_string();
                 GroupMemberSnapshot {
                     owner_pubkey_hex: owner_hex.clone(),
+                    display_name: self.owner_display_label(&owner_hex),
                     npub: owner_npub_from_owner(*owner).unwrap_or_else(|| owner_hex.clone()),
                     is_admin: group.admins.iter().any(|admin| admin == owner),
                     is_creator: group.created_by == *owner,
@@ -3819,6 +3975,7 @@ impl AppCore {
         Some(GroupDetailsSnapshot {
             group_id: group.group_id,
             name: group.name,
+            created_by_display_name: self.owner_display_label(&group.created_by.to_string()),
             created_by_npub: owner_npub_from_owner(group.created_by)
                 .unwrap_or_else(|| group.created_by.to_string()),
             can_manage: group.admins.iter().any(|admin| admin == &local_owner),
@@ -3848,7 +4005,11 @@ impl AppCore {
         });
         let owner_pubkey_hex = owner_keys
             .map(|keys| keys.public_key().to_hex())
-            .or_else(|| self.logged_in.as_ref().map(|logged_in| logged_in.owner_pubkey.to_string()))
+            .or_else(|| {
+                self.logged_in
+                    .as_ref()
+                    .map(|logged_in| logged_in.owner_pubkey.to_string())
+            })
             .unwrap_or_default();
         let _ = self.update_tx.send(AppUpdate::PersistAccountBundle {
             rev: self.state.rev,
@@ -3891,11 +4052,12 @@ impl AppCore {
         };
 
         let persisted = PersistedState {
-            version: 9,
+            version: 10,
             active_chat_id: self.active_chat_id.clone(),
             next_message_id: self.next_message_id,
             session_manager: Some(logged_in.session_manager.snapshot()),
             group_manager: Some(logged_in.group_manager.snapshot()),
+            owner_profiles: self.owner_profiles.clone(),
             threads: self
                 .threads
                 .values()
@@ -4180,11 +4342,37 @@ impl AppCore {
         let owner_keys = logged_in.owner_keys.clone();
         let device_keys = logged_in.device_keys.clone();
         let owner_pubkey = logged_in.owner_pubkey;
+        let local_profile = self.owner_profiles.get(&owner_pubkey.to_string()).cloned();
         let client = logged_in.client.clone();
         let relay_urls = logged_in.relay_urls.clone();
         let tx = self.core_sender.clone();
 
         self.runtime.spawn(async move {
+            if let (Some(keys), Some(profile)) = (owner_keys.clone(), local_profile) {
+                if let Some(label) = profile.preferred_label() {
+                    let event =
+                        EventBuilder::new(Kind::Metadata, build_profile_metadata_json(&label))
+                            .sign_with_keys(&keys);
+                    match event {
+                        Ok(event) => {
+                            if let Err(error) =
+                                publish_event_with_retry(&client, &relay_urls, event, "metadata")
+                                    .await
+                            {
+                                let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
+                                    format!("Metadata publish failed: {error}"),
+                                ))));
+                            }
+                        }
+                        Err(error) => {
+                            let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
+                                error.to_string(),
+                            ))));
+                        }
+                    }
+                }
+            }
+
             if let (Some(keys), Some(roster)) = (owner_keys, local_roster) {
                 let roster_event = match codec::roster_unsigned_event(owner_pubkey, &roster)
                     .and_then(|unsigned| unsigned.sign_with_keys(&keys).map_err(Into::into))
@@ -4276,7 +4464,11 @@ impl AppCore {
     }
 
     fn request_protocol_subscription_refresh(&mut self) {
-        let Some(client) = self.logged_in.as_ref().map(|logged_in| logged_in.client.clone()) else {
+        let Some(client) = self
+            .logged_in
+            .as_ref()
+            .map(|logged_in| logged_in.client.clone())
+        else {
             self.protocol_subscription_runtime = ProtocolSubscriptionRuntime::default();
             return;
         };
@@ -4300,8 +4492,10 @@ impl AppCore {
         let subscription_id = SubscriptionId::new(PROTOCOL_SUBSCRIPTION_ID);
         self.protocol_subscription_runtime.refresh_in_flight = true;
         self.protocol_subscription_runtime.refresh_dirty = false;
-        self.protocol_subscription_runtime.refresh_token =
-            self.protocol_subscription_runtime.refresh_token.wrapping_add(1);
+        self.protocol_subscription_runtime.refresh_token = self
+            .protocol_subscription_runtime
+            .refresh_token
+            .wrapping_add(1);
         let token = self.protocol_subscription_runtime.refresh_token;
         self.protocol_subscription_runtime.applying_plan = plan.clone();
         let had_previous = self.protocol_subscription_runtime.current_plan.is_some();
@@ -4384,7 +4578,9 @@ impl AppCore {
             if let Some(roster) = user.roster {
                 for device in roster.devices() {
                     let device_hex = device.device_pubkey.to_string();
-                    if owner_hex == logged_in.owner_pubkey.to_string() && device_hex == local_device_hex {
+                    if owner_hex == logged_in.owner_pubkey.to_string()
+                        && device_hex == local_device_hex
+                    {
                         continue;
                     }
                     authors.insert(device_hex);
@@ -4543,8 +4739,9 @@ fn build_protocol_filters(plan: &ProtocolSubscriptionPlan) -> Vec<Filter> {
         filters.push(
             Filter::new()
                 .kind(Kind::from(codec::ROSTER_EVENT_KIND as u16))
-                .authors(roster_authors),
+                .authors(roster_authors.clone()),
         );
+        filters.push(Filter::new().kind(Kind::Metadata).authors(roster_authors));
     }
 
     let invite_authors = plan
@@ -4598,8 +4795,9 @@ fn build_protocol_state_catch_up_filters(plan: &ProtocolSubscriptionPlan) -> Vec
         filters.push(
             Filter::new()
                 .kind(Kind::from(codec::ROSTER_EVENT_KIND as u16))
-                .authors(roster_authors),
+                .authors(roster_authors.clone()),
         );
+        filters.push(Filter::new().kind(Kind::Metadata).authors(roster_authors));
     }
 
     let invite_authors = plan
@@ -4648,8 +4846,7 @@ fn summarize_relay_gaps(gaps: &[RelayGap]) -> String {
         return "none".to_string();
     }
 
-    gaps
-        .iter()
+    gaps.iter()
         .map(|gap| match gap {
             RelayGap::MissingRoster { owner_pubkey } => {
                 format!("MissingRoster({owner_pubkey})")
@@ -4661,6 +4858,59 @@ fn summarize_relay_gaps(gaps: &[RelayGap]) -> String {
         })
         .collect::<Vec<_>>()
         .join("|")
+}
+
+impl OwnerProfileRecord {
+    fn preferred_label(&self) -> Option<String> {
+        self.display_name.clone().or_else(|| self.name.clone())
+    }
+}
+
+fn normalize_profile_field(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn build_owner_profile_record(name: &str) -> Option<OwnerProfileRecord> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    Some(OwnerProfileRecord {
+        name: Some(trimmed.to_string()),
+        display_name: Some(trimmed.to_string()),
+        updated_at_secs: unix_now().get(),
+    })
+}
+
+fn parse_owner_profile_record(content: &str, updated_at_secs: u64) -> Option<OwnerProfileRecord> {
+    let parsed = serde_json::from_str::<NostrProfileMetadata>(content).ok()?;
+    let name = normalize_profile_field(parsed.name);
+    let display_name = normalize_profile_field(parsed.display_name);
+    if name.is_none() && display_name.is_none() {
+        return None;
+    }
+
+    Some(OwnerProfileRecord {
+        name,
+        display_name,
+        updated_at_secs,
+    })
+}
+
+fn build_profile_metadata_json(name: &str) -> String {
+    serde_json::to_string(&NostrProfileMetadata {
+        name: Some(name.to_string()),
+        display_name: Some(name.to_string()),
+    })
+    .unwrap_or_else(|_| format!(r#"{{"name":"{name}","display_name":"{name}"}}"#))
 }
 
 fn resolve_message_sender_owner(
@@ -4715,9 +4965,9 @@ fn encode_app_group_message_payload(body: &str) -> anyhow::Result<Vec<u8>> {
 
 fn is_retryable_group_payload_error(error: &anyhow::Error) -> bool {
     let message = error.to_string();
-    message.contains("create group sender must match created_by") ||
-        message.contains("unknown group") ||
-        message.contains("revision mismatch")
+    message.contains("create group sender must match created_by")
+        || message.contains("unknown group")
+        || message.contains("revision mismatch")
 }
 
 fn decode_app_group_message_payload(payload: &[u8]) -> Option<AppGroupMessagePayload> {
@@ -4726,41 +4976,6 @@ fn decode_app_group_message_payload(payload: &[u8]) -> Option<AppGroupMessagePay
         return None;
     }
     Some(decoded)
-}
-
-fn route_received_direct_message(
-    local_owner: OwnerPubkey,
-    sender_owner: OwnerPubkey,
-    payload: &[u8],
-) -> RoutedChatMessage {
-    if let Some(decoded) = decode_app_direct_message_payload(payload) {
-        if sender_owner == local_owner {
-            if let Ok((chat_id, _)) = parse_peer_input(&decoded.chat_id) {
-                if chat_id != local_owner.to_string() {
-                    return RoutedChatMessage {
-                        chat_id,
-                        body: decoded.body,
-                        is_outgoing: true,
-                        author: owner_npub(&local_owner.to_string()),
-                    };
-                }
-            }
-        }
-
-        return RoutedChatMessage {
-            chat_id: sender_owner.to_string(),
-            body: decoded.body,
-            is_outgoing: false,
-            author: owner_npub(&sender_owner.to_string()),
-        };
-    }
-
-    RoutedChatMessage {
-        chat_id: sender_owner.to_string(),
-        body: String::from_utf8_lossy(payload).into_owned(),
-        is_outgoing: false,
-        author: owner_npub(&sender_owner.to_string()),
-    }
 }
 
 fn is_group_chat_id(chat_id: &str) -> bool {
@@ -4772,7 +4987,9 @@ fn group_chat_id(group_id: &str) -> String {
 }
 
 fn parse_group_id_from_chat_id(chat_id: &str) -> Option<String> {
-    chat_id.strip_prefix(GROUP_CHAT_PREFIX).map(|group_id| group_id.to_string())
+    chat_id
+        .strip_prefix(GROUP_CHAT_PREFIX)
+        .map(|group_id| group_id.to_string())
 }
 
 fn normalize_group_id(value: &str) -> Option<String> {
@@ -5019,7 +5236,10 @@ fn owner_npub(peer_hex: &str) -> Option<String> {
 }
 
 fn owner_npub_from_owner(owner_pubkey: OwnerPubkey) -> Option<String> {
-    PublicKey::parse(owner_pubkey.to_string()).ok()?.to_bech32().ok()
+    PublicKey::parse(owner_pubkey.to_string())
+        .ok()?
+        .to_bech32()
+        .ok()
 }
 
 fn device_npub(device_hex: &str) -> Option<String> {
@@ -5036,9 +5256,7 @@ fn local_roster_from_session_manager(session_manager: &SessionManager) -> Option
         .and_then(|user| user.roster)
 }
 
-fn public_authorization_state(
-    state: LocalAuthorizationState,
-) -> DeviceAuthorizationState {
+fn public_authorization_state(state: LocalAuthorizationState) -> DeviceAuthorizationState {
     match state {
         LocalAuthorizationState::Authorized => DeviceAuthorizationState::Authorized,
         LocalAuthorizationState::AwaitingApproval => DeviceAuthorizationState::AwaitingApproval,
@@ -5067,8 +5285,7 @@ fn derive_local_authorization_state(
                 LocalAuthorizationState::Authorized
             } else if matches!(
                 previous_state,
-                Some(LocalAuthorizationState::Authorized)
-                    | Some(LocalAuthorizationState::Revoked)
+                Some(LocalAuthorizationState::Authorized) | Some(LocalAuthorizationState::Revoked)
             ) {
                 LocalAuthorizationState::Revoked
             } else {
@@ -5219,13 +5436,11 @@ async fn publish_event_once(
             .flatten()
             .cloned()
             .collect::<Vec<_>>();
-        Err(anyhow::anyhow!(
-            if reasons.is_empty() {
-                "no relay accepted event".to_string()
-            } else {
-                reasons.join("; ")
-            }
-        ))
+        Err(anyhow::anyhow!(if reasons.is_empty() {
+            "no relay accepted event".to_string()
+        } else {
+            reasons.join("; ")
+        }))
     } else {
         Ok(())
     }
@@ -5234,9 +5449,9 @@ async fn publish_event_once(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nostr_double_ratchet::AuthorizedDevice;
     use crate::FfiApp;
     use futures_util::{SinkExt, StreamExt};
+    use nostr_double_ratchet::AuthorizedDevice;
     use nostr_sdk::prelude::SecretKey;
     use serde_json::{json, Value};
     use std::collections::HashMap;
@@ -5790,17 +6005,15 @@ mod tests {
         let bob_device = local_device_from_keys(&bob_device_keys);
         let now = UnixSeconds(base_secs);
 
-        let mut alice_manager =
-            SessionManager::new(alice_owner, alice_device_keys.secret_key().to_secret_bytes());
+        let mut alice_manager = SessionManager::new(
+            alice_owner,
+            alice_device_keys.secret_key().to_secret_bytes(),
+        );
         let mut bob_manager =
             SessionManager::new(bob_owner, bob_device_keys.secret_key().to_secret_bytes());
 
-        let alice_roster = DeviceRoster::new(
-            now,
-            vec![AuthorizedDevice::new(alice_device, now)],
-        );
-        let bob_roster =
-            DeviceRoster::new(now, vec![AuthorizedDevice::new(bob_device, now)]);
+        let alice_roster = DeviceRoster::new(now, vec![AuthorizedDevice::new(alice_device, now)]);
+        let bob_roster = DeviceRoster::new(now, vec![AuthorizedDevice::new(bob_device, now)]);
         alice_manager.apply_local_roster(alice_roster.clone());
         bob_manager.apply_local_roster(bob_roster.clone());
         alice_manager.observe_peer_roster(bob_owner, bob_roster.clone());
@@ -5859,6 +6072,7 @@ mod tests {
         core.state.account = Some(AccountSnapshot {
             public_key_hex: owner_keys.public_key().to_hex(),
             npub: owner_keys.public_key().to_bech32().expect("npub"),
+            display_name: owner_keys.public_key().to_bech32().expect("npub"),
             device_public_key_hex: device_keys.public_key().to_hex(),
             device_npub: device_keys.public_key().to_bech32().expect("device npub"),
             has_owner_signing_authority: true,
@@ -6248,7 +6462,10 @@ mod tests {
 
         assert!(core.protocol_subscription_runtime.refresh_dirty);
         assert!(core.protocol_subscription_runtime.refresh_in_flight);
-        assert_eq!(core.protocol_subscription_runtime.refresh_token, token_before);
+        assert_eq!(
+            core.protocol_subscription_runtime.refresh_token,
+            token_before
+        );
     }
 
     #[test]
@@ -6392,7 +6609,11 @@ mod tests {
             .expect("receive create")
             .expect("create payload");
         bob_core
-            .apply_decrypted_payload(create_message.owner_pubkey, &create_message.payload, 1_900_000_302)
+            .apply_decrypted_payload(
+                create_message.owner_pubkey,
+                &create_message.payload,
+                1_900_000_302,
+            )
             .expect("apply create");
 
         let message_send = alice_groups
@@ -6416,7 +6637,11 @@ mod tests {
             .expect("receive group message")
             .expect("group payload");
         bob_core
-            .apply_decrypted_payload(group_message.owner_pubkey, &group_message.payload, 1_900_000_304)
+            .apply_decrypted_payload(
+                group_message.owner_pubkey,
+                &group_message.payload,
+                1_900_000_304,
+            )
             .expect("apply group message");
 
         let group_chat_id = group_chat_id(&create.group.group_id);
@@ -6521,8 +6746,14 @@ mod tests {
             .iter()
             .find(|pending| pending.message_id == message_id)
             .expect("pending outbound after failure");
-        assert_eq!(pending_after_failure.publish_mode, OutboundPublishMode::OrdinaryFirstAck);
-        assert_eq!(pending_after_failure.reason, PendingSendReason::PublishRetry);
+        assert_eq!(
+            pending_after_failure.publish_mode,
+            OutboundPublishMode::OrdinaryFirstAck
+        );
+        assert_eq!(
+            pending_after_failure.reason,
+            PendingSendReason::PublishRetry
+        );
         assert!(!pending_after_failure.in_flight);
         assert!(pending_after_failure.next_retry_at_secs > 0);
 
@@ -6631,9 +6862,9 @@ mod tests {
             let _ = client.shutdown().await;
         });
 
-        let events = fetch_local_relay_events(vec![Filter::new().kind(Kind::from(
-            codec::ROSTER_EVENT_KIND as u16,
-        ))]);
+        let events = fetch_local_relay_events(vec![
+            Filter::new().kind(Kind::from(codec::ROSTER_EVENT_KIND as u16))
+        ]);
         assert!(events.iter().any(|candidate| candidate.id == event.id));
     }
 
@@ -6776,11 +7007,13 @@ mod tests {
         let mut bob_manager =
             SessionManager::new(bob_owner, bob_device_keys.secret_key().to_secret_bytes());
 
-        let bob_roster =
-            DeviceRoster::new(
+        let bob_roster = DeviceRoster::new(
+            now,
+            vec![AuthorizedDevice::new(
+                local_device_from_keys(&bob_device_keys),
                 now,
-                vec![AuthorizedDevice::new(local_device_from_keys(&bob_device_keys), now)],
-            );
+            )],
+        );
         bob_manager.apply_local_roster(bob_roster.clone());
         alice_manager.observe_peer_roster(bob_owner, bob_roster);
 
@@ -6971,11 +7204,13 @@ mod tests {
         let bob_device_keys = device_keys_for_fill(92);
         let bob_owner = local_owner_from_keys(&bob_owner_keys);
         let now = unix_now();
-        let bob_roster =
-            DeviceRoster::new(
+        let bob_roster = DeviceRoster::new(
+            now,
+            vec![AuthorizedDevice::new(
+                local_device_from_keys(&bob_device_keys),
                 now,
-                vec![AuthorizedDevice::new(local_device_from_keys(&bob_device_keys), now)],
-            );
+            )],
+        );
         let roster_event = codec::roster_unsigned_event(bob_owner, &bob_roster)
             .expect("bob roster event")
             .sign_with_keys(&bob_owner_keys)
@@ -7119,9 +7354,9 @@ mod tests {
                 .as_ref()
                 .and_then(|chat| chat.messages.last())
                 .map(|message| {
-                    message.is_outgoing &&
-                        message.body == "hi alice" &&
-                        matches!(message.delivery, DeliveryState::Sent)
+                    message.is_outgoing
+                        && message.body == "hi alice"
+                        && matches!(message.delivery, DeliveryState::Sent)
                 })
                 .unwrap_or(false)
         });
@@ -7197,8 +7432,14 @@ mod tests {
             .expect("logged in")
             .session_manager
             .snapshot();
-        assert_eq!(snapshot.local_owner_pubkey.to_string(), account.public_key_hex);
-        assert_eq!(snapshot.local_device_pubkey.to_string(), account.device_public_key_hex);
+        assert_eq!(
+            snapshot.local_owner_pubkey.to_string(),
+            account.public_key_hex
+        );
+        assert_eq!(
+            snapshot.local_device_pubkey.to_string(),
+            account.device_public_key_hex
+        );
 
         let local_roster = snapshot
             .users
@@ -7259,7 +7500,8 @@ mod tests {
 
         core.start_linked_device(&owner_keys.public_key().to_bech32().expect("owner npub"));
         let device_pubkey = parse_device_input(
-            &core.state
+            &core
+                .state
                 .account
                 .as_ref()
                 .expect("account")
@@ -7291,7 +7533,10 @@ mod tests {
             .expect("roster")
             .devices
             .iter()
-            .any(|device| device.device_pubkey_hex == device_pubkey.to_string() && device.is_authorized));
+            .any(
+                |device| device.device_pubkey_hex == device_pubkey.to_string()
+                    && device.is_authorized
+            ));
     }
 
     #[test]
@@ -7306,7 +7551,8 @@ mod tests {
 
         core.start_linked_device(&owner_keys.public_key().to_bech32().expect("owner npub"));
         let device_pubkey = parse_device_input(
-            &core.state
+            &core
+                .state
                 .account
                 .as_ref()
                 .expect("account")
@@ -7315,8 +7561,10 @@ mod tests {
         .expect("device pubkey");
 
         let authorized_now = unix_now();
-        let authorized_roster =
-            DeviceRoster::new(authorized_now, vec![AuthorizedDevice::new(device_pubkey, authorized_now)]);
+        let authorized_roster = DeviceRoster::new(
+            authorized_now,
+            vec![AuthorizedDevice::new(device_pubkey, authorized_now)],
+        );
         let authorized_event = codec::roster_unsigned_event(owner, &authorized_roster)
             .expect("authorized roster event")
             .sign_with_keys(&owner_keys)
@@ -7397,10 +7645,12 @@ mod tests {
         let deadline = Instant::now() + StdDuration::from_secs(5);
         let mut events = Vec::new();
         while Instant::now() < deadline {
-            events = fetch_local_relay_events(vec![Filter::new().kind(Kind::from(codec::ROSTER_EVENT_KIND as u16))]);
-            let has_roster = events.iter().any(|event| {
-                codec::parse_roster_event(event).is_ok() && event.pubkey == owner_key
-            });
+            events = fetch_local_relay_events(vec![
+                Filter::new().kind(Kind::from(codec::ROSTER_EVENT_KIND as u16))
+            ]);
+            let has_roster = events
+                .iter()
+                .any(|event| codec::parse_roster_event(event).is_ok() && event.pubkey == owner_key);
             let has_invite = events.iter().any(|event| {
                 codec::parse_invite_event(event).is_ok() && event.pubkey == device_key
             });
@@ -7501,11 +7751,10 @@ mod tests {
         let peer_dir = TempDir::new().expect("peer dir");
 
         let primary = app_with_dir(primary_dir.path(), 71);
-        let primary_account = wait_for_state(&primary, "primary account", |state| {
-            state.account.is_some()
-        })
-        .account
-        .expect("primary account");
+        let primary_account =
+            wait_for_state(&primary, "primary account", |state| state.account.is_some())
+                .account
+                .expect("primary account");
 
         let linked = FfiApp::new(
             linked_dir.path().to_string_lossy().into_owned(),
@@ -7516,21 +7765,20 @@ mod tests {
             owner_input: primary_account.npub.clone(),
         });
 
-        let linked_account =
-            wait_for_state(&linked, "linked awaiting approval", |state| {
-                state
-                    .account
-                    .as_ref()
-                    .map(|account| {
-                        matches!(
-                            account.authorization_state,
-                            DeviceAuthorizationState::AwaitingApproval
-                        )
-                    })
-                    .unwrap_or(false)
-            })
-            .account
-            .expect("linked account");
+        let linked_account = wait_for_state(&linked, "linked awaiting approval", |state| {
+            state
+                .account
+                .as_ref()
+                .map(|account| {
+                    matches!(
+                        account.authorization_state,
+                        DeviceAuthorizationState::AwaitingApproval
+                    )
+                })
+                .unwrap_or(false)
+        })
+        .account
+        .expect("linked account");
 
         primary.dispatch(AppAction::AddAuthorizedDevice {
             device_input: linked_account.device_npub.clone(),
@@ -7550,11 +7798,9 @@ mod tests {
         });
 
         let peer = app_with_dir(peer_dir.path(), 72);
-        let peer_account = wait_for_state(&peer, "peer account", |state| {
-            state.account.is_some()
-        })
-        .account
-        .expect("peer account");
+        let peer_account = wait_for_state(&peer, "peer account", |state| state.account.is_some())
+            .account
+            .expect("peer account");
 
         let peer_chat_id = peer_account.public_key_hex.clone();
         let primary_chat_id = primary_account.public_key_hex.clone();
@@ -7627,12 +7873,14 @@ mod tests {
                 .as_ref()
                 .map(|chat| {
                     chat.chat_id == peer_chat_id
-                        && chat.messages.iter().any(|message| {
-                            message.body == "m1" && message.is_outgoing
-                        })
-                        && chat.messages.iter().any(|message| {
-                            message.body == "m2" && !message.is_outgoing
-                        })
+                        && chat
+                            .messages
+                            .iter()
+                            .any(|message| message.body == "m1" && message.is_outgoing)
+                        && chat
+                            .messages
+                            .iter()
+                            .any(|message| message.body == "m2" && !message.is_outgoing)
                 })
                 .unwrap_or(false)
         })
@@ -7654,9 +7902,10 @@ mod tests {
                 .as_ref()
                 .map(|chat| {
                     chat.chat_id == primary_chat_id
-                        && chat.messages.iter().any(|message| {
-                            message.body == "m3" && !message.is_outgoing
-                        })
+                        && chat
+                            .messages
+                            .iter()
+                            .any(|message| message.body == "m3" && !message.is_outgoing)
                 })
                 .unwrap_or(false)
         });
@@ -7669,9 +7918,10 @@ mod tests {
                 .as_ref()
                 .map(|chat| {
                     chat.chat_id == peer_chat_id
-                        && chat.messages.iter().any(|message| {
-                            message.body == "m3" && message.is_outgoing
-                        })
+                        && chat
+                            .messages
+                            .iter()
+                            .any(|message| message.body == "m3" && message.is_outgoing)
                 })
                 .unwrap_or(false)
         });
@@ -7778,25 +8028,25 @@ mod tests {
             app.dispatch(AppAction::StartLinkedDevice {
                 owner_input: self.owner_npub(owner_label),
             });
-            let linked_account =
-                wait_for_state(&app, "linked awaiting approval", |state| {
-                    state
-                        .account
-                        .as_ref()
-                        .map(|account| {
-                            matches!(
-                                account.authorization_state,
-                                DeviceAuthorizationState::AwaitingApproval
-                            )
-                        })
-                        .unwrap_or(false)
-                })
-                .account
-                .expect("linked account");
+            let linked_account = wait_for_state(&app, "linked awaiting approval", |state| {
+                state
+                    .account
+                    .as_ref()
+                    .map(|account| {
+                        matches!(
+                            account.authorization_state,
+                            DeviceAuthorizationState::AwaitingApproval
+                        )
+                    })
+                    .unwrap_or(false)
+            })
+            .account
+            .expect("linked account");
 
-            self.app(owner_label).dispatch(AppAction::AddAuthorizedDevice {
-                device_input: linked_account.device_npub.clone(),
-            });
+            self.app(owner_label)
+                .dispatch(AppAction::AddAuthorizedDevice {
+                    device_input: linked_account.device_npub.clone(),
+                });
             wait_for_state(&app, "linked authorized", |state| {
                 state
                     .account
@@ -7837,9 +8087,11 @@ mod tests {
         }
 
         fn account(&self, label: &str) -> AccountSnapshot {
-            wait_for_state(self.app(label), "scenario account", |state| state.account.is_some())
-                .account
-                .expect("account")
+            wait_for_state(self.app(label), "scenario account", |state| {
+                state.account.is_some()
+            })
+            .account
+            .expect("account")
         }
 
         fn owner_npub(&self, label: &str) -> String {
@@ -7867,7 +8119,10 @@ mod tests {
             self.create_group_by_inputs(
                 sender,
                 name,
-                members.iter().map(|member| self.owner_npub(member)).collect(),
+                members
+                    .iter()
+                    .map(|member| self.owner_npub(member))
+                    .collect(),
             )
         }
 
@@ -7897,7 +8152,10 @@ mod tests {
         fn add_group_members(&self, sender: &str, group_id: &str, members: &[&str]) {
             self.app(sender).dispatch(AppAction::AddGroupMembers {
                 group_id: group_id.to_string(),
-                member_inputs: members.iter().map(|member| self.owner_npub(member)).collect(),
+                member_inputs: members
+                    .iter()
+                    .map(|member| self.owner_npub(member))
+                    .collect(),
             });
         }
 
@@ -7937,7 +8195,8 @@ mod tests {
                     chat_id,
                     text,
                 } => {
-                    self.app(&sender).dispatch(AppAction::SendMessage { chat_id, text });
+                    self.app(&sender)
+                        .dispatch(AppAction::SendMessage { chat_id, text });
                 }
             }
         }
@@ -7945,21 +8204,15 @@ mod tests {
         fn wait_for_group(&self, label: &str, chat_id: &str, member_count: u64) {
             wait_for_state_timeout(self.app(label), "group thread", 45, |state| {
                 state.chat_list.iter().any(|thread| {
-                    thread.chat_id == chat_id &&
-                        matches!(thread.kind, ChatKind::Group) &&
-                        thread.member_count == member_count
+                    thread.chat_id == chat_id
+                        && matches!(thread.kind, ChatKind::Group)
+                        && thread.member_count == member_count
                 })
             });
             self.open_chat(label, chat_id);
         }
 
-        fn wait_for_message(
-            &self,
-            label: &str,
-            chat_id: &str,
-            text: &str,
-            is_outgoing: bool,
-        ) {
+        fn wait_for_message(&self, label: &str, chat_id: &str, text: &str, is_outgoing: bool) {
             self.open_chat(label, chat_id);
             wait_for_state_timeout(self.app(label), "group message", 45, |state| {
                 state
@@ -8016,19 +8269,184 @@ mod tests {
         let bundle = app.export_support_bundle_json();
         let parsed: Value = serde_json::from_str(&bundle).expect("support bundle json");
 
-        assert_eq!(
-            parsed["build"]["app_version"].as_str(),
-            Some(APP_VERSION)
-        );
-        assert_eq!(
-            parsed["build"]["relay_set_id"].as_str(),
-            Some(RELAY_SET_ID)
-        );
+        assert_eq!(parsed["build"]["app_version"].as_str(), Some(APP_VERSION));
+        assert_eq!(parsed["build"]["relay_set_id"].as_str(), Some(RELAY_SET_ID));
         assert!(parsed["relay_urls"].is_array());
         assert!(parsed["known_users"].is_array());
         assert!(parsed["pending_outbound"].is_array());
         assert!(!bundle.contains("secret_key"));
         assert!(!bundle.contains("\"body\""));
+    }
+
+    #[test]
+    fn create_account_with_name_publishes_metadata_event() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::local_only();
+        let _relay = TestRelay::start();
+        let data_dir = TempDir::new().expect("temp dir");
+        let mut core = test_core(data_dir.path());
+
+        core.create_account("Alice");
+
+        let owner_hex = core
+            .logged_in
+            .as_ref()
+            .expect("logged in")
+            .owner_pubkey
+            .to_string();
+        let owner_pubkey = PublicKey::parse(&owner_hex).expect("owner pubkey");
+
+        let deadline = Instant::now() + StdDuration::from_secs(5);
+        let metadata_event = loop {
+            let events = fetch_local_relay_events(vec![Filter::new()
+                .kind(Kind::Metadata)
+                .authors(vec![owner_pubkey])]);
+            if let Some(event) = events.into_iter().next() {
+                break event;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for metadata event"
+            );
+            thread::sleep(StdDuration::from_millis(50));
+        };
+
+        let metadata: NostrProfileMetadata =
+            serde_json::from_str(&metadata_event.content).expect("metadata json");
+        assert_eq!(metadata.name.as_deref(), Some("Alice"));
+        assert_eq!(metadata.display_name.as_deref(), Some("Alice"));
+        assert_eq!(
+            core.state.account.as_ref().expect("account").display_name,
+            "Alice"
+        );
+    }
+
+    #[test]
+    fn metadata_event_updates_direct_chat_display_name() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let data_dir = TempDir::new().expect("temp dir");
+        let mut core = test_core(data_dir.path());
+        start_primary_test_session(&mut core, 212, false, false).expect("start session");
+
+        let peer_keys = keys_for_fill(213);
+        let peer_npub = peer_keys.public_key().to_bech32().expect("peer npub");
+        let peer_hex = peer_keys.public_key().to_hex();
+
+        core.create_chat(&peer_npub);
+
+        let metadata_event = EventBuilder::new(
+            Kind::Metadata,
+            serde_json::to_string(&NostrProfileMetadata {
+                name: Some("Bob".to_string()),
+                display_name: Some("Bob".to_string()),
+            })
+            .expect("metadata"),
+        )
+        .sign_with_keys(&peer_keys)
+        .expect("metadata event");
+
+        core.handle_relay_event(metadata_event);
+
+        let chat = core
+            .state
+            .chat_list
+            .iter()
+            .find(|chat| chat.chat_id == peer_hex)
+            .expect("chat row");
+        assert_eq!(chat.display_name, "Bob");
+        assert_eq!(chat.subtitle.as_deref(), Some(peer_npub.as_str()));
+        assert_eq!(
+            core.state
+                .current_chat
+                .as_ref()
+                .expect("current chat")
+                .display_name,
+            "Bob"
+        );
+    }
+
+    #[test]
+    fn metadata_event_updates_group_member_display_name() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let data_dir = TempDir::new().expect("temp dir");
+        let (alice_manager, _bob_manager, bob_owner_hex) =
+            established_session_manager_pair(214, 215, 1_900_000_600);
+        let mut core = logged_in_core_with_manager(data_dir.path(), 214, alice_manager);
+
+        core.create_group("Project crew", std::slice::from_ref(&bob_owner_hex));
+        let group_id = core
+            .state
+            .current_chat
+            .as_ref()
+            .expect("current chat")
+            .group_id
+            .clone()
+            .expect("group id");
+
+        let bob_keys = keys_for_fill(215);
+        let metadata_event = EventBuilder::new(
+            Kind::Metadata,
+            serde_json::to_string(&NostrProfileMetadata {
+                name: Some("Bob".to_string()),
+                display_name: Some("Bobby".to_string()),
+            })
+            .expect("metadata"),
+        )
+        .sign_with_keys(&bob_keys)
+        .expect("metadata event");
+
+        core.handle_relay_event(metadata_event);
+
+        let details = core
+            .build_group_details_snapshot(&group_id)
+            .expect("group details");
+        let bob_member = details
+            .members
+            .iter()
+            .find(|member| member.owner_pubkey_hex == bob_owner_hex)
+            .expect("bob member");
+        assert_eq!(bob_member.display_name, "Bobby");
+        assert_eq!(
+            details
+                .members
+                .iter()
+                .find(|member| member.is_local_owner)
+                .expect("local member")
+                .display_name,
+            core.state.account.as_ref().expect("account").display_name
+        );
+    }
+
+    #[test]
+    fn owner_profile_restores_display_name() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let data_dir = TempDir::new().expect("temp dir");
+        let mut seeded = test_core(data_dir.path());
+        start_primary_test_session(&mut seeded, 216, false, false).expect("seed session");
+        seeded.set_local_profile_name("Alice");
+        seeded.rebuild_state();
+        seeded.persist_best_effort();
+
+        let mut restored = test_core(data_dir.path());
+        start_primary_test_session(&mut restored, 216, true, true).expect("restore session");
+
+        assert_eq!(
+            restored
+                .state
+                .account
+                .as_ref()
+                .expect("account")
+                .display_name,
+            "Alice"
+        );
     }
 
     #[test]
@@ -8121,9 +8539,11 @@ mod tests {
             "Restart create",
             vec![pending_member_npub.clone()],
         );
-        wait_for_persisted_state(scenario.data_dir("admin"), "pending group create", |persisted| {
-            !persisted.pending_group_controls.is_empty()
-        });
+        wait_for_persisted_state(
+            scenario.data_dir("admin"),
+            "pending group create",
+            |persisted| !persisted.pending_group_controls.is_empty(),
+        );
 
         scenario.restart_owner("admin");
         scenario.add_owner("member", 251);
@@ -8147,9 +8567,11 @@ mod tests {
         scenario.wait_for_group("member1", &chat_id, 2);
 
         scenario.add_group_members_by_inputs("admin", &chat_id, vec![npub_for_fill(254)]);
-        wait_for_persisted_state(scenario.data_dir("admin"), "pending member add", |persisted| {
-            !persisted.pending_group_controls.is_empty()
-        });
+        wait_for_persisted_state(
+            scenario.data_dir("admin"),
+            "pending member add",
+            |persisted| !persisted.pending_group_controls.is_empty(),
+        );
 
         scenario.restart_owner("admin");
         scenario.add_owner("member2", 254);
@@ -8270,12 +8692,13 @@ mod tests {
         scenario.wait_for_message("member1", &chat_id, "after-removal", false);
         thread::sleep(StdDuration::from_secs(2));
         let member2_state = scenario.app("member2").state();
-        assert!(
-            member2_state
-                .current_chat
-                .as_ref()
-                .map(|chat| chat.messages.iter().all(|message| message.body != "after-removal"))
-                .unwrap_or(true)
-        );
+        assert!(member2_state
+            .current_chat
+            .as_ref()
+            .map(|chat| chat
+                .messages
+                .iter()
+                .all(|message| message.body != "after-removal"))
+            .unwrap_or(true));
     }
 }

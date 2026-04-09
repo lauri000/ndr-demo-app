@@ -10,6 +10,7 @@ import kotlinx.coroutines.launch
 import social.innode.ndr.demo.core.AppManager
 
 data class WelcomeUiState(
+    val nameValue: String = "",
     val importValue: String = "",
     val linkOwnerValue: String = "",
     val isWorking: Boolean = false,
@@ -56,9 +57,17 @@ class WelcomeViewModel(
             )
     }
 
+    fun onNameValueChanged(value: String) {
+        mutableUiState.value =
+            mutableUiState.value.copy(
+                nameValue = value,
+                errorMessage = null,
+            )
+    }
+
     fun generate() {
         mutableUiState.update { it.copy(errorMessage = null) }
-        appManager.createAccount()
+        appManager.createAccount(mutableUiState.value.nameValue)
     }
 
     fun import() {

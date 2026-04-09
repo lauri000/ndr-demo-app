@@ -35,6 +35,7 @@ import social.innode.ndr.demo.ui.theme.IrisTheme
 @Composable
 fun WelcomeScreen(
     uiState: WelcomeUiState,
+    onNameValueChanged: (String) -> Unit,
     onImportValueChanged: (String) -> Unit,
     onLinkOwnerValueChanged: (String) -> Unit,
     onGenerateClick: () -> Unit,
@@ -46,6 +47,7 @@ fun WelcomeScreen(
     val normalizedLinkValue = normalizePeerInput(uiState.linkOwnerValue)
     val isValidLinkValue =
         normalizedLinkValue.isNotBlank() && isValidPeerInput(normalizedLinkValue)
+    val canGenerate = uiState.nameValue.trim().isNotEmpty() && !uiState.isWorking
 
     LaunchedEffect(uiState.didLogin) {
         if (uiState.didLogin) {
@@ -71,10 +73,35 @@ fun WelcomeScreen(
                 style = MaterialTheme.typography.bodyMedium,
                 color = IrisTheme.palette.muted,
             )
+            TextField(
+                value = uiState.nameValue,
+                onValueChange = onNameValueChanged,
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .testTag("signupNameField"),
+                placeholder = {
+                    Text(
+                        text = "Your name",
+                        color = IrisTheme.palette.muted,
+                    )
+                },
+                singleLine = true,
+                enabled = !uiState.isWorking,
+                colors =
+                    TextFieldDefaults.colors(
+                        focusedContainerColor = IrisTheme.palette.panelAlt,
+                        unfocusedContainerColor = IrisTheme.palette.panelAlt,
+                        disabledContainerColor = IrisTheme.palette.panelAlt,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent,
+                    ),
+            )
             IrisPrimaryButton(
                 text = if (uiState.isWorking) "Creating…" else "Generate new key",
                 onClick = onGenerateClick,
-                enabled = !uiState.isWorking,
+                enabled = canGenerate,
                 modifier =
                     Modifier
                         .fillMaxWidth()
