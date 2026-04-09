@@ -55,22 +55,35 @@ The support bundle intentionally excludes:
 
 ## Automated gates
 
-Run before sending an APK to testers:
+Canonical local entrypoints:
 
 ```bash
-cd /Users/l/Projects/iris-fork/nostr-double-ratchet/rust
-cargo test
-
-cd /Users/l/Projects/iris-fork/ndr-demo-android/rust
-cargo test
-
 cd /Users/l/Projects/iris-fork/ndr-demo-android
-./gradlew :app:compileDebugKotlin :app:compileBetaKotlin :app:compileDebugAndroidTestKotlin :app:assembleBeta
+./scripts/test_fast.sh
+./scripts/test_beta_local.sh
+```
+
+- `./scripts/test_fast.sh`
+  - app Rust suite
+  - one local-relay scenario soak iteration
+- `./scripts/test_beta_local.sh`
+  - library Rust suite
+  - app Rust suite
+  - local Android compile gates for debug/beta/androidTest
+
+Recommended full beta gate before sending an APK to testers:
+
+```bash
+cd /Users/l/Projects/iris-fork/ndr-demo-android
+./scripts/test_beta_local.sh
 ./scripts/local_relay_scenario_soak.sh --iterations 100
 ./scripts/linked_device_relay_matrix.sh
 ./scripts/group_chat_restore_smoke.sh
 ./scripts/group_chat_matrix_smoke.sh
+./gradlew :app:assembleBeta
 ```
+
+The relay/device scripts remain explicit manual gates and are not part of the default fast path.
 
 ## Packaging
 
