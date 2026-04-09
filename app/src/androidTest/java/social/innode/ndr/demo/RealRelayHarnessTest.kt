@@ -32,7 +32,11 @@ class RealRelayHarnessTest {
         get() = InstrumentationRegistry.getArguments()
 
     private fun appManager(): AppManager =
-        withActivity { (it.application as NdrDemoApp).container.appManager }
+        (instrumentation.targetContext.applicationContext as NdrDemoApp).container.appManager
+
+    private fun appFilesDir(): File = instrumentation.targetContext.filesDir
+
+    private fun appPackageName(): String = instrumentation.targetContext.packageName
 
     private fun <T> withActivity(block: (MainActivity) -> T): T {
         var result: Result<T>? = null
@@ -50,8 +54,22 @@ class RealRelayHarnessTest {
             "public_key_hex" to account.publicKeyHex,
             "device_npub" to account.deviceNpub,
             "device_public_key_hex" to account.devicePublicKeyHex,
-            "app_package" to withActivity { it.packageName },
-            "data_dir" to withActivity { it.filesDir.absolutePath },
+            "app_package" to appPackageName(),
+            "data_dir" to appFilesDir().absolutePath,
+        )
+    }
+
+    @Test
+    fun report_logged_in_identity() {
+        val account = ensureLoggedIn()
+        reportStatus(
+            "npub" to account.npub,
+            "public_key_hex" to account.publicKeyHex,
+            "device_npub" to account.deviceNpub,
+            "device_public_key_hex" to account.devicePublicKeyHex,
+            "authorization_state" to account.authorizationState.name,
+            "app_package" to appPackageName(),
+            "data_dir" to appFilesDir().absolutePath,
         )
     }
 
@@ -252,7 +270,7 @@ class RealRelayHarnessTest {
         val plan = debug?.optJSONObject("current_protocol_plan")
 
         reportStatus(
-            "data_dir" to withActivity { it.filesDir.absolutePath },
+            "data_dir" to appFilesDir().absolutePath,
             "rev" to state.rev.toString(),
             "default_screen" to state.router.defaultScreen.toString(),
             "screen_stack" to state.router.screenStack.joinToString("|") { screen -> screen.toString() },
@@ -286,7 +304,7 @@ class RealRelayHarnessTest {
         val groupManager = persisted?.optJSONObject("group_manager")
 
         reportStatus(
-            "data_dir" to withActivity { it.filesDir.absolutePath },
+            "data_dir" to appFilesDir().absolutePath,
             "persisted_file_present" to (persisted != null).toString(),
             "version" to persisted.optStringOrEmpty("version"),
             "active_chat_id" to persisted.optStringOrEmpty("active_chat_id"),
@@ -304,7 +322,7 @@ class RealRelayHarnessTest {
     fun wait_for_peer_roster_from_args() {
         ensureLoggedIn()
         val peerInput = requiredArg("peer_input")
-        val peerOwnerHex = normalizePeerInput(peerInput)
+        val peerOwnerHex = resolvePeerOwnerHex(peerInput)
 
         val persisted =
             waitForState("peer roster for $peerOwnerHex", timeoutMs = 180_000) {
@@ -322,7 +340,7 @@ class RealRelayHarnessTest {
     fun wait_for_known_peer_session_from_args() {
         ensureLoggedIn()
         val peerInput = requiredArg("peer_input")
-        val peerOwnerHex = normalizePeerInput(peerInput)
+        val peerOwnerHex = resolvePeerOwnerHex(peerInput)
 
         val persisted =
             waitForState("known peer session for $peerOwnerHex", timeoutMs = 180_000) {
@@ -340,7 +358,7 @@ class RealRelayHarnessTest {
     fun wait_for_peer_transport_ready_from_args() {
         ensureLoggedIn()
         val peerInput = requiredArg("peer_input")
-        val peerOwnerHex = normalizePeerInput(peerInput)
+        val peerOwnerHex = resolvePeerOwnerHex(peerInput)
 
         val persisted =
             waitForState("peer transport ready for $peerOwnerHex", timeoutMs = 180_000) {
@@ -606,43 +624,52 @@ class RealRelayHarnessTest {
         val peerInput = arguments.getString("peer_input").orEmpty()
         val expectedChatId = arguments.getString("chat_id").orEmpty().takeIf { it.isNotBlank() }
         val direction = arguments.getString("direction").orEmpty().lowercase()
+        val seededChat =
+            when {
+                !expectedChatId.isNullOrBlank() -> ensureChatOpenById(expectedChatId)
+                peerInput.isNotBlank() -> ensureChatOpen(peerInput)
+                else -> null
+            }
+        val resolvedChatId = expectedChatId ?: seededChat?.chatId
 
-        if (peerInput.isNotBlank()) {
-            ensureChatOpen(peerInput)
-        }
+        val matchedChatId =
+            waitForState("incoming message", timeoutMs = 180_000) {
+                fun matchesResolvedChat(chatId: String): Boolean =
+                    resolvedChatId?.let { expected -> chatId.equals(expected, ignoreCase = true) }
+                        ?: chatMatchesExpectedChat(chatId, peerInput, expectedChatId)
 
-        waitForState("incoming message", timeoutMs = 180_000) {
+                readJsonObject(PERSISTED_STATE_FILENAME)
+                    ?.let { persisted ->
+                        persistedThreadWithMessage(
+                            persisted = persisted,
+                            chatId = resolvedChatId,
+                            expectedMessage = expectedMessage,
+                            direction = direction,
+                        )
+                    }
+                    ?.let { return@waitForState it }
+
             val state = appManager().state.value
-            state.currentChat?.takeIf { chat ->
-                chatMatchesExpectedChat(chat.chatId, peerInput, expectedChatId) &&
-                chat.messages.any { entry ->
-                    entry.body == expectedMessage && messageDirectionMatches(entry.isOutgoing, direction)
-                }
-            } ?: state.chatList.firstOrNull { thread ->
-                thread.lastMessagePreview == expectedMessage &&
-                    chatMatchesExpectedChat(thread.chatId, peerInput, expectedChatId)
-            }?.also { thread ->
-                appManager().openChat(thread.chatId)
-            }?.let { null }
-        }
-
-        val current =
-            waitForState("opened incoming chat", timeoutMs = 30_000) {
-                appManager()
-                    .state
-                    .value
-                    .currentChat
-                    ?.takeIf { chat ->
-                        chatMatchesExpectedChat(chat.chatId, peerInput, expectedChatId) &&
+                state.currentChat?.takeIf { chat ->
+                    matchesResolvedChat(chat.chatId) &&
                         chat.messages.any { entry ->
                             entry.body == expectedMessage &&
                                 messageDirectionMatches(entry.isOutgoing, direction)
                         }
-                    }
+                }?.chatId
+                    ?: state.chatList.firstOrNull { thread ->
+                        thread.lastMessagePreview == expectedMessage &&
+                            matchesResolvedChat(thread.chatId)
+                    }?.also { thread ->
+                        appManager().openChat(thread.chatId)
+                    }?.chatId
             }
 
+        resolvedChatId?.let(appManager()::openChat)
+        val finalChatId = resolvedChatId ?: matchedChatId
+
         reportStatus(
-            "chat_id" to current.chatId,
+            "chat_id" to finalChatId,
             "message" to expectedMessage,
         )
     }
@@ -686,7 +713,6 @@ class RealRelayHarnessTest {
                 fail("Unexpected message `$expectedMessage` appeared in chat list")
             }
 
-            instrumentation.waitForIdleSync()
             SystemClock.sleep(100)
         }
 
@@ -706,7 +732,7 @@ class RealRelayHarnessTest {
             appManager().state.value.takeIf { it.account == null }
         }
 
-        val filesEntries = storageEntries(withActivity { it.filesDir })
+        val filesEntries = storageEntries(appFilesDir())
         if (filesEntries.isNotEmpty()) {
             fail("Expected filesDir to be empty after logout, found: $filesEntries")
         }
@@ -811,8 +837,23 @@ class RealRelayHarnessTest {
                 .value
                 .currentChat
                 ?.takeIf { current -> current.chatId == trimmed }
-        }
+            }
     }
+
+    private fun resolvePeerOwnerHex(peerInput: String): String =
+        appManager()
+            .state
+            .value
+            .chatList
+            .firstOrNull { thread ->
+                matchesPeerInput(
+                    chatId = thread.chatId,
+                    peerNpub = thread.subtitle.orEmpty(),
+                    peerInput = peerInput,
+                )
+            }
+            ?.chatId
+            ?: normalizePeerInput(peerInput)
 
     private fun matchesPeerInput(
         chatId: String,
@@ -895,11 +936,38 @@ class RealRelayHarnessTest {
             ?: emptyList()
 
     private fun readJsonObject(fileName: String): JSONObject? {
-        val file = withActivity { File(it.filesDir, fileName) }
+        val file = File(appFilesDir(), fileName)
         if (!file.exists()) {
             return null
         }
         return runCatching { JSONObject(file.readText()) }.getOrNull()
+    }
+
+    private fun persistedThreadWithMessage(
+        persisted: JSONObject,
+        chatId: String?,
+        expectedMessage: String,
+        direction: String,
+    ): String? {
+        val threads = persisted.optJSONArray("threads") ?: return null
+        for (index in 0 until threads.length()) {
+            val thread = threads.optJSONObject(index) ?: continue
+            val threadChatId = thread.optString("chat_id")
+            if (!chatId.isNullOrBlank() && !threadChatId.equals(chatId, ignoreCase = true)) {
+                continue
+            }
+            val messages = thread.optJSONArray("messages") ?: continue
+            val found =
+                (0 until messages.length()).any { messageIndex ->
+                    val message = messages.optJSONObject(messageIndex) ?: return@any false
+                    message.optString("body") == expectedMessage &&
+                        messageDirectionMatches(message.optBoolean("is_outgoing"), direction)
+                }
+            if (found) {
+                return threadChatId
+            }
+        }
+        return null
     }
 
     private fun persistedHasPeerRoster(
@@ -1199,7 +1267,6 @@ class RealRelayHarnessTest {
         val deadline = SystemClock.elapsedRealtime() + timeoutMs
         while (SystemClock.elapsedRealtime() < deadline) {
             condition()?.let { return it }
-            instrumentation.waitForIdleSync()
             SystemClock.sleep(100)
         }
         throw AssertionError("Timed out waiting for $label")

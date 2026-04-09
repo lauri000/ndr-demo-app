@@ -25,6 +25,7 @@ RUNNER="social.innode.ndr.demo.test/androidx.test.runner.AndroidJUnitRunner"
 CLASS="social.innode.ndr.demo.RealRelayHarnessTest"
 PACKAGE_NAME="social.innode.ndr.demo"
 TEST_PACKAGE_NAME="social.innode.ndr.demo.test"
+AM_USER="${AM_USER:-0}"
 
 PRIMARY_SERIAL="${PRIMARY_SERIAL:-emulator-5554}"
 LINKED_SERIAL="${LINKED_SERIAL:-emulator-5556}"
@@ -127,18 +128,45 @@ run_test() {
   sleep 1
 
   local cmd=("${ADB}" -s "${serial}" shell am instrument -w -r)
+  cmd+=(--user "${AM_USER}")
   while [[ $# -gt 0 ]]; do
     cmd+=(-e "$1" "$2")
     shift 2
   done
   cmd+=(-e class "${CLASS}#${test_name}" "${RUNNER}")
-  "${cmd[@]}"
+  local output
+  output="$("${cmd[@]}" 2>&1)" || {
+    printf '%s\n' "${output}"
+    return 1
+  }
+  printf '%s\n' "${output}"
+  if printf '%s\n' "${output}" | rg -q '^INSTRUMENTATION_RESULT: shortMsg='; then
+    echo "Instrumentation ${test_name} crashed on ${serial}" >&2
+    return 1
+  fi
+  if printf '%s\n' "${output}" | rg -q '^INSTRUMENTATION_FAILED:'; then
+    echo "Instrumentation ${test_name} failed on ${serial}" >&2
+    return 1
+  fi
+  if ! printf '%s\n' "${output}" | rg -q '^INSTRUMENTATION_CODE: -1$'; then
+    echo "Instrumentation ${test_name} did not report success on ${serial}" >&2
+    return 1
+  fi
   sleep 1
 }
 
 extract_status() {
   local key="$1"
   sed -n "s/^INSTRUMENTATION_STATUS: ${key}=//p" | tail -n 1
+}
+
+require_value() {
+  local name="$1"
+  local value="$2"
+  if [[ -z "${value}" ]]; then
+    echo "Missing required status value: ${name}" >&2
+    return 1
+  fi
 }
 
 report_debug_snapshot() {
@@ -179,30 +207,53 @@ echo "Installing app and test APKs"
 (cd "${ROOT_DIR}" && ./gradlew :app:installDebug :app:installDebugAndroidTest >/dev/null)
 
 echo "Creating primary owner on ${PRIMARY_SERIAL}"
-PRIMARY_IDENTITY="$(run_test "${PRIMARY_SERIAL}" create_account_and_report_identity)"
+run_test "${PRIMARY_SERIAL}" create_account_and_report_identity >/dev/null
+PRIMARY_IDENTITY="$(run_test "${PRIMARY_SERIAL}" report_logged_in_identity)"
 PRIMARY_OWNER_NPUB="$(printf '%s\n' "${PRIMARY_IDENTITY}" | extract_status npub)"
 PRIMARY_OWNER_HEX="$(printf '%s\n' "${PRIMARY_IDENTITY}" | extract_status public_key_hex)"
+require_value PRIMARY_OWNER_NPUB "${PRIMARY_OWNER_NPUB}"
+require_value PRIMARY_OWNER_HEX "${PRIMARY_OWNER_HEX}"
 
 echo "Starting linked device on ${LINKED_SERIAL}"
 LINKED_IDENTITY="$(run_test "${LINKED_SERIAL}" start_linked_device_and_report_identity \
   owner_input "${PRIMARY_OWNER_NPUB}")"
 LINKED_DEVICE_NPUB="$(printf '%s\n' "${LINKED_IDENTITY}" | extract_status device_npub)"
+require_value LINKED_DEVICE_NPUB "${LINKED_DEVICE_NPUB}"
 
 echo "Authorizing linked device on ${PRIMARY_SERIAL}"
 run_test "${PRIMARY_SERIAL}" add_authorized_device_from_args \
   device_input "${LINKED_DEVICE_NPUB}" >/dev/null
 run_test "${LINKED_SERIAL}" wait_for_authorization_state_from_args \
   authorization_state AUTHORIZED >/dev/null
+LINKED_AUTHORIZED_IDENTITY="$(run_test "${LINKED_SERIAL}" report_logged_in_identity)"
+LINKED_OWNER_HEX="$(printf '%s\n' "${LINKED_AUTHORIZED_IDENTITY}" | extract_status public_key_hex)"
+LINKED_OWNER_NPUB="$(printf '%s\n' "${LINKED_AUTHORIZED_IDENTITY}" | extract_status npub)"
+require_value LINKED_OWNER_HEX "${LINKED_OWNER_HEX}"
+require_value LINKED_OWNER_NPUB "${LINKED_OWNER_NPUB}"
+if [[ "${LINKED_OWNER_HEX}" != "${PRIMARY_OWNER_HEX}" ]]; then
+  echo "Linked device owner mismatch after authorization: expected ${PRIMARY_OWNER_HEX}, got ${LINKED_OWNER_HEX}" >&2
+  exit 1
+fi
 
 echo "Creating admin owner on ${ADMIN_SERIAL}"
-ADMIN_IDENTITY="$(run_test "${ADMIN_SERIAL}" create_account_and_report_identity)"
+run_test "${ADMIN_SERIAL}" create_account_and_report_identity >/dev/null
+ADMIN_IDENTITY="$(run_test "${ADMIN_SERIAL}" report_logged_in_identity)"
 ADMIN_OWNER_NPUB="$(printf '%s\n' "${ADMIN_IDENTITY}" | extract_status npub)"
 ADMIN_OWNER_HEX="$(printf '%s\n' "${ADMIN_IDENTITY}" | extract_status public_key_hex)"
+require_value ADMIN_OWNER_NPUB "${ADMIN_OWNER_NPUB}"
+require_value ADMIN_OWNER_HEX "${ADMIN_OWNER_HEX}"
 
 echo "Creating independent member owner on ${MEMBER_SERIAL}"
-MEMBER_IDENTITY="$(run_test "${MEMBER_SERIAL}" create_account_and_report_identity)"
+run_test "${MEMBER_SERIAL}" create_account_and_report_identity >/dev/null
+MEMBER_IDENTITY="$(run_test "${MEMBER_SERIAL}" report_logged_in_identity)"
 MEMBER_OWNER_NPUB="$(printf '%s\n' "${MEMBER_IDENTITY}" | extract_status npub)"
 MEMBER_OWNER_HEX="$(printf '%s\n' "${MEMBER_IDENTITY}" | extract_status public_key_hex)"
+require_value MEMBER_OWNER_NPUB "${MEMBER_OWNER_NPUB}"
+require_value MEMBER_OWNER_HEX "${MEMBER_OWNER_HEX}"
+
+echo "Launching member app normally to keep its relay session alive"
+"${ADB}" -s "${MEMBER_SERIAL}" shell am start --user "${AM_USER}" -n "${PACKAGE_NAME}/.MainActivity" >/dev/null
+sleep 5
 
 echo "Tracking primary and member owners on admin"
 run_test "${ADMIN_SERIAL}" create_chat_from_args \
@@ -240,6 +291,8 @@ GROUP_CREATE="$(run_test "${ADMIN_SERIAL}" create_group_from_args \
   member_inputs "${PRIMARY_OWNER_NPUB},${MEMBER_OWNER_NPUB}")"
 GROUP_CHAT_ID="$(printf '%s\n' "${GROUP_CREATE}" | extract_status chat_id)"
 GROUP_ID="$(printf '%s\n' "${GROUP_CREATE}" | extract_status group_id)"
+require_value GROUP_CHAT_ID "${GROUP_CHAT_ID}"
+require_value GROUP_ID "${GROUP_ID}"
 
 echo "Waiting for group on primary, linked, and member devices"
 run_test "${PRIMARY_SERIAL}" wait_for_group_chat_from_args chat_id "${GROUP_CHAT_ID}" >/dev/null
