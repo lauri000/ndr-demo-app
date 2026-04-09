@@ -337,6 +337,24 @@ class RealRelayHarnessTest {
     }
 
     @Test
+    fun wait_for_peer_transport_ready_from_args() {
+        ensureLoggedIn()
+        val peerInput = requiredArg("peer_input")
+        val peerOwnerHex = normalizePeerInput(peerInput)
+
+        val persisted =
+            waitForState("peer transport ready for $peerOwnerHex", timeoutMs = 180_000) {
+                readJsonObject(PERSISTED_STATE_FILENAME)
+                    ?.takeIf { json -> persistedHasPeerTransportReady(json, peerOwnerHex) }
+            }
+
+        reportStatus(
+            "peer_owner_hex" to peerOwnerHex,
+            "users" to summarizePersistedUsers(persisted.optJSONObject("session_manager")?.optJSONArray("users")),
+        )
+    }
+
+    @Test
     fun create_chat_from_args() {
         ensureLoggedIn()
         val peerInput = requiredArg("peer_input")
@@ -408,6 +426,90 @@ class RealRelayHarnessTest {
     }
 
     @Test
+    fun wait_for_group_member_count_from_args() {
+        ensureLoggedIn()
+        val chatId = optionalArg("chat_id")
+        val groupId = optionalArg("group_id")
+        val expectedMemberCount = requiredArg("member_count").toULong()
+        val resolvedChatId =
+            when {
+                !chatId.isNullOrBlank() -> chatId
+                !groupId.isNullOrBlank() -> "group:$groupId"
+                else -> throw AssertionError("Missing instrumentation argument: chat_id or group_id")
+            }
+
+        ensureChatOpenById(resolvedChatId)
+        val current =
+            waitForState("group member count $expectedMemberCount", timeoutMs = 180_000) {
+                appManager()
+                    .state
+                    .value
+                    .currentChat
+                    ?.takeIf { chat ->
+                        chat.chatId == resolvedChatId &&
+                            chat.memberCount == expectedMemberCount
+                    }
+            }
+
+        reportStatus(
+            "chat_id" to current.chatId,
+            "group_id" to current.groupId.orEmpty(),
+            "member_count" to current.memberCount.toString(),
+        )
+    }
+
+    @Test
+    fun remove_group_member_from_args() {
+        ensureLoggedIn()
+        val chatId = optionalArg("chat_id")
+        val groupIdArg = optionalArg("group_id")
+        val memberInput = requiredArg("member_input")
+        val expectedMemberCount = optionalArg("expected_member_count")?.toULong()
+        val resolvedChatId =
+            when {
+                !chatId.isNullOrBlank() -> chatId
+                !groupIdArg.isNullOrBlank() -> "group:$groupIdArg"
+                else -> throw AssertionError("Missing instrumentation argument: chat_id or group_id")
+            }
+        val groupId = groupIdArg ?: resolvedChatId.removePrefix("group:")
+
+        val existing = ensureChatOpenById(resolvedChatId)
+        val initialRev = appManager().state.value.rev
+        val initialMemberCount = existing.memberCount
+
+        appManager().removeGroupMember(groupId, normalizePeerInput(memberInput))
+
+        val current =
+            waitForState("removed group member from $resolvedChatId", timeoutMs = 180_000) {
+                val state = appManager().state.value
+                val chat =
+                    state.currentChat
+                        ?.takeIf { current -> current.chatId == resolvedChatId }
+                        ?: return@waitForState null
+
+                expectedMemberCount?.let { expected ->
+                    return@waitForState chat.takeIf { current -> current.memberCount == expected }
+                }
+
+                chat.takeIf { current ->
+                    state.rev > initialRev &&
+                        !state.busy.updatingGroup &&
+                        current.memberCount < initialMemberCount
+                }
+            }
+
+        appManager().state.value.toast?.takeIf { it.isNotBlank() }?.let { toast ->
+            fail("Unexpected toast after remove member: $toast")
+        }
+
+        reportStatus(
+            "chat_id" to current.chatId,
+            "group_id" to current.groupId.orEmpty(),
+            "member_count" to current.memberCount.toString(),
+        )
+    }
+
+    @Test
     fun send_message_from_args() {
         ensureLoggedIn()
         val peerInput = optionalArg("peer_input").orEmpty()
@@ -464,6 +566,40 @@ class RealRelayHarnessTest {
     }
 
     @Test
+    fun expect_send_rejected_from_args() {
+        ensureLoggedIn()
+        val peerInput = optionalArg("peer_input").orEmpty()
+        val chatIdArg = optionalArg("chat_id")
+        val message = requiredArg("message")
+        val chat =
+            chatIdArg
+                ?.let { ensureChatOpenById(it) }
+                ?: ensureChatOpen(peerInput)
+
+        val initialMessageCount = chat.messages.size
+        appManager().sendText(chat.chatId, message)
+
+        val rejectionToast =
+            waitForState("rejected send", timeoutMs = 60_000) {
+                val state = appManager().state.value
+                val current =
+                    state.currentChat
+                        ?.takeIf { current -> current.chatId == chat.chatId }
+                        ?: return@waitForState null
+                if (current.messages.size != initialMessageCount || current.messages.any { it.body == message }) {
+                    fail("Rejected send unexpectedly appended a message")
+                }
+                state.toast?.takeIf { it.isNotBlank() }
+            }
+
+        reportStatus(
+            "chat_id" to chat.chatId,
+            "message" to message,
+            "toast" to rejectionToast,
+        )
+    }
+
+    @Test
     fun wait_for_message_from_args() {
         ensureLoggedIn()
         val expectedMessage = requiredArg("message")
@@ -508,6 +644,56 @@ class RealRelayHarnessTest {
         reportStatus(
             "chat_id" to current.chatId,
             "message" to expectedMessage,
+        )
+    }
+
+    @Test
+    fun assert_message_absent_from_args() {
+        ensureLoggedIn()
+        val expectedMessage = requiredArg("message")
+        val peerInput = arguments.getString("peer_input").orEmpty()
+        val expectedChatId = arguments.getString("chat_id").orEmpty().takeIf { it.isNotBlank() }
+        val direction = arguments.getString("direction").orEmpty().lowercase()
+        val timeoutMs = optionalArg("timeout_ms")?.toLong() ?: 30_000
+
+        if (peerInput.isNotBlank()) {
+            ensureChatOpen(peerInput)
+        } else if (!expectedChatId.isNullOrBlank()) {
+            ensureChatOpenById(expectedChatId)
+        }
+
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        while (SystemClock.elapsedRealtime() < deadline) {
+            val state = appManager().state.value
+            val foundInCurrent =
+                state.currentChat?.let { chat ->
+                    chatMatchesExpectedChat(chat.chatId, peerInput, expectedChatId) &&
+                        chat.messages.any { entry ->
+                            entry.body == expectedMessage &&
+                                messageDirectionMatches(entry.isOutgoing, direction)
+                        }
+                } == true
+            if (foundInCurrent) {
+                fail("Unexpected message `$expectedMessage` appeared in current chat")
+            }
+
+            val foundInList =
+                state.chatList.any { thread ->
+                    chatMatchesExpectedChat(thread.chatId, peerInput, expectedChatId) &&
+                        thread.lastMessagePreview == expectedMessage
+                }
+            if (foundInList) {
+                fail("Unexpected message `$expectedMessage` appeared in chat list")
+            }
+
+            instrumentation.waitForIdleSync()
+            SystemClock.sleep(100)
+        }
+
+        reportStatus(
+            "chat_id" to expectedChatId.orEmpty(),
+            "message" to expectedMessage,
+            "timeout_ms" to timeoutMs.toString(),
         )
     }
 
@@ -750,6 +936,37 @@ class RealRelayHarnessTest {
                         val device = devices.optJSONObject(deviceIndex) ?: return@any false
                         !device.isNull("active_session") ||
                             (device.optJSONArray("inactive_sessions")?.length() ?: 0) > 0
+                    }
+                }
+            } == true
+
+    private fun persistedHasPeerTransportReady(
+        persisted: JSONObject,
+        peerOwnerHex: String,
+    ): Boolean =
+        persisted
+            .optJSONObject("session_manager")
+            ?.optJSONArray("users")
+            ?.let { users ->
+                (0 until users.length()).any { index ->
+                    val user = users.optJSONObject(index) ?: return@any false
+                    if (!user.optString("owner_pubkey").equals(peerOwnerHex, ignoreCase = true)) {
+                        return@any false
+                    }
+                    val rosterDevices = user.optJSONObject("roster")?.optJSONArray("devices") ?: return@any false
+                    val devices = user.optJSONArray("devices") ?: return@any false
+                    if (rosterDevices.length() == 0) {
+                        return@any false
+                    }
+
+                    (0 until rosterDevices.length()).all { rosterIndex ->
+                        val rosterDevice = rosterDevices.optJSONObject(rosterIndex) ?: return@all false
+                        val rosterDeviceHex = rosterDevice.optString("device_pubkey")
+                        (0 until devices.length()).any { deviceIndex ->
+                            val device = devices.optJSONObject(deviceIndex) ?: return@any false
+                            device.optString("device_pubkey").equals(rosterDeviceHex, ignoreCase = true) &&
+                                !device.isNull("public_invite")
+                        }
                     }
                 }
             } == true
