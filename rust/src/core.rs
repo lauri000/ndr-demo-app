@@ -97,7 +97,34 @@ struct ThreadRecord {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct PendingInbound {
-    envelope: MessageEnvelope,
+    #[serde(default)]
+    envelope: Option<MessageEnvelope>,
+    #[serde(default)]
+    sender_owner_hex: Option<String>,
+    #[serde(default)]
+    payload: Option<Vec<u8>>,
+    #[serde(default)]
+    created_at_secs: Option<u64>,
+}
+
+impl PendingInbound {
+    fn envelope(envelope: MessageEnvelope) -> Self {
+        Self {
+            envelope: Some(envelope),
+            sender_owner_hex: None,
+            payload: None,
+            created_at_secs: None,
+        }
+    }
+
+    fn decrypted(sender_owner: OwnerPubkey, payload: Vec<u8>, created_at_secs: u64) -> Self {
+        Self {
+            envelope: None,
+            sender_owner_hex: Some(sender_owner.to_string()),
+            payload: Some(payload),
+            created_at_secs: Some(created_at_secs),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2260,7 +2287,7 @@ impl AppCore {
                         "sender owner unresolved; queued as pending inbound",
                     );
                     self.remember_event(event_id.clone());
-                    self.pending_inbound.push(PendingInbound { envelope });
+                    self.pending_inbound.push(PendingInbound::envelope(envelope));
                     self.persist_best_effort();
                     return;
                 };
@@ -2296,10 +2323,16 @@ impl AppCore {
                                     "relay.message.pending",
                                     format!("payload apply deferred: {error}"),
                                 );
-                                self.pending_inbound.push(PendingInbound { envelope });
+                                self.pending_inbound.push(PendingInbound::decrypted(
+                                    message.owner_pubkey,
+                                    message.payload,
+                                    now.get(),
+                                ));
                             } else {
                                 self.state.toast = Some(error.to_string());
                             }
+                        } else {
+                            self.retry_pending_inbound(now);
                         }
                         self.request_protocol_subscription_refresh();
                         self.persist_best_effort();
@@ -2312,7 +2345,7 @@ impl AppCore {
                             "session_manager returned None; queued as pending inbound",
                         );
                         self.remember_event(event_id.clone());
-                        self.pending_inbound.push(PendingInbound { envelope });
+                        self.pending_inbound.push(PendingInbound::envelope(envelope));
                         self.persist_best_effort();
                     }
                     Err(error) => {
@@ -2594,38 +2627,93 @@ impl AppCore {
             return;
         }
 
-        let pending = std::mem::take(&mut self.pending_inbound);
-        let mut still_pending = Vec::new();
-        for item in pending {
-            let sender_owner = self.logged_in.as_ref().and_then(|logged_in| {
-                resolve_message_sender_owner(&logged_in.session_manager, &item.envelope, now)
-            });
-            let Some(sender_owner) = sender_owner else {
-                still_pending.push(item);
-                continue;
-            };
-            let receive_result = {
-                let logged_in = self.logged_in.as_mut().expect("checked above");
-                let mut rng = OsRng;
-                let mut ctx = ProtocolContext::new(now, &mut rng);
-                logged_in
-                    .session_manager
-                    .receive(&mut ctx, sender_owner, &item.envelope)
-            };
-            match receive_result {
-                Ok(Some(message)) => {
-                    if self
-                        .apply_decrypted_payload(message.owner_pubkey, &message.payload, now.get())
-                        .is_err()
-                    {
+        let mut pending = std::mem::take(&mut self.pending_inbound);
+        loop {
+            let mut still_pending = Vec::new();
+            let mut made_progress = false;
+
+            for item in pending {
+                if let (Some(sender_owner_hex), Some(payload)) =
+                    (item.sender_owner_hex.as_deref(), item.payload.as_ref())
+                {
+                    let Ok(sender_pubkey) = PublicKey::parse(sender_owner_hex) else {
                         still_pending.push(item);
+                        continue;
+                    };
+                    match self.apply_decrypted_payload(
+                        OwnerPubkey::from_bytes(sender_pubkey.to_bytes()),
+                        payload,
+                        item.created_at_secs.unwrap_or_else(|| now.get()),
+                    ) {
+                        Ok(()) => {
+                            made_progress = true;
+                        }
+                        Err(error) if is_retryable_group_payload_error(&error) => {
+                            still_pending.push(item);
+                        }
+                        Err(error) => {
+                            self.state.toast = Some(error.to_string());
+                            made_progress = true;
+                        }
+                    }
+                    continue;
+                }
+
+                let Some(envelope) = item.envelope.as_ref() else {
+                    continue;
+                };
+
+                let sender_owner = self.logged_in.as_ref().and_then(|logged_in| {
+                    resolve_message_sender_owner(&logged_in.session_manager, envelope, now)
+                });
+                let Some(sender_owner) = sender_owner else {
+                    still_pending.push(item);
+                    continue;
+                };
+                let receive_result = {
+                    let logged_in = self.logged_in.as_mut().expect("checked above");
+                    let mut rng = OsRng;
+                    let mut ctx = ProtocolContext::new(now, &mut rng);
+                    logged_in
+                        .session_manager
+                        .receive(&mut ctx, sender_owner, envelope)
+                };
+                match receive_result {
+                    Ok(Some(message)) => match self.apply_decrypted_payload(
+                        message.owner_pubkey,
+                        &message.payload,
+                        envelope.created_at.get(),
+                    ) {
+                        Ok(()) => {
+                            made_progress = true;
+                        }
+                        Err(error) if is_retryable_group_payload_error(&error) => {
+                            still_pending.push(PendingInbound::decrypted(
+                                message.owner_pubkey,
+                                message.payload,
+                                envelope.created_at.get(),
+                            ));
+                        }
+                        Err(error) => {
+                            self.state.toast = Some(error.to_string());
+                            made_progress = true;
+                        }
+                    },
+                    Ok(None) | Err(_) => {
+                        // If the owner is now resolvable but the real session manager can no
+                        // longer receive this envelope, the payload was already consumed earlier.
+                        // Keeping the raw envelope would wedge the queue forever.
+                        made_progress = true;
                     }
                 }
-                Ok(None) => still_pending.push(item),
-                Err(_) => still_pending.push(item),
             }
+
+            if still_pending.is_empty() || !made_progress {
+                self.pending_inbound = still_pending;
+                break;
+            }
+            pending = still_pending;
         }
-        self.pending_inbound = still_pending;
     }
 
     fn retry_pending_outbound(&mut self, now: UnixSeconds) {
@@ -6954,21 +7042,23 @@ mod tests {
         ));
 
         let mut core = logged_in_core_with_manager(data_dir.path(), 75, session_manager);
-        core.pending_inbound.push(PendingInbound {
-            envelope: MessageEnvelope {
+        core.pending_inbound.push(PendingInbound::envelope(MessageEnvelope {
                 sender: local_device_from_keys(&device_keys_for_fill(76)),
                 signer_secret_key: [9; 32],
                 created_at: UnixSeconds(501),
                 encrypted_header: "header".to_string(),
                 ciphertext: "ciphertext".to_string(),
-            },
-        });
+            }));
         core.persist_best_effort();
 
         let persisted = persisted_state(data_dir.path());
         assert_eq!(persisted.pending_inbound.len(), 1);
         assert_eq!(
-            persisted.pending_inbound[0].envelope.ciphertext,
+            persisted.pending_inbound[0]
+                .envelope
+                .as_ref()
+                .expect("persisted envelope")
+                .ciphertext,
             "ciphertext"
         );
 
@@ -6978,7 +7068,11 @@ mod tests {
 
         assert_eq!(restored.pending_inbound.len(), 1);
         assert_eq!(
-            restored.pending_inbound[0].envelope.encrypted_header,
+            restored.pending_inbound[0]
+                .envelope
+                .as_ref()
+                .expect("restored envelope")
+                .encrypted_header,
             "header"
         );
     }
@@ -8526,6 +8620,92 @@ mod tests {
         scenario.wait_for_message("primary", &chat_id, "from-member", false);
         scenario.wait_for_message("linked", &chat_id, "from-member", false);
         scenario.wait_for_message("member", &chat_id, "from-member", true);
+    }
+
+    #[test]
+    fn linked_device_receives_existing_group_after_next_primary_send() {
+        let mut scenario = ScenarioRunner::local();
+        scenario.add_owner("primary", 244);
+        scenario.add_owner("admin", 245);
+        scenario.add_owner("member", 246);
+
+        let chat_id = scenario.create_group("admin", "Late linked", &["primary", "member"]);
+        scenario.wait_for_group("admin", &chat_id, 3);
+        scenario.wait_for_group("primary", &chat_id, 3);
+        scenario.wait_for_group("member", &chat_id, 3);
+
+        scenario.add_linked("linked", "primary");
+        let primary_owner_hex = scenario.owner_hex("primary");
+        wait_for_persisted_state(
+            scenario.data_dir("primary"),
+            "primary sibling transport ready",
+            |persisted| {
+                persisted
+                    .session_manager
+                    .as_ref()
+                    .and_then(|snapshot| {
+                        snapshot
+                            .users
+                            .iter()
+                            .find(|user| user.owner_pubkey.to_string() == primary_owner_hex)
+                    })
+                    .and_then(|user| {
+                        user.roster.as_ref().map(|roster| {
+                            roster.devices.iter().all(|roster_device| {
+                                user.devices.iter().any(|device| {
+                                    device.device_pubkey == roster_device.device_pubkey
+                                        && device.public_invite.is_some()
+                                })
+                            })
+                        })
+                    })
+                    .unwrap_or(false)
+            },
+        );
+        wait_for_persisted_state(
+            scenario.data_dir("linked"),
+            "linked sibling transport ready",
+            |persisted| {
+                persisted
+                    .session_manager
+                    .as_ref()
+                    .and_then(|snapshot| {
+                        snapshot
+                            .users
+                            .iter()
+                            .find(|user| user.owner_pubkey.to_string() == primary_owner_hex)
+                    })
+                    .and_then(|user| {
+                        user.roster.as_ref().map(|roster| {
+                            roster.devices.iter().all(|roster_device| {
+                                user.devices.iter().any(|device| {
+                                    device.device_pubkey == roster_device.device_pubkey
+                                        && device.public_invite.is_some()
+                                })
+                            })
+                        })
+                    })
+                    .unwrap_or(false)
+            },
+        );
+        thread::sleep(StdDuration::from_secs(1));
+        assert!(!scenario
+            .app("linked")
+            .state()
+            .chat_list
+            .iter()
+            .any(|thread| thread.chat_id == chat_id));
+
+        scenario.run_step(ScenarioStep::SendGroup {
+            sender: "primary".to_string(),
+            chat_id: chat_id.clone(),
+            text: "after-link-bootstrap".to_string(),
+        });
+
+        scenario.wait_for_group("linked", &chat_id, 3);
+        scenario.wait_for_message("linked", &chat_id, "after-link-bootstrap", true);
+        scenario.wait_for_message("admin", &chat_id, "after-link-bootstrap", false);
+        scenario.wait_for_message("member", &chat_id, "after-link-bootstrap", false);
     }
 
     #[test]
