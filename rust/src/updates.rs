@@ -27,6 +27,10 @@ pub(crate) enum InternalEvent {
     RetryPendingOutbound,
     FetchTrackedPeerCatchUp,
     FetchCatchUpEvents(Vec<Event>),
+    DebugLog {
+        category: String,
+        detail: String,
+    },
     PublishFinished {
         message_id: String,
         chat_id: String,

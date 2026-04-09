@@ -41,6 +41,8 @@ const PROTOCOL_SUBSCRIPTION_ID: &str = "ndr-protocol";
 const APP_DIRECT_MESSAGE_PAYLOAD_VERSION: u8 = 1;
 const APP_GROUP_MESSAGE_PAYLOAD_VERSION: u8 = 1;
 const GROUP_CHAT_PREFIX: &str = "group:";
+const DEBUG_SNAPSHOT_FILENAME: &str = "ndr_demo_runtime_debug.json";
+const MAX_DEBUG_LOG_ENTRIES: usize = 128;
 
 pub struct AppCore {
     update_tx: Sender<AppUpdate>,
@@ -61,6 +63,8 @@ pub struct AppCore {
     seen_event_ids: HashSet<String>,
     seen_event_order: VecDeque<String>,
     protocol_subscription_runtime: ProtocolSubscriptionRuntime,
+    debug_log: VecDeque<DebugLogEntry>,
+    debug_event_counters: DebugEventCounters,
 }
 
 struct LoggedInState {
@@ -222,6 +226,88 @@ struct ProtocolSubscriptionRuntime {
     refresh_token: u64,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct DebugEventCounters {
+    roster_events: u64,
+    invite_events: u64,
+    invite_response_events: u64,
+    message_events: u64,
+    other_events: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DebugLogEntry {
+    timestamp_secs: u64,
+    category: String,
+    detail: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RuntimeDebugSnapshot {
+    generated_at_secs: u64,
+    local_owner_pubkey_hex: Option<String>,
+    local_device_pubkey_hex: Option<String>,
+    authorization_state: Option<String>,
+    active_chat_id: Option<String>,
+    current_protocol_plan: Option<RuntimeProtocolPlanDebug>,
+    tracked_owner_hexes: Vec<String>,
+    known_users: Vec<RuntimeKnownUserDebug>,
+    pending_outbound: Vec<RuntimePendingOutboundDebug>,
+    pending_group_controls: Vec<RuntimePendingGroupControlDebug>,
+    recent_handshake_peers: Vec<RuntimeRecentHandshakeDebug>,
+    event_counts: DebugEventCounters,
+    recent_log: Vec<DebugLogEntry>,
+    toast: Option<String>,
+    current_chat_list: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RuntimeProtocolPlanDebug {
+    roster_authors: Vec<String>,
+    invite_authors: Vec<String>,
+    invite_response_recipient: Option<String>,
+    message_authors: Vec<String>,
+    refresh_in_flight: bool,
+    refresh_dirty: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RuntimeKnownUserDebug {
+    owner_pubkey_hex: String,
+    has_roster: bool,
+    roster_device_count: usize,
+    device_count: usize,
+    authorized_device_count: usize,
+    active_session_device_count: usize,
+    inactive_session_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RuntimePendingOutboundDebug {
+    message_id: String,
+    chat_id: String,
+    reason: String,
+    publish_mode: String,
+    in_flight: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RuntimePendingGroupControlDebug {
+    operation_id: String,
+    group_id: String,
+    target_owner_hexes: Vec<String>,
+    reason: String,
+    in_flight: bool,
+    kind: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RuntimeRecentHandshakeDebug {
+    owner_hex: String,
+    device_hex: String,
+    observed_at_secs: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedState {
     version: u32,
@@ -360,6 +446,8 @@ impl AppCore {
             seen_event_ids: HashSet::new(),
             seen_event_order: VecDeque::new(),
             protocol_subscription_runtime: ProtocolSubscriptionRuntime::default(),
+            debug_log: VecDeque::new(),
+            debug_event_counters: DebugEventCounters::default(),
         }
     }
 
@@ -424,12 +512,18 @@ impl AppCore {
             }
             InternalEvent::FetchTrackedPeerCatchUp => {
                 let now = unix_now();
+                self.push_debug_log("protocol.catch_up.schedule", "fetch tracked peers");
+                self.fetch_recent_protocol_state();
                 self.fetch_recent_messages_for_tracked_peers(now);
             }
             InternalEvent::FetchCatchUpEvents(events) => {
                 for event in events {
                     self.handle_relay_event(event);
                 }
+            }
+            InternalEvent::DebugLog { category, detail } => {
+                self.push_debug_log(&category, detail);
+                self.persist_debug_snapshot_best_effort();
             }
             InternalEvent::PublishFinished {
                 message_id,
@@ -493,7 +587,15 @@ impl AppCore {
                 self.protocol_subscription_runtime.refresh_in_flight = false;
                 self.protocol_subscription_runtime.applying_plan = None;
                 if applied {
+                    self.push_debug_log(
+                        "protocol.subscription.applied",
+                        summarize_protocol_plan(plan.as_ref()),
+                    );
                     self.protocol_subscription_runtime.current_plan = plan;
+                    self.fetch_recent_protocol_state();
+                    self.persist_best_effort();
+                } else {
+                    self.push_debug_log("protocol.subscription.failed", "apply returned false");
                 }
                 if self.protocol_subscription_runtime.refresh_dirty {
                     self.protocol_subscription_runtime.refresh_dirty = false;
@@ -550,6 +652,14 @@ impl AppCore {
         owner_pubkey_hex: &str,
         device_nsec: &str,
     ) {
+        self.push_debug_log(
+            "session.restore_bundle",
+            format!(
+                "owner_pubkey_hex={} has_owner_nsec={}",
+                owner_pubkey_hex.trim(),
+                owner_nsec.as_ref().map(|value| !value.trim().is_empty()).unwrap_or(false),
+            ),
+        );
         self.state.busy.restoring_session = true;
         self.emit_state();
 
@@ -584,6 +694,10 @@ impl AppCore {
     }
 
     fn start_linked_device(&mut self, owner_input: &str) {
+        self.push_debug_log(
+            "session.start_linked",
+            format!("owner_input={}", owner_input.trim()),
+        );
         self.state.busy.linking_device = true;
         self.emit_state();
 
@@ -599,6 +713,7 @@ impl AppCore {
     }
 
     fn logout(&mut self) {
+        self.push_debug_log("session.logout", "clearing runtime state");
         if let Some(logged_in) = self.logged_in.take() {
             let client = logged_in.client.clone();
             self.runtime.spawn(async move {
@@ -644,6 +759,10 @@ impl AppCore {
             self.emit_state();
             return;
         };
+        self.push_debug_log(
+            "chat.create",
+            format!("peer_input={} chat_id={chat_id}", peer_input.trim()),
+        );
 
         let now = unix_now().get();
         self.prune_recent_handshake_peers(now);
@@ -742,9 +861,7 @@ impl AppCore {
                         now.get().saturating_add(PENDING_RETRY_DELAY_SECS),
                         create_kind,
                     );
-                    if matches!(reason, PendingSendReason::MissingRoster) {
-                        self.republish_local_identity_artifacts();
-                    }
+                    self.nudge_protocol_state_for_pending_reason(&reason);
                 } else {
                     match build_group_prepared_publish_batch(&result.prepared) {
                         Ok(Some(batch)) => {
@@ -926,6 +1043,97 @@ impl AppCore {
         }
     }
 
+    fn rebuild_group_control(
+        &mut self,
+        group_id: &str,
+        kind: &PendingGroupControlKind,
+        now: UnixSeconds,
+    ) -> anyhow::Result<(GroupSnapshot, Vec<String>, nostr_double_ratchet::GroupPreparedSend)> {
+        let logged_in = self.logged_in.as_mut().expect("logged in checked above");
+        let mut rng = OsRng;
+        let mut ctx = ProtocolContext::new(now, &mut rng);
+        let (session_manager, group_manager) =
+            (&mut logged_in.session_manager, &mut logged_in.group_manager);
+
+        match kind {
+            PendingGroupControlKind::Create {
+                member_owner_hexes,
+                ..
+            } => {
+                let members = owner_pubkeys_from_hexes(member_owner_hexes)?;
+                let prepared = group_manager.retry_create_group(
+                    session_manager,
+                    &mut ctx,
+                    group_id,
+                    members,
+                )?;
+                let snapshot = group_manager
+                    .group(group_id)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown group."))?;
+                Ok((snapshot, member_owner_hexes.clone(), prepared))
+            }
+            PendingGroupControlKind::Rename { .. } => {
+                let prepared = group_manager.retry_update_name(session_manager, &mut ctx, group_id)?;
+                let snapshot = group_manager
+                    .group(group_id)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown group."))?;
+                let target_owner_hexes = sorted_owner_hexes(
+                    &snapshot
+                        .members
+                        .iter()
+                        .copied()
+                        .filter(|member| *member != logged_in.owner_pubkey)
+                        .collect::<Vec<_>>(),
+                );
+                Ok((snapshot, target_owner_hexes, prepared))
+            }
+            PendingGroupControlKind::AddMembers { member_owner_hexes } => {
+                let members = owner_pubkeys_from_hexes(member_owner_hexes)?;
+                let prepared = group_manager.retry_add_members(
+                    session_manager,
+                    &mut ctx,
+                    group_id,
+                    members,
+                )?;
+                let snapshot = group_manager
+                    .group(group_id)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown group."))?;
+                let target_owner_hexes = sorted_owner_hexes(
+                    &snapshot
+                        .members
+                        .iter()
+                        .copied()
+                        .filter(|member| *member != logged_in.owner_pubkey)
+                        .collect::<Vec<_>>(),
+                );
+                Ok((snapshot, target_owner_hexes, prepared))
+            }
+            PendingGroupControlKind::RemoveMember { owner_pubkey_hex } => {
+                let owner = parse_owner_input(owner_pubkey_hex)?;
+                let prepared = group_manager.retry_remove_members(
+                    session_manager,
+                    &mut ctx,
+                    group_id,
+                    vec![owner],
+                )?;
+                let snapshot = group_manager
+                    .group(group_id)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown group."))?;
+                let mut targets = snapshot
+                    .members
+                    .iter()
+                    .copied()
+                    .filter(|member| *member != logged_in.owner_pubkey)
+                    .map(|member| member.to_string())
+                    .collect::<HashSet<_>>();
+                if owner != logged_in.owner_pubkey {
+                    targets.insert(owner.to_string());
+                }
+                Ok((snapshot, sorted_hexes(targets), prepared))
+            }
+        }
+    }
+
     fn apply_group_snapshot_to_threads(&mut self, group: &GroupSnapshot, updated_at_secs: u64) {
         let chat_id = group_chat_id(&group.group_id);
         let thread = self.ensure_thread_record(&chat_id, updated_at_secs);
@@ -1096,6 +1304,10 @@ impl AppCore {
             self.emit_state();
             return;
         };
+        self.push_debug_log(
+            "chat.send",
+            format!("chat_id={} is_group={}", normalized_chat_id, is_group_chat_id(&normalized_chat_id)),
+        );
 
         let now = unix_now();
         self.prune_recent_handshake_peers(now.get());
@@ -1172,7 +1384,11 @@ impl AppCore {
         match prepared {
             Ok(prepared) => {
                 if let Some(reason) = pending_reason_from_group_prepared(&prepared) {
-                    let republish_identity = matches!(reason, PendingSendReason::MissingRoster);
+                    self.push_debug_log(
+                        "group.send.pending",
+                        format!("chat_id={} reason={reason:?} gaps={}", chat_id, summarize_relay_gaps(&prepared.relay_gaps)),
+                    );
+                    let pending_reason = reason.clone();
                     let message = self.push_outgoing_message(
                         chat_id,
                         text.to_string(),
@@ -1185,12 +1401,10 @@ impl AppCore {
                         text.to_string(),
                         None,
                         OutboundPublishMode::WaitForPeer,
-                        reason,
+                        pending_reason.clone(),
                         now.get().saturating_add(PENDING_RETRY_DELAY_SECS),
                     );
-                    if republish_identity {
-                        self.republish_local_identity_artifacts();
-                    }
+                    self.nudge_protocol_state_for_pending_reason(&pending_reason);
                     self.request_protocol_subscription_refresh();
                     self.schedule_pending_outbound_retry(Duration::from_secs(
                         PENDING_RETRY_DELAY_SECS,
@@ -1251,7 +1465,11 @@ impl AppCore {
         match prepared {
             Ok(prepared) => {
                 if let Some(reason) = pending_reason_from_prepared(&prepared) {
-                    let republish_identity = matches!(reason, PendingSendReason::MissingRoster);
+                    self.push_debug_log(
+                        "direct.send.pending",
+                        format!("chat_id={} reason={reason:?} gaps={}", chat_id, summarize_relay_gaps(&prepared.relay_gaps)),
+                    );
+                    let pending_reason = reason.clone();
                     let message = self.push_outgoing_message(
                         chat_id,
                         text.to_string(),
@@ -1264,12 +1482,10 @@ impl AppCore {
                         text.to_string(),
                         None,
                         OutboundPublishMode::WaitForPeer,
-                        reason,
+                        pending_reason.clone(),
                         now.get().saturating_add(PENDING_RETRY_DELAY_SECS),
                     );
-                    if republish_identity {
-                        self.republish_local_identity_artifacts();
-                    }
+                    self.nudge_protocol_state_for_pending_reason(&pending_reason);
                     self.request_protocol_subscription_refresh();
                     self.schedule_pending_outbound_retry(Duration::from_secs(
                         PENDING_RETRY_DELAY_SECS,
@@ -1404,9 +1620,7 @@ impl AppCore {
                         now.get().saturating_add(PENDING_RETRY_DELAY_SECS),
                         kind,
                     );
-                    if matches!(reason, PendingSendReason::MissingRoster) {
-                        self.republish_local_identity_artifacts();
-                    }
+                    self.nudge_protocol_state_for_pending_reason(&reason);
                 } else {
                     match build_group_prepared_publish_batch(&prepared) {
                         Ok(Some(batch)) => {
@@ -1682,17 +1896,23 @@ impl AppCore {
         }
 
         let kind = event.kind.as_u16() as u32;
+        self.push_debug_log(
+            "relay.event",
+            format!("kind_raw={} id={event_id}", kind),
+        );
         let now = unix_now();
         self.prune_recent_handshake_peers(now.get());
         match kind {
             codec::ROSTER_EVENT_KIND => {
                 if let Ok(decoded) = codec::parse_roster_event(&event) {
+                    self.debug_event_counters.roster_events += 1;
                     let is_local_owner = self
                         .logged_in
                         .as_ref()
                         .map(|logged_in| decoded.owner_pubkey == logged_in.owner_pubkey)
                         .unwrap_or(false);
 
+                    let mut roster_log: Option<(&'static str, String)> = None;
                     {
                         let logged_in = self.logged_in.as_mut().expect("checked above");
                         if is_local_owner {
@@ -1710,10 +1930,18 @@ impl AppCore {
                                     LocalAuthorizationState::AwaitingApproval,
                                     LocalAuthorizationState::Authorized,
                                 ) => {
+                                    roster_log = Some((
+                                        "relay.roster.local",
+                                        "local device transitioned to Authorized".to_string(),
+                                    ));
                                     self.state.toast =
                                         Some("This device has been approved.".to_string());
                                 }
                                 (_, LocalAuthorizationState::Revoked) => {
+                                    roster_log = Some((
+                                        "relay.roster.local",
+                                        "local device transitioned to Revoked".to_string(),
+                                    ));
                                     self.state.toast =
                                         Some("This device was removed from the roster.".to_string());
                                     self.active_chat_id = None;
@@ -1725,10 +1953,17 @@ impl AppCore {
                                 _ => {}
                             }
                         } else {
+                            roster_log = Some((
+                                "relay.roster.peer",
+                                format!("observed roster for {}", decoded.owner_pubkey),
+                            ));
                             logged_in
                                 .session_manager
                                 .observe_peer_roster(decoded.owner_pubkey, decoded.roster);
                         }
+                    }
+                    if let Some((category, detail)) = roster_log {
+                        self.push_debug_log(category, detail);
                     }
 
                     let migrated_owner_hexes = self.reconcile_recent_handshake_peers();
@@ -1764,6 +1999,7 @@ impl AppCore {
                 }
 
                 if let Ok(invite) = codec::parse_invite_event(&event) {
+                    self.debug_event_counters.invite_events += 1;
                     let invite_owner =
                         invite
                             .inviter_owner_pubkey
@@ -1800,6 +2036,10 @@ impl AppCore {
                         {
                             self.state.toast = Some(error.to_string());
                         } else {
+                            self.push_debug_log(
+                                "relay.invite",
+                                format!("observed invite for owner {}", invite_owner),
+                            );
                             self.remember_event(event_id.clone());
                             self.retry_pending_inbound(now);
                             self.retry_pending_outbound(now);
@@ -1832,6 +2072,7 @@ impl AppCore {
                     self.remember_event(event_id);
                     return;
                 };
+                self.debug_event_counters.invite_response_events += 1;
                 if envelope.recipient != local_invite_recipient {
                     self.remember_event(event_id);
                     return;
@@ -1847,6 +2088,13 @@ impl AppCore {
                     .observe_invite_response(&mut ctx, &envelope);
                 match invite_response {
                     Ok(Some(processed)) => {
+                        self.push_debug_log(
+                            "relay.invite_response",
+                            format!(
+                                "processed owner={} device={}",
+                                processed.owner_pubkey, processed.device_pubkey
+                            ),
+                        );
                         let owner_hex = processed.owner_pubkey.to_string();
                         self.remember_recent_handshake_peer(
                             owner_hex.clone(),
@@ -1892,11 +2140,16 @@ impl AppCore {
                     self.remember_event(event_id);
                     return;
                 };
+                self.debug_event_counters.message_events += 1;
 
                 let sender_owner = self.logged_in.as_ref().and_then(|logged_in| {
                     resolve_message_sender_owner(&logged_in.session_manager, &envelope, now)
                 });
                 let Some(sender_owner) = sender_owner else {
+                    self.push_debug_log(
+                        "relay.message.pending",
+                        "sender owner unresolved; queued as pending inbound",
+                    );
                     self.remember_event(event_id.clone());
                     self.pending_inbound.push(PendingInbound { envelope });
                     self.persist_best_effort();
@@ -1913,6 +2166,10 @@ impl AppCore {
                     .receive(&mut ctx, sender_owner, &envelope)
                 {
                     Ok(Some(message)) => {
+                        self.push_debug_log(
+                            "relay.message.received",
+                            format!("owner={} bytes={}", message.owner_pubkey, message.payload.len()),
+                        );
                         self.remember_event(event_id);
                         let owner_hex = message.owner_pubkey.to_string();
                         self.clear_recent_handshake_peer(&owner_hex);
@@ -1927,6 +2184,10 @@ impl AppCore {
                         self.emit_state();
                     }
                     Ok(None) => {
+                        self.push_debug_log(
+                            "relay.message.pending",
+                            "session_manager returned None; queued as pending inbound",
+                        );
                         self.remember_event(event_id.clone());
                         self.pending_inbound.push(PendingInbound { envelope });
                         self.persist_best_effort();
@@ -1938,7 +2199,9 @@ impl AppCore {
                     }
                 }
             }
-            _ => {}
+            _ => {
+                self.debug_event_counters.other_events += 1;
+            }
         }
     }
 
@@ -1949,6 +2212,15 @@ impl AppCore {
         allow_restore: bool,
         allow_protocol_restore: bool,
     ) -> anyhow::Result<()> {
+        self.push_debug_log(
+            "session.start_primary",
+            format!(
+                "owner_pubkey={} allow_restore={} allow_protocol_restore={}",
+                owner_keys.public_key().to_hex(),
+                allow_restore,
+                allow_protocol_restore,
+            ),
+        );
         let owner_pubkey = OwnerPubkey::from_bytes(owner_keys.public_key().to_bytes());
         self.start_session(
             owner_pubkey,
@@ -1967,6 +2239,16 @@ impl AppCore {
         allow_restore: bool,
         allow_protocol_restore: bool,
     ) -> anyhow::Result<()> {
+        self.push_debug_log(
+            "session.start",
+            format!(
+                "owner={} has_owner_keys={} allow_restore={} allow_protocol_restore={}",
+                owner_pubkey,
+                owner_keys.is_some(),
+                allow_restore,
+                allow_protocol_restore,
+            ),
+        );
         if let Some(existing) = self.logged_in.take() {
             let client = existing.client;
             self.runtime.spawn(async move {
@@ -1985,6 +2267,8 @@ impl AppCore {
         self.seen_event_ids.clear();
         self.seen_event_order.clear();
         self.protocol_subscription_runtime = ProtocolSubscriptionRuntime::default();
+        self.debug_log.clear();
+        self.debug_event_counters = DebugEventCounters::default();
         self.next_message_id = 1;
 
         let device_secret_bytes = device_keys.secret_key().to_secret_bytes();
@@ -1996,6 +2280,10 @@ impl AppCore {
         } else {
             None
         };
+        self.push_debug_log(
+            "session.restore_state",
+            format!("persisted_present={}", persisted.is_some()),
+        );
         let persisted_authorization_state = persisted
             .as_ref()
             .and_then(|persisted| persisted.authorization_state.clone())
@@ -2011,8 +2299,18 @@ impl AppCore {
                         pending.publish_mode.clone(),
                         pending.prepared_publish.as_ref(),
                     );
+                    if pending.in_flight {
+                        pending.in_flight = false;
+                        pending.next_retry_at_secs = now.get();
+                    }
                 }
                 self.pending_group_controls = persisted.pending_group_controls.clone();
+                for pending in &mut self.pending_group_controls {
+                    if pending.in_flight {
+                        pending.in_flight = false;
+                        pending.next_retry_at_secs = now.get();
+                    }
+                }
                 self.pending_inbound = persisted.pending_inbound.clone();
                 self.seen_event_order = persisted
                     .seen_event_ids
@@ -2109,6 +2407,10 @@ impl AppCore {
                 &session_manager,
                 persisted_authorization_state,
             );
+        self.push_debug_log(
+            "session.authorization",
+            format!("state={authorization_state:?} owner={owner_pubkey} device={local_device}"),
+        );
 
         if authorization_state != LocalAuthorizationState::Revoked {
             let mut rng = OsRng;
@@ -2149,11 +2451,13 @@ impl AppCore {
         self.reconcile_recent_handshake_peers();
         self.retry_pending_inbound(now);
         self.retry_pending_outbound(now);
+        self.retry_pending_group_controls(now);
+        self.schedule_next_pending_retry(now.get());
         self.state.busy.syncing_network = true;
         self.rebuild_state();
         self.persist_best_effort();
         self.request_protocol_subscription_refresh();
-        if authorization_state == LocalAuthorizationState::Authorized {
+        if authorization_state != LocalAuthorizationState::Revoked {
             self.schedule_tracked_peer_catch_up(Duration::from_secs(
                 RESUBSCRIBE_CATCH_UP_DELAY_SECS,
             ));
@@ -2272,12 +2576,18 @@ impl AppCore {
                 match prepared {
                     Ok(prepared) => {
                         if let Some(reason) = pending_reason_from_group_prepared(&prepared) {
+                            self.push_debug_log(
+                                "retry.group.pending",
+                                format!(
+                                    "chat_id={} reason={reason:?} gaps={}",
+                                    pending_message.chat_id,
+                                    summarize_relay_gaps(&prepared.relay_gaps)
+                                ),
+                            );
                             pending_message.reason = reason.clone();
                             pending_message.next_retry_at_secs =
                                 now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
-                            if matches!(reason, PendingSendReason::MissingRoster) {
-                                self.republish_local_identity_artifacts();
-                            }
+                            self.nudge_protocol_state_for_pending_reason(&reason);
                             pending_message.publish_mode = OutboundPublishMode::WaitForPeer;
                             still_pending.push(pending_message);
                         } else {
@@ -2307,6 +2617,16 @@ impl AppCore {
                                     pending_message.reason = PendingSendReason::MissingDeviceInvite;
                                     pending_message.next_retry_at_secs =
                                         now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
+                                    self.push_debug_log(
+                                        "retry.group.pending",
+                                        format!(
+                                            "chat_id={} reason={:?}",
+                                            pending_message.chat_id, pending_message.reason
+                                        ),
+                                    );
+                                    self.nudge_protocol_state_for_pending_reason(
+                                        &pending_message.reason,
+                                    );
                                     still_pending.push(pending_message);
                                 }
                                 Err(error) => {
@@ -2372,12 +2692,18 @@ impl AppCore {
             match prepared {
                 Ok(prepared) => {
                     if let Some(reason) = pending_reason_from_prepared(&prepared) {
+                        self.push_debug_log(
+                            "retry.direct.pending",
+                            format!(
+                                "chat_id={} reason={reason:?} gaps={}",
+                                pending_message.chat_id,
+                                summarize_relay_gaps(&prepared.relay_gaps)
+                            ),
+                        );
                         pending_message.reason = reason.clone();
                         pending_message.next_retry_at_secs =
                             now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
-                        if matches!(reason, PendingSendReason::MissingRoster) {
-                            self.republish_local_identity_artifacts();
-                        }
+                        self.nudge_protocol_state_for_pending_reason(&reason);
                         pending_message.publish_mode = OutboundPublishMode::WaitForPeer;
                         still_pending.push(pending_message);
                     } else {
@@ -2407,8 +2733,18 @@ impl AppCore {
                                 pending_message.reason = PendingSendReason::MissingDeviceInvite;
                                 pending_message.next_retry_at_secs =
                                     now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
-                                still_pending.push(pending_message);
-                            }
+                                self.push_debug_log(
+                                    "retry.direct.pending",
+                                    format!(
+                                        "chat_id={} reason={:?}",
+                                        pending_message.chat_id, pending_message.reason
+                                    ),
+                                );
+                                self.nudge_protocol_state_for_pending_reason(
+                                    &pending_message.reason,
+                                );
+                                    still_pending.push(pending_message);
+                                }
                             Err(error) => {
                                 self.state.toast = Some(error.to_string());
                                 self.update_message_delivery(
@@ -2461,17 +2797,23 @@ impl AppCore {
                 continue;
             }
 
-            match self.prepare_group_control(&control.group_id, &control.kind, now) {
+            match self.rebuild_group_control(&control.group_id, &control.kind, now) {
                 Ok((snapshot, target_owner_hexes, prepared)) => {
                     self.apply_group_snapshot_to_threads(&snapshot, now.get());
                     control.target_owner_hexes = target_owner_hexes;
                     if let Some(reason) = pending_reason_from_group_prepared(&prepared) {
+                        self.push_debug_log(
+                            "retry.group_control.pending",
+                            format!(
+                                "group_id={} reason={reason:?} gaps={}",
+                                control.group_id,
+                                summarize_relay_gaps(&prepared.relay_gaps)
+                            ),
+                        );
                         control.reason = reason.clone();
                         control.next_retry_at_secs =
                             now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
-                        if matches!(reason, PendingSendReason::MissingRoster) {
-                            self.republish_local_identity_artifacts();
-                        }
+                        self.nudge_protocol_state_for_pending_reason(&reason);
                         still_pending.push(control);
                     } else {
                         match build_group_prepared_publish_batch(&prepared) {
@@ -2495,6 +2837,9 @@ impl AppCore {
                             Ok(None) => {
                                 control.next_retry_at_secs =
                                     now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
+                                self.nudge_protocol_state_for_pending_reason(
+                                    &PendingSendReason::MissingDeviceInvite,
+                                );
                                 still_pending.push(control);
                             }
                             Err(error) => self.state.toast = Some(error.to_string()),
@@ -2900,6 +3245,78 @@ impl AppCore {
                 }
             }
         });
+    }
+
+    fn fetch_recent_protocol_state(&mut self) {
+        let Some(client) = self
+            .logged_in
+            .as_ref()
+            .map(|logged_in| logged_in.client.clone())
+        else {
+            return;
+        };
+
+        let Some(plan) = self.compute_protocol_subscription_plan() else {
+            return;
+        };
+        self.push_debug_log(
+            "protocol.catch_up.fetch",
+            summarize_protocol_plan(Some(&plan)),
+        );
+
+        let filters = build_protocol_state_catch_up_filters(&plan);
+        if filters.is_empty() {
+            return;
+        }
+
+        let tx = self.core_sender.clone();
+        let plan_summary = summarize_protocol_plan(Some(&plan));
+        self.runtime.spawn(async move {
+            client.connect_with_timeout(Duration::from_secs(5)).await;
+            match client.fetch_events(filters, Some(Duration::from_secs(5))).await {
+                Ok(events) => {
+                    let collected = events.into_iter().collect::<Vec<_>>();
+                    let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::DebugLog {
+                        category: "protocol.catch_up.result".to_string(),
+                        detail: format!(
+                            "{} events={}",
+                            plan_summary,
+                            collected.len(),
+                        ),
+                    })));
+                    if !collected.is_empty() {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::FetchCatchUpEvents(collected),
+                        )));
+                    }
+                }
+                Err(error) => {
+                    let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::DebugLog {
+                        category: "protocol.catch_up.error".to_string(),
+                        detail: format!("{plan_summary} error={error}"),
+                    })));
+                }
+            }
+        });
+    }
+
+    fn nudge_protocol_state_for_pending_reason(&mut self, reason: &PendingSendReason) {
+        self.push_debug_log(
+            "protocol.nudge",
+            format!("reason={reason:?}"),
+        );
+        match reason {
+            PendingSendReason::MissingRoster => {
+                self.republish_local_identity_artifacts();
+                self.request_protocol_subscription_refresh();
+                self.fetch_recent_protocol_state();
+            }
+            PendingSendReason::MissingDeviceInvite => {
+                self.request_protocol_subscription_refresh();
+                self.fetch_recent_protocol_state();
+            }
+            PendingSendReason::PublishingFirstContact | PendingSendReason::PublishRetry => {}
+        }
     }
 
     fn fetch_recent_messages_for_tracked_peers(&self, now: UnixSeconds) {
@@ -3403,6 +3820,10 @@ impl AppCore {
         self.data_dir.join("ndr_demo_core_state.json")
     }
 
+    fn debug_snapshot_path(&self) -> PathBuf {
+        self.data_dir.join(DEBUG_SNAPSHOT_FILENAME)
+    }
+
     fn load_persisted(&self) -> anyhow::Result<Option<PersistedState>> {
         let path = self.persistence_path();
         if !path.exists() {
@@ -3456,12 +3877,146 @@ impl AppCore {
             let _ = fs::create_dir_all(&self.data_dir);
             let _ = fs::write(self.persistence_path(), bytes);
         }
+        self.persist_debug_snapshot_best_effort();
     }
 
     fn clear_persistence_best_effort(&self) {
         let path = self.persistence_path();
         if path.exists() {
             let _ = fs::remove_file(path);
+        }
+        let debug_path = self.debug_snapshot_path();
+        if debug_path.exists() {
+            let _ = fs::remove_file(debug_path);
+        }
+    }
+
+    fn persist_debug_snapshot_best_effort(&self) {
+        if self.logged_in.is_none() {
+            return;
+        }
+        if let Ok(bytes) = serde_json::to_vec_pretty(&self.build_runtime_debug_snapshot()) {
+            let _ = fs::create_dir_all(&self.data_dir);
+            let _ = fs::write(self.debug_snapshot_path(), bytes);
+        }
+    }
+
+    fn build_runtime_debug_snapshot(&self) -> RuntimeDebugSnapshot {
+        let current_protocol_plan = self
+            .protocol_subscription_runtime
+            .applying_plan
+            .clone()
+            .or_else(|| self.protocol_subscription_runtime.current_plan.clone())
+            .or_else(|| self.compute_protocol_subscription_plan())
+            .map(|plan| RuntimeProtocolPlanDebug {
+                roster_authors: plan.roster_authors,
+                invite_authors: plan.invite_authors,
+                invite_response_recipient: plan.invite_response_recipient,
+                message_authors: plan.message_authors,
+                refresh_in_flight: self.protocol_subscription_runtime.refresh_in_flight,
+                refresh_dirty: self.protocol_subscription_runtime.refresh_dirty,
+            });
+
+        let tracked_owner_hexes = sorted_hexes(self.tracked_peer_owner_hexes());
+        let current_chat_list = self.threads.keys().cloned().collect::<Vec<_>>();
+        let (local_owner_pubkey_hex, local_device_pubkey_hex, authorization_state, known_users) =
+            if let Some(logged_in) = self.logged_in.as_ref() {
+                let snapshot = logged_in.session_manager.snapshot();
+                let users = snapshot
+                    .users
+                    .into_iter()
+                    .map(|user| RuntimeKnownUserDebug {
+                        owner_pubkey_hex: user.owner_pubkey.to_string(),
+                        has_roster: user.roster.is_some(),
+                        roster_device_count: user
+                            .roster
+                            .as_ref()
+                            .map(|roster| roster.devices().len())
+                            .unwrap_or_default(),
+                        device_count: user.devices.len(),
+                        authorized_device_count: user
+                            .devices
+                            .iter()
+                            .filter(|device| device.authorized)
+                            .count(),
+                        active_session_device_count: user
+                            .devices
+                            .iter()
+                            .filter(|device| device.active_session.is_some())
+                            .count(),
+                        inactive_session_count: user
+                            .devices
+                            .iter()
+                            .map(|device| device.inactive_sessions.len())
+                            .sum(),
+                    })
+                    .collect::<Vec<_>>();
+                (
+                    Some(logged_in.owner_pubkey.to_string()),
+                    Some(local_device_from_keys(&logged_in.device_keys).to_string()),
+                    Some(format!("{:?}", logged_in.authorization_state)),
+                    users,
+                )
+            } else {
+                (None, None, None, Vec::new())
+            };
+
+        RuntimeDebugSnapshot {
+            generated_at_secs: unix_now().get(),
+            local_owner_pubkey_hex,
+            local_device_pubkey_hex,
+            authorization_state,
+            active_chat_id: self.active_chat_id.clone(),
+            current_protocol_plan,
+            tracked_owner_hexes,
+            known_users,
+            pending_outbound: self
+                .pending_outbound
+                .iter()
+                .map(|pending| RuntimePendingOutboundDebug {
+                    message_id: pending.message_id.clone(),
+                    chat_id: pending.chat_id.clone(),
+                    reason: format!("{:?}", pending.reason),
+                    publish_mode: format!("{:?}", pending.publish_mode),
+                    in_flight: pending.in_flight,
+                })
+                .collect(),
+            pending_group_controls: self
+                .pending_group_controls
+                .iter()
+                .map(|pending| RuntimePendingGroupControlDebug {
+                    operation_id: pending.operation_id.clone(),
+                    group_id: pending.group_id.clone(),
+                    target_owner_hexes: pending.target_owner_hexes.clone(),
+                    reason: format!("{:?}", pending.reason),
+                    in_flight: pending.in_flight,
+                    kind: format!("{:?}", pending.kind),
+                })
+                .collect(),
+            recent_handshake_peers: self
+                .recent_handshake_peers
+                .values()
+                .map(|peer| RuntimeRecentHandshakeDebug {
+                    owner_hex: peer.owner_hex.clone(),
+                    device_hex: peer.device_hex.clone(),
+                    observed_at_secs: peer.observed_at_secs,
+                })
+                .collect(),
+            event_counts: self.debug_event_counters.clone(),
+            recent_log: self.debug_log.iter().cloned().collect(),
+            toast: self.state.toast.clone(),
+            current_chat_list,
+        }
+    }
+
+    fn push_debug_log(&mut self, category: &str, detail: impl Into<String>) {
+        self.debug_log.push_back(DebugLogEntry {
+            timestamp_secs: unix_now().get(),
+            category: category.to_string(),
+            detail: detail.into(),
+        });
+        while self.debug_log.len() > MAX_DEBUG_LOG_ENTRIES {
+            self.debug_log.pop_front();
         }
     }
 
@@ -3610,22 +4165,27 @@ impl AppCore {
     }
 
     fn request_protocol_subscription_refresh(&mut self) {
-        let Some(logged_in) = self.logged_in.as_ref() else {
+        let Some(client) = self.logged_in.as_ref().map(|logged_in| logged_in.client.clone()) else {
             self.protocol_subscription_runtime = ProtocolSubscriptionRuntime::default();
             return;
         };
 
         if self.protocol_subscription_runtime.refresh_in_flight {
+            self.push_debug_log("protocol.subscription.defer", "refresh already in flight");
             self.protocol_subscription_runtime.refresh_dirty = true;
             return;
         }
 
         let plan = self.compute_protocol_subscription_plan();
+        self.push_debug_log(
+            "protocol.subscription.compute",
+            summarize_protocol_plan(plan.as_ref()),
+        );
         if self.protocol_subscription_runtime.current_plan == plan {
+            self.push_debug_log("protocol.subscription.noop", "plan unchanged");
             return;
         }
 
-        let client = logged_in.client.clone();
         let subscription_id = SubscriptionId::new(PROTOCOL_SUBSCRIPTION_ID);
         self.protocol_subscription_runtime.refresh_in_flight = true;
         self.protocol_subscription_runtime.refresh_dirty = false;
@@ -3897,6 +4457,83 @@ fn build_protocol_filters(plan: &ProtocolSubscriptionPlan) -> Vec<Filter> {
     }
 
     filters
+}
+
+fn build_protocol_state_catch_up_filters(plan: &ProtocolSubscriptionPlan) -> Vec<Filter> {
+    let mut filters = Vec::new();
+
+    let roster_authors = plan
+        .roster_authors
+        .iter()
+        .filter_map(|hex| PublicKey::parse(hex).ok())
+        .collect::<Vec<_>>();
+    if !roster_authors.is_empty() {
+        filters.push(
+            Filter::new()
+                .kind(Kind::from(codec::ROSTER_EVENT_KIND as u16))
+                .authors(roster_authors),
+        );
+    }
+
+    let invite_authors = plan
+        .invite_authors
+        .iter()
+        .filter_map(|hex| PublicKey::parse(hex).ok())
+        .collect::<Vec<_>>();
+    if !invite_authors.is_empty() {
+        filters.push(
+            Filter::new()
+                .kind(Kind::from(codec::INVITE_EVENT_KIND as u16))
+                .authors(invite_authors),
+        );
+    }
+
+    if let Some(recipient_hex) = plan.invite_response_recipient.as_ref() {
+        if let Ok(recipient) = PublicKey::parse(recipient_hex) {
+            filters.push(
+                Filter::new()
+                    .kind(Kind::from(codec::INVITE_RESPONSE_KIND as u16))
+                    .pubkey(recipient),
+            );
+        }
+    }
+
+    filters
+}
+
+fn summarize_protocol_plan(plan: Option<&ProtocolSubscriptionPlan>) -> String {
+    let Some(plan) = plan else {
+        return "none".to_string();
+    };
+    format!(
+        "rosters={} invites={} invite_response={} messages={}",
+        plan.roster_authors.join(","),
+        plan.invite_authors.join(","),
+        plan.invite_response_recipient
+            .clone()
+            .unwrap_or_else(|| "-".to_string()),
+        plan.message_authors.join(","),
+    )
+}
+
+fn summarize_relay_gaps(gaps: &[RelayGap]) -> String {
+    if gaps.is_empty() {
+        return "none".to_string();
+    }
+
+    gaps
+        .iter()
+        .map(|gap| match gap {
+            RelayGap::MissingRoster { owner_pubkey } => {
+                format!("MissingRoster({owner_pubkey})")
+            }
+            RelayGap::MissingDeviceInvite {
+                owner_pubkey,
+                device_pubkey,
+            } => format!("MissingDeviceInvite({owner_pubkey},{device_pubkey})"),
+        })
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 fn resolve_message_sender_owner(
@@ -5644,6 +6281,74 @@ mod tests {
         assert_eq!(group_thread.messages.len(), 1);
         assert_eq!(group_thread.messages[0].body, "hello group");
         assert!(!bob_core.threads.contains_key(&alice_owner.to_string()));
+    }
+
+    #[test]
+    fn restored_pending_group_create_rebuilds_publish_without_new_group_id() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::custom("ws://127.0.0.1:59999");
+        let data_dir = TempDir::new().expect("temp dir");
+
+        let mut core = test_core(data_dir.path());
+        start_primary_test_session(&mut core, 86, false, false).expect("start session");
+
+        let bob_owner_keys = keys_for_fill(87);
+        let bob_device_keys = device_keys_for_fill(87);
+        let bob_owner = local_owner_from_keys(&bob_owner_keys);
+        let bob_device = local_device_from_keys(&bob_device_keys);
+        let mut bob_manager =
+            SessionManager::new(bob_owner, bob_device_keys.secret_key().to_secret_bytes());
+
+        core.create_group("Restore group", &[bob_owner.to_string()]);
+
+        assert_eq!(core.pending_group_controls.len(), 1);
+        assert!(core.pending_group_controls[0].prepared_publish.is_none());
+        core.pending_group_controls[0].next_retry_at_secs = 0;
+        core.pending_group_controls[0].in_flight = true;
+        let original_group_id = core.pending_group_controls[0].group_id.clone();
+
+        {
+            let logged_in = core.logged_in.as_mut().expect("logged in");
+            let now = UnixSeconds(1_900_001_400);
+            let bob_roster = DeviceRoster::new(now, vec![AuthorizedDevice::new(bob_device, now)]);
+            logged_in
+                .session_manager
+                .observe_peer_roster(bob_owner, bob_roster);
+            let mut rng = OsRng;
+            let mut ctx = ProtocolContext::new(UnixSeconds(1_900_001_401), &mut rng);
+            let bob_invite = bob_manager
+                .ensure_local_invite(&mut ctx)
+                .expect("ensure bob invite")
+                .clone();
+            logged_in
+                .session_manager
+                .observe_device_invite(bob_owner, bob_invite)
+                .expect("observe bob invite");
+        }
+        core.persist_best_effort();
+        drop(core);
+
+        let mut restored = test_core(data_dir.path());
+        start_primary_test_session(&mut restored, 86, true, true).expect("restore session");
+
+        let groups = restored
+            .logged_in
+            .as_ref()
+            .expect("logged in")
+            .group_manager
+            .groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].group_id, original_group_id);
+
+        let pending = restored
+            .pending_group_controls
+            .iter()
+            .find(|pending| pending.group_id == original_group_id)
+            .expect("pending group control restored");
+        assert!(pending.prepared_publish.is_some());
+        assert_eq!(pending.group_id, original_group_id);
     }
 
     #[test]

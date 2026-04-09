@@ -6,17 +6,19 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.rules.ActivityScenarioRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.fail
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.io.File
 import social.innode.ndr.demo.core.AppManager
 import social.innode.ndr.demo.account.AccountBootstrapState
 import social.innode.ndr.demo.rust.CurrentChatSnapshot
 import social.innode.ndr.demo.rust.DeliveryState
 import social.innode.ndr.demo.rust.DeviceAuthorizationState
 import social.innode.ndr.demo.rust.normalizePeerInput
+import java.io.File
 
 @RunWith(AndroidJUnit4::class)
 class RealRelayHarnessTest {
@@ -243,6 +245,98 @@ class RealRelayHarnessTest {
     }
 
     @Test
+    fun report_runtime_debug_snapshot() {
+        ensureLoggedIn()
+        val state = appManager().state.value
+        val debug = readJsonObject(DEBUG_SNAPSHOT_FILENAME)
+        val plan = debug?.optJSONObject("current_protocol_plan")
+
+        reportStatus(
+            "data_dir" to withActivity { it.filesDir.absolutePath },
+            "rev" to state.rev.toString(),
+            "default_screen" to state.router.defaultScreen.toString(),
+            "screen_stack" to state.router.screenStack.joinToString("|") { screen -> screen.toString() },
+            "current_chat" to summarizeCurrentChat(state.currentChat),
+            "chat_list" to summarizeChatList(state.chatList),
+            "toast" to state.toast.orEmpty(),
+            "runtime_file_present" to (debug != null).toString(),
+            "generated_at_secs" to debug.optStringOrEmpty("generated_at_secs"),
+            "local_owner_pubkey_hex" to debug.optStringOrEmpty("local_owner_pubkey_hex"),
+            "local_device_pubkey_hex" to debug.optStringOrEmpty("local_device_pubkey_hex"),
+            "authorization_state" to debug.optStringOrEmpty("authorization_state"),
+            "tracked_owner_hexes" to debug.optStringArray("tracked_owner_hexes"),
+            "plan_roster_authors" to plan.optStringArray("roster_authors"),
+            "plan_invite_authors" to plan.optStringArray("invite_authors"),
+            "plan_message_authors" to plan.optStringArray("message_authors"),
+            "plan_invite_response_recipient" to plan.optStringOrEmpty("invite_response_recipient"),
+            "known_users" to summarizeRuntimeKnownUsers(debug?.optJSONArray("known_users")),
+            "pending_outbound" to summarizeRuntimePendingOutbound(debug?.optJSONArray("pending_outbound")),
+            "pending_group_controls" to summarizeRuntimePendingGroupControls(debug?.optJSONArray("pending_group_controls")),
+            "recent_handshake_peers" to summarizeRecentHandshakePeers(debug?.optJSONArray("recent_handshake_peers")),
+            "event_counts" to summarizeEventCounts(debug?.optJSONObject("event_counts")),
+            "recent_log" to summarizeRecentLog(debug?.optJSONArray("recent_log")),
+        )
+    }
+
+    @Test
+    fun report_persisted_protocol_snapshot() {
+        ensureLoggedIn()
+        val persisted = readJsonObject(PERSISTED_STATE_FILENAME)
+        val sessionManager = persisted?.optJSONObject("session_manager")
+        val groupManager = persisted?.optJSONObject("group_manager")
+
+        reportStatus(
+            "data_dir" to withActivity { it.filesDir.absolutePath },
+            "persisted_file_present" to (persisted != null).toString(),
+            "version" to persisted.optStringOrEmpty("version"),
+            "active_chat_id" to persisted.optStringOrEmpty("active_chat_id"),
+            "authorization_state" to persisted.optStringOrEmpty("authorization_state"),
+            "users" to summarizePersistedUsers(sessionManager?.optJSONArray("users")),
+            "groups" to summarizePersistedGroups(groupManager?.optJSONArray("groups")),
+            "pending_outbound" to summarizePersistedPendingOutbound(persisted?.optJSONArray("pending_outbound")),
+            "pending_group_controls" to summarizePersistedPendingGroupControls(persisted?.optJSONArray("pending_group_controls")),
+            "seen_event_ids_count" to (persisted?.optJSONArray("seen_event_ids")?.length() ?: 0).toString(),
+            "threads" to summarizePersistedThreads(persisted?.optJSONArray("threads")),
+        )
+    }
+
+    @Test
+    fun wait_for_peer_roster_from_args() {
+        ensureLoggedIn()
+        val peerInput = requiredArg("peer_input")
+        val peerOwnerHex = normalizePeerInput(peerInput)
+
+        val persisted =
+            waitForState("peer roster for $peerOwnerHex", timeoutMs = 180_000) {
+                readJsonObject(PERSISTED_STATE_FILENAME)
+                    ?.takeIf { json -> persistedHasPeerRoster(json, peerOwnerHex) }
+            }
+
+        reportStatus(
+            "peer_owner_hex" to peerOwnerHex,
+            "users" to summarizePersistedUsers(persisted.optJSONObject("session_manager")?.optJSONArray("users")),
+        )
+    }
+
+    @Test
+    fun wait_for_known_peer_session_from_args() {
+        ensureLoggedIn()
+        val peerInput = requiredArg("peer_input")
+        val peerOwnerHex = normalizePeerInput(peerInput)
+
+        val persisted =
+            waitForState("known peer session for $peerOwnerHex", timeoutMs = 180_000) {
+                readJsonObject(PERSISTED_STATE_FILENAME)
+                    ?.takeIf { json -> persistedHasPeerSession(json, peerOwnerHex) }
+            }
+
+        reportStatus(
+            "peer_owner_hex" to peerOwnerHex,
+            "users" to summarizePersistedUsers(persisted.optJSONObject("session_manager")?.optJSONArray("users")),
+        )
+    }
+
+    @Test
     fun create_chat_from_args() {
         ensureLoggedIn()
         val peerInput = requiredArg("peer_input")
@@ -254,11 +348,75 @@ class RealRelayHarnessTest {
     }
 
     @Test
+    fun create_group_from_args() {
+        ensureLoggedIn()
+        val groupName = requiredArg("group_name")
+        val memberInputs = requiredListArg("member_inputs")
+
+        appManager().createGroup(groupName, memberInputs)
+
+        val chat =
+            waitForState("created group chat", timeoutMs = 180_000) {
+                appManager()
+                    .state
+                    .value
+                    .currentChat
+                    ?.takeIf { current ->
+                        current.groupId != null &&
+                            current.displayName == groupName
+                    }
+            }
+
+        reportStatus(
+            "chat_id" to chat.chatId,
+            "group_id" to chat.groupId.orEmpty(),
+            "group_name" to chat.displayName,
+            "member_count" to chat.memberCount.toString(),
+        )
+    }
+
+    @Test
+    fun wait_for_group_chat_from_args() {
+        ensureLoggedIn()
+        val chatId = requiredArg("chat_id")
+
+        val existing =
+            waitForState("group thread in chat list", timeoutMs = 180_000) {
+                appManager()
+                    .state
+                    .value
+                    .chatList
+                    .firstOrNull { thread -> thread.chatId == chatId }
+            }
+
+        appManager().openChat(existing.chatId)
+        val current =
+            waitForState("opened group chat", timeoutMs = 30_000) {
+                appManager()
+                    .state
+                    .value
+                    .currentChat
+                    ?.takeIf { chat -> chat.chatId == chatId }
+            }
+
+        reportStatus(
+            "chat_id" to current.chatId,
+            "group_id" to current.groupId.orEmpty(),
+            "group_name" to current.displayName,
+            "member_count" to current.memberCount.toString(),
+        )
+    }
+
+    @Test
     fun send_message_from_args() {
         ensureLoggedIn()
-        val peerInput = requiredArg("peer_input")
+        val peerInput = optionalArg("peer_input").orEmpty()
+        val chatIdArg = optionalArg("chat_id")
         val message = requiredArg("message")
-        val chat = ensureChatOpen(peerInput)
+        val chat =
+            chatIdArg
+                ?.let { ensureChatOpenById(it) }
+                ?: ensureChatOpen(peerInput)
 
         appManager().sendText(chat.chatId, message)
 
@@ -457,6 +615,19 @@ class RealRelayHarnessTest {
         }
     }
 
+    private fun ensureChatOpenById(chatId: String): CurrentChatSnapshot {
+        val trimmed = chatId.trim()
+        require(trimmed.isNotEmpty()) { "chat id must not be blank" }
+        appManager().openChat(trimmed)
+        return waitForState("opened chat by id") {
+            appManager()
+                .state
+                .value
+                .currentChat
+                ?.takeIf { current -> current.chatId == trimmed }
+        }
+    }
+
     private fun matchesPeerInput(
         chatId: String,
         peerNpub: String,
@@ -515,9 +686,20 @@ class RealRelayHarnessTest {
             else -> throw AssertionError("Unsupported authorization_state argument")
         }
 
+    private fun optionalArg(name: String): String? =
+        arguments.getString(name)?.trim()?.takeIf { it.isNotEmpty() }
+
     private fun requiredArg(name: String): String =
         arguments.getString(name)?.trim()?.takeIf { it.isNotEmpty() }
             ?: throw AssertionError("Missing instrumentation argument: $name")
+
+    private fun requiredListArg(name: String): List<String> =
+        requiredArg(name)
+            .split(',', '\n', '|')
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .takeIf { it.isNotEmpty() }
+            ?: throw AssertionError("Missing non-empty list argument: $name")
 
     private fun storageEntries(root: File): List<String> =
         root
@@ -525,6 +707,266 @@ class RealRelayHarnessTest {
             ?.sortedBy { it.name }
             ?.map { it.relativeTo(root).path.ifBlank { it.name } }
             ?: emptyList()
+
+    private fun readJsonObject(fileName: String): JSONObject? {
+        val file = withActivity { File(it.filesDir, fileName) }
+        if (!file.exists()) {
+            return null
+        }
+        return runCatching { JSONObject(file.readText()) }.getOrNull()
+    }
+
+    private fun persistedHasPeerRoster(
+        persisted: JSONObject,
+        peerOwnerHex: String,
+    ): Boolean =
+        persisted
+            .optJSONObject("session_manager")
+            ?.optJSONArray("users")
+            ?.let { users ->
+                (0 until users.length()).any { index ->
+                    users.optJSONObject(index)?.let { user ->
+                        user.optString("owner_pubkey").equals(peerOwnerHex, ignoreCase = true) &&
+                            !user.isNull("roster")
+                    } == true
+                }
+            } == true
+
+    private fun persistedHasPeerSession(
+        persisted: JSONObject,
+        peerOwnerHex: String,
+    ): Boolean =
+        persisted
+            .optJSONObject("session_manager")
+            ?.optJSONArray("users")
+            ?.let { users ->
+                (0 until users.length()).any { index ->
+                    val user = users.optJSONObject(index) ?: return@any false
+                    if (!user.optString("owner_pubkey").equals(peerOwnerHex, ignoreCase = true)) {
+                        return@any false
+                    }
+                    val devices = user.optJSONArray("devices") ?: return@any false
+                    (0 until devices.length()).any { deviceIndex ->
+                        val device = devices.optJSONObject(deviceIndex) ?: return@any false
+                        !device.isNull("active_session") ||
+                            (device.optJSONArray("inactive_sessions")?.length() ?: 0) > 0
+                    }
+                }
+            } == true
+
+    private fun summarizeCurrentChat(chat: CurrentChatSnapshot?): String =
+        chat?.let {
+            listOf(
+                it.chatId,
+                it.displayName,
+                it.groupId.orEmpty(),
+                it.memberCount.toString(),
+                it.messages.size.toString(),
+            ).joinToString(",")
+        }.orEmpty()
+
+    private fun summarizeChatList(threads: List<social.innode.ndr.demo.rust.ChatThreadSnapshot>): String =
+        threads.joinToString("|") { thread ->
+            listOf(
+                thread.chatId,
+                thread.kind.name,
+                thread.displayName,
+                thread.memberCount.toString(),
+                thread.lastMessagePreview.orEmpty(),
+                thread.unreadCount.toString(),
+            ).joinToString(",")
+        }
+
+    private fun summarizeRuntimeKnownUsers(users: JSONArray?): String =
+        users.joinObjects { user ->
+            listOf(
+                user.optString("owner_pubkey_hex"),
+                "roster=${user.optBoolean("has_roster")}",
+                "rosterDevices=${user.optInt("roster_device_count")}",
+                "devices=${user.optInt("device_count")}",
+                "authorized=${user.optInt("authorized_device_count")}",
+                "active=${user.optInt("active_session_device_count")}",
+                "inactive=${user.optInt("inactive_session_count")}",
+            ).joinToString(",")
+        }
+
+    private fun summarizeRuntimePendingOutbound(entries: JSONArray?): String =
+        entries.joinObjects { entry ->
+            listOf(
+                entry.optString("message_id"),
+                entry.optString("chat_id"),
+                entry.optString("reason"),
+                entry.optString("publish_mode"),
+                "inFlight=${entry.optBoolean("in_flight")}",
+            ).joinToString(",")
+        }
+
+    private fun summarizeRuntimePendingGroupControls(entries: JSONArray?): String =
+        entries.joinObjects { entry ->
+            listOf(
+                entry.optString("operation_id"),
+                entry.optString("group_id"),
+                entry.optString("reason"),
+                entry.optString("kind"),
+                "targets=${entry.optStringArray("target_owner_hexes")}",
+                "inFlight=${entry.optBoolean("in_flight")}",
+            ).joinToString(",")
+        }
+
+    private fun summarizeRecentHandshakePeers(entries: JSONArray?): String =
+        entries.joinObjects { entry ->
+            listOf(
+                entry.optString("owner_hex"),
+                entry.optString("device_hex"),
+                entry.optString("observed_at_secs"),
+            ).joinToString(",")
+        }
+
+    private fun summarizeEventCounts(eventCounts: JSONObject?): String =
+        if (eventCounts == null) {
+            ""
+        } else {
+            listOf(
+                "roster=${eventCounts.optInt("roster_events")}",
+                "invite=${eventCounts.optInt("invite_events")}",
+                "inviteResponse=${eventCounts.optInt("invite_response_events")}",
+                "message=${eventCounts.optInt("message_events")}",
+                "other=${eventCounts.optInt("other_events")}",
+            ).joinToString(",")
+        }
+
+    private fun summarizeRecentLog(entries: JSONArray?): String =
+        entries.joinObjects(limit = 20) { entry ->
+            listOf(
+                entry.optString("timestamp_secs"),
+                entry.optString("category"),
+                entry.optString("detail"),
+            ).joinToString(",")
+        }
+
+    private fun summarizePersistedUsers(users: JSONArray?): String =
+        users.joinObjects { user ->
+            val devices = user.optJSONArray("devices")
+            val activeSessions =
+                devices.countObjects { device ->
+                    !device.isNull("active_session")
+                }
+            val inactiveSessions =
+                devices.sumObjects { device ->
+                    device.optJSONArray("inactive_sessions")?.length() ?: 0
+                }
+            listOf(
+                user.optString("owner_pubkey"),
+                "roster=${!user.isNull("roster")}",
+                "devices=${devices?.length() ?: 0}",
+                "active=${activeSessions}",
+                "inactive=${inactiveSessions}",
+            ).joinToString(",")
+        }
+
+    private fun summarizePersistedGroups(groups: JSONArray?): String =
+        groups.joinObjects { group ->
+            listOf(
+                group.optString("group_id"),
+                group.optString("name"),
+                "revision=${group.optLong("revision")}",
+                "members=${group.optJSONArray("members")?.length() ?: 0}",
+                "admins=${group.optJSONArray("admins")?.length() ?: 0}",
+            ).joinToString(",")
+        }
+
+    private fun summarizePersistedPendingOutbound(entries: JSONArray?): String =
+        entries.joinObjects { entry ->
+            listOf(
+                entry.optString("message_id"),
+                entry.optString("chat_id"),
+                entry.optString("reason"),
+                entry.optString("publish_mode"),
+                "inFlight=${entry.optBoolean("in_flight")}",
+            ).joinToString(",")
+        }
+
+    private fun summarizePersistedPendingGroupControls(entries: JSONArray?): String =
+        entries.joinObjects { entry ->
+            listOf(
+                entry.optString("operation_id"),
+                entry.optString("group_id"),
+                entry.optString("reason"),
+                entry.opt("kind")?.toString().orEmpty(),
+                "inFlight=${entry.optBoolean("in_flight")}",
+            ).joinToString(",")
+        }
+
+    private fun summarizePersistedThreads(entries: JSONArray?): String =
+        entries.joinObjects { entry ->
+            listOf(
+                entry.optString("chat_id"),
+                "messages=${entry.optJSONArray("messages")?.length() ?: 0}",
+                "unread=${entry.optLong("unread_count")}",
+            ).joinToString(",")
+        }
+
+    private fun JSONObject?.optStringOrEmpty(key: String): String =
+        if (this == null || !has(key) || isNull(key)) {
+            ""
+        } else {
+            opt(key)?.toString().orEmpty()
+        }
+
+    private fun JSONObject?.optStringArray(key: String): String =
+        this?.optJSONArray(key).joinValues().orEmpty()
+
+    private fun JSONArray?.joinObjects(
+        limit: Int = Int.MAX_VALUE,
+        block: (JSONObject) -> String,
+    ): String {
+        if (this == null) {
+            return ""
+        }
+        val values = mutableListOf<String>()
+        for (index in 0 until minOf(length(), limit)) {
+            val obj = optJSONObject(index) ?: continue
+            values += block(obj)
+        }
+        return values.joinToString("|")
+    }
+
+    private fun JSONArray?.joinValues(limit: Int = Int.MAX_VALUE): String {
+        if (this == null) {
+            return ""
+        }
+        val values = mutableListOf<String>()
+        for (index in 0 until minOf(length(), limit)) {
+            values += opt(index)?.toString().orEmpty()
+        }
+        return values.joinToString("|")
+    }
+
+    private fun JSONArray?.countObjects(predicate: (JSONObject) -> Boolean): Int {
+        if (this == null) {
+            return 0
+        }
+        var count = 0
+        for (index in 0 until length()) {
+            val obj = optJSONObject(index) ?: continue
+            if (predicate(obj)) {
+                count += 1
+            }
+        }
+        return count
+    }
+
+    private fun JSONArray?.sumObjects(transform: (JSONObject) -> Int): Int {
+        if (this == null) {
+            return 0
+        }
+        var sum = 0
+        for (index in 0 until length()) {
+            val obj = optJSONObject(index) ?: continue
+            sum += transform(obj)
+        }
+        return sum
+    }
 
     private fun reportStatus(vararg fields: Pair<String, String>) {
         val bundle = Bundle()
@@ -544,5 +986,10 @@ class RealRelayHarnessTest {
             SystemClock.sleep(100)
         }
         throw AssertionError("Timed out waiting for $label")
+    }
+
+    private companion object {
+        const val DEBUG_SNAPSHOT_FILENAME = "ndr_demo_runtime_debug.json"
+        const val PERSISTED_STATE_FILENAME = "ndr_demo_core_state.json"
     }
 }

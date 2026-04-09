@@ -2,6 +2,7 @@ package social.innode.ndr.demo.core
 
 import android.content.Context
 import android.util.Base64
+import android.util.Log
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
@@ -69,6 +70,7 @@ class AppManager(
         val initial = rust.state()
         lastRevApplied = initial.rev
         mutableState.value = initial
+        Log.d(TAG, "init rev=${initial.rev} defaultScreen=${initial.router.defaultScreen}")
         rust.listenForUpdates(this)
         applicationScope.launch(ioDispatcher) {
             restoreSessionFromSecureStore()
@@ -230,14 +232,22 @@ class AppManager(
                     return
                 }
                 lastRevApplied = update.v1.rev
+                Log.d(
+                    TAG,
+                    "reconcile rev=${update.v1.rev} screen=${update.v1.router.defaultScreen} " +
+                        "chatList=${update.v1.chatList.size} activeChat=${update.v1.currentChat?.chatId.orEmpty()} " +
+                        "toast=${update.v1.toast.orEmpty()}",
+                )
                 publishState(update.v1)
             }
         }
     }
 
     private suspend fun restoreSessionFromSecureStore() {
+        Log.d(TAG, "restoreSessionFromSecureStore start")
         val encrypted = loadPersistedSecret()
         if (encrypted == null) {
+            Log.d(TAG, "restoreSessionFromSecureStore no persisted secret")
             restoreCheckComplete = true
             publishBootstrapNeedsLogin()
             return
@@ -245,6 +255,7 @@ class AppManager(
 
         val decrypted = runCatching { secureSecretStore.decrypt(encrypted).decodeToString() }.getOrNull()
         if (decrypted.isNullOrBlank()) {
+            Log.d(TAG, "restoreSessionFromSecureStore decrypt failed or blank")
             clearPersistedSecret()
             restoreCheckComplete = true
             publishBootstrapNeedsLogin()
@@ -254,6 +265,7 @@ class AppManager(
         restoreCheckComplete = true
         val bundle = StoredAccountBundle.fromJson(decrypted)
         if (bundle != null) {
+            Log.d(TAG, "restoreSessionFromSecureStore dispatch bundle restore")
             rust.dispatch(
                 AppAction.RestoreAccountBundle(
                     ownerNsec = bundle.ownerNsec,
@@ -262,6 +274,7 @@ class AppManager(
                 ),
             )
         } else {
+            Log.d(TAG, "restoreSessionFromSecureStore dispatch direct restore")
             rust.dispatch(AppAction.RestoreSession(decrypted))
         }
     }
@@ -390,6 +403,7 @@ class AppManager(
 
     private fun publishBootstrapNeedsLogin() {
         restoreCheckComplete = true
+        Log.d(TAG, "bootstrap needs login")
         mutableBootstrapState.value = AccountBootstrapState.NeedsLogin
     }
 
@@ -398,6 +412,7 @@ class AppManager(
     private fun String.fromBase64(): ByteArray = Base64.decode(this, Base64.NO_WRAP)
 
     private companion object {
+        const val TAG = "NdrDebug"
         const val DATASTORE_NAME = "ndr_demo_secure_store.preferences_pb"
         val SECRET_CIPHERTEXT = stringPreferencesKey("secret_ciphertext")
         val SECRET_IV = stringPreferencesKey("secret_iv")
