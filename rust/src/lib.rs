@@ -6,6 +6,7 @@ mod updates;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
+use std::time::Duration;
 
 use flume::{Receiver, Sender};
 
@@ -43,7 +44,9 @@ impl FfiApp {
         thread::spawn(move || {
             let mut core = AppCore::new(update_tx, core_tx_for_thread, data_dir, shared_for_thread);
             while let Ok(msg) = core_rx.recv() {
-                core.handle_message(msg);
+                if !core.handle_message(msg) {
+                    break;
+                }
             }
         });
 
@@ -93,6 +96,22 @@ impl FfiApp {
                 reconciler.reconcile(update);
             }
         });
+    }
+
+}
+
+#[cfg(test)]
+impl FfiApp {
+    pub(crate) fn shutdown_blocking(&self) {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        let _ = self.core_tx.send(CoreMsg::Shutdown(Some(reply_tx)));
+        let _ = reply_rx.recv_timeout(Duration::from_secs(5));
+    }
+}
+
+impl Drop for FfiApp {
+    fn drop(&mut self) {
+        let _ = self.core_tx.send(CoreMsg::Shutdown(None));
     }
 }
 

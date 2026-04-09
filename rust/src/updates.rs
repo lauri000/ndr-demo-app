@@ -21,6 +21,7 @@ pub(crate) enum CoreMsg {
     Action(AppAction),
     Internal(Box<InternalEvent>),
     ExportSupportBundle(Sender<String>),
+    Shutdown(Option<Sender<()>>),
 }
 
 #[derive(Debug)]

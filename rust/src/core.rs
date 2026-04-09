@@ -96,33 +96,28 @@ struct ThreadRecord {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct PendingInbound {
-    #[serde(default)]
-    envelope: Option<MessageEnvelope>,
-    #[serde(default)]
-    sender_owner_hex: Option<String>,
-    #[serde(default)]
-    payload: Option<Vec<u8>>,
-    #[serde(default)]
-    created_at_secs: Option<u64>,
+#[serde(untagged)]
+enum PendingInbound {
+    Envelope {
+        envelope: MessageEnvelope,
+    },
+    Decrypted {
+        sender_owner_hex: String,
+        payload: Vec<u8>,
+        created_at_secs: u64,
+    },
 }
 
 impl PendingInbound {
     fn envelope(envelope: MessageEnvelope) -> Self {
-        Self {
-            envelope: Some(envelope),
-            sender_owner_hex: None,
-            payload: None,
-            created_at_secs: None,
-        }
+        Self::Envelope { envelope }
     }
 
     fn decrypted(sender_owner: OwnerPubkey, payload: Vec<u8>, created_at_secs: u64) -> Self {
-        Self {
-            envelope: None,
-            sender_owner_hex: Some(sender_owner.to_string()),
-            payload: Some(payload),
-            created_at_secs: Some(created_at_secs),
+        Self::Decrypted {
+            sender_owner_hex: sender_owner.to_string(),
+            payload,
+            created_at_secs,
         }
     }
 }
@@ -542,13 +537,31 @@ impl AppCore {
         }
     }
 
-    pub fn handle_message(&mut self, msg: CoreMsg) {
+    pub fn handle_message(&mut self, msg: CoreMsg) -> bool {
         match msg {
             CoreMsg::Action(action) => self.handle_action(action),
             CoreMsg::Internal(event) => self.handle_internal(*event),
             CoreMsg::ExportSupportBundle(reply_tx) => {
                 let _ = reply_tx.send(self.export_support_bundle_json());
             }
+            CoreMsg::Shutdown(reply_tx) => {
+                self.shutdown();
+                if let Some(reply_tx) = reply_tx {
+                    let _ = reply_tx.send(());
+                }
+                return false;
+            }
+        }
+        true
+    }
+
+    fn shutdown(&mut self) {
+        self.push_debug_log("app.shutdown", "stopping core");
+        if let Some(existing) = self.logged_in.take() {
+            self.runtime.block_on(async {
+                existing.client.unsubscribe_all().await;
+                let _ = existing.client.shutdown().await;
+            });
         }
     }
 
@@ -960,6 +973,7 @@ impl AppCore {
                 self.screen_stack = vec![Screen::Chat {
                     chat_id: chat_id.clone(),
                 }];
+                self.publish_group_local_sibling_best_effort(&result.prepared);
 
                 if let Some(reason) = pending_reason_from_group_prepared(&result.prepared) {
                     let operation_id = self.allocate_message_id();
@@ -1359,6 +1373,88 @@ impl AppCore {
         }
     }
 
+    fn start_best_effort_publish(&mut self, label: &'static str, batch: PreparedPublishBatch) {
+        let Some((client, relay_urls)) = self
+            .logged_in
+            .as_ref()
+            .map(|logged_in| (logged_in.client.clone(), logged_in.relay_urls.clone()))
+        else {
+            return;
+        };
+        if batch.message_events.is_empty() {
+            return;
+        }
+
+        for event in batch
+            .invite_events
+            .iter()
+            .chain(batch.message_events.iter())
+        {
+            self.remember_event(event.id.to_string());
+        }
+
+        let tx = self.core_sender.clone();
+        match publish_mode_for_batch(&batch) {
+            OutboundPublishMode::OrdinaryFirstAck => {
+                self.runtime.spawn(async move {
+                    let success = publish_events_first_ack(
+                        &client,
+                        &relay_urls,
+                        &batch.message_events,
+                        label,
+                    )
+                    .await
+                    .is_ok();
+                    let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::DebugLog {
+                        category: "publish.best_effort".to_string(),
+                        detail: format!("label={label} success={success}"),
+                    })));
+                });
+            }
+            OutboundPublishMode::FirstContactStaged => {
+                self.runtime.spawn(async move {
+                    let success = if publish_events_with_retry(
+                        &client,
+                        &relay_urls,
+                        batch.invite_events,
+                        label,
+                    )
+                    .await
+                    .is_ok()
+                    {
+                        sleep(Duration::from_millis(FIRST_CONTACT_STAGE_DELAY_MS)).await;
+                        publish_events_with_retry(
+                            &client,
+                            &relay_urls,
+                            batch.message_events,
+                            label,
+                        )
+                        .await
+                        .is_ok()
+                    } else {
+                        false
+                    };
+                    let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::DebugLog {
+                        category: "publish.best_effort".to_string(),
+                        detail: format!("label={label} success={success}"),
+                    })));
+                });
+            }
+            OutboundPublishMode::WaitForPeer => {}
+        }
+    }
+
+    fn publish_group_local_sibling_best_effort(
+        &mut self,
+        prepared: &nostr_double_ratchet::GroupPreparedSend,
+    ) {
+        match build_group_local_sibling_publish_batch(prepared) {
+            Ok(Some(batch)) => self.start_best_effort_publish("group sibling sync", batch),
+            Ok(None) => {}
+            Err(error) => self.state.toast = Some(error.to_string()),
+        }
+    }
+
     fn open_chat(&mut self, chat_id: &str) {
         if !self.can_use_chats() {
             self.state.toast = Some(chat_unavailable_message(self.logged_in.as_ref()).to_string());
@@ -1492,13 +1588,14 @@ impl AppCore {
 
         match prepared {
             Ok(prepared) => {
+                self.publish_group_local_sibling_best_effort(&prepared);
                 if let Some(reason) = pending_reason_from_group_prepared(&prepared) {
                     self.push_debug_log(
                         "group.send.pending",
                         format!(
                             "chat_id={} reason={reason:?} gaps={}",
                             chat_id,
-                            summarize_relay_gaps(&prepared.relay_gaps)
+                            summarize_relay_gaps(&prepared.remote.relay_gaps)
                         ),
                     );
                     let pending_reason = reason.clone();
@@ -1738,6 +1835,7 @@ impl AppCore {
         match control_result {
             Ok((snapshot, target_owner_hexes, prepared)) => {
                 self.apply_group_snapshot_to_threads(&snapshot, now.get());
+                self.publish_group_local_sibling_best_effort(&prepared);
                 if let Some(reason) = pending_reason_from_group_prepared(&prepared) {
                     let operation_id = self.allocate_message_id();
                     self.queue_pending_group_control(
@@ -2633,17 +2731,20 @@ impl AppCore {
             let mut made_progress = false;
 
             for item in pending {
-                if let (Some(sender_owner_hex), Some(payload)) =
-                    (item.sender_owner_hex.as_deref(), item.payload.as_ref())
+                if let PendingInbound::Decrypted {
+                    sender_owner_hex,
+                    payload,
+                    created_at_secs,
+                } = item.clone()
                 {
-                    let Ok(sender_pubkey) = PublicKey::parse(sender_owner_hex) else {
+                    let Ok(sender_pubkey) = PublicKey::parse(&sender_owner_hex) else {
                         still_pending.push(item);
                         continue;
                     };
                     match self.apply_decrypted_payload(
                         OwnerPubkey::from_bytes(sender_pubkey.to_bytes()),
-                        payload,
-                        item.created_at_secs.unwrap_or_else(|| now.get()),
+                        &payload,
+                        created_at_secs,
                     ) {
                         Ok(()) => {
                             made_progress = true;
@@ -2659,7 +2760,7 @@ impl AppCore {
                     continue;
                 }
 
-                let Some(envelope) = item.envelope.as_ref() else {
+                let PendingInbound::Envelope { envelope } = &item else {
                     continue;
                 };
 
@@ -2786,13 +2887,14 @@ impl AppCore {
 
                 match prepared {
                     Ok(prepared) => {
+                        self.publish_group_local_sibling_best_effort(&prepared);
                         if let Some(reason) = pending_reason_from_group_prepared(&prepared) {
                             self.push_debug_log(
                                 "retry.group.pending",
                                 format!(
                                     "chat_id={} reason={reason:?} gaps={}",
                                     pending_message.chat_id,
-                                    summarize_relay_gaps(&prepared.relay_gaps)
+                                    summarize_relay_gaps(&prepared.remote.relay_gaps)
                                 ),
                             );
                             pending_message.reason = reason.clone();
@@ -3007,13 +3109,14 @@ impl AppCore {
                 Ok((snapshot, target_owner_hexes, prepared)) => {
                     self.apply_group_snapshot_to_threads(&snapshot, now.get());
                     control.target_owner_hexes = target_owner_hexes;
+                    self.publish_group_local_sibling_best_effort(&prepared);
                     if let Some(reason) = pending_reason_from_group_prepared(&prepared) {
                         self.push_debug_log(
                             "retry.group_control.pending",
                             format!(
                                 "group_id={} reason={reason:?} gaps={}",
                                 control.group_id,
-                                summarize_relay_gaps(&prepared.relay_gaps)
+                                summarize_relay_gaps(&prepared.remote.relay_gaps)
                             ),
                         );
                         control.reason = reason.clone();
@@ -5140,6 +5243,7 @@ fn pending_reason_from_group_prepared(
     prepared: &nostr_double_ratchet::GroupPreparedSend,
 ) -> Option<PendingSendReason> {
     if prepared
+        .remote
         .relay_gaps
         .iter()
         .any(|gap| matches!(gap, RelayGap::MissingRoster { .. }))
@@ -5147,13 +5251,14 @@ fn pending_reason_from_group_prepared(
         return Some(PendingSendReason::MissingRoster);
     }
     if prepared
+        .remote
         .relay_gaps
         .iter()
         .any(|gap| matches!(gap, RelayGap::MissingDeviceInvite { .. }))
     {
         return Some(PendingSendReason::MissingDeviceInvite);
     }
-    if prepared.deliveries.is_empty() && prepared.invite_responses.is_empty() {
+    if prepared.remote.deliveries.is_empty() && prepared.remote.invite_responses.is_empty() {
         return Some(PendingSendReason::MissingDeviceInvite);
     }
     None
@@ -5185,6 +5290,18 @@ fn build_prepared_publish_batch(
 
 fn build_group_prepared_publish_batch(
     prepared: &nostr_double_ratchet::GroupPreparedSend,
+) -> anyhow::Result<Option<PreparedPublishBatch>> {
+    build_group_publish_batch(&prepared.remote)
+}
+
+fn build_group_local_sibling_publish_batch(
+    prepared: &nostr_double_ratchet::GroupPreparedSend,
+) -> anyhow::Result<Option<PreparedPublishBatch>> {
+    build_group_publish_batch(&prepared.local_sibling)
+}
+
+fn build_group_publish_batch(
+    prepared: &nostr_double_ratchet::GroupPreparedPublish,
 ) -> anyhow::Result<Option<PreparedPublishBatch>> {
     let invite_events = prepared
         .invite_responses
@@ -5947,6 +6064,15 @@ mod tests {
         keys.public_key().to_bech32().expect("npub")
     }
 
+    fn pubkey_hex_for_fill(secret_fill: u8) -> String {
+        let keys = Keys::new(SecretKey::from_slice(&[secret_fill; 32]).expect("secret key"));
+        keys.public_key().to_hex()
+    }
+
+    fn device_fill_for_owner(secret_fill: u8) -> u8 {
+        secret_fill.wrapping_add(100)
+    }
+
     fn wait_for_state(
         app: &Arc<FfiApp>,
         label: &str,
@@ -5981,8 +6107,10 @@ mod tests {
             String::new(),
             "test".to_string(),
         );
-        app.dispatch(AppAction::RestoreSession {
-            owner_nsec: nsec_for_fill(secret_fill),
+        app.dispatch(AppAction::RestoreAccountBundle {
+            owner_nsec: Some(nsec_for_fill(secret_fill)),
+            owner_pubkey_hex: pubkey_hex_for_fill(secret_fill),
+            device_nsec: nsec_for_fill(device_fill_for_owner(secret_fill)),
         });
         wait_for_state(&app, "account restore", |state| {
             state.account.is_some() && !state.busy.restoring_session
@@ -6644,7 +6772,7 @@ mod tests {
             .receive(
                 &mut receive_ctx,
                 alice_owner,
-                &result.prepared.deliveries[0].envelope,
+                &result.prepared.remote.deliveries[0].envelope,
             )
             .expect("receive group create")
             .expect("group create payload");
@@ -6692,7 +6820,7 @@ mod tests {
             .receive(
                 &mut receive_ctx,
                 alice_owner,
-                &create.prepared.deliveries[0].envelope,
+                &create.prepared.remote.deliveries[0].envelope,
             )
             .expect("receive create")
             .expect("create payload");
@@ -6720,7 +6848,7 @@ mod tests {
             .receive(
                 &mut ProtocolContext::new(UnixSeconds(1_900_000_304), &mut receive_rng),
                 alice_owner,
-                &message_send.deliveries[0].envelope,
+                &message_send.remote.deliveries[0].envelope,
             )
             .expect("receive group message")
             .expect("group payload");
@@ -7054,11 +7182,10 @@ mod tests {
         let persisted = persisted_state(data_dir.path());
         assert_eq!(persisted.pending_inbound.len(), 1);
         assert_eq!(
-            persisted.pending_inbound[0]
-                .envelope
-                .as_ref()
-                .expect("persisted envelope")
-                .ciphertext,
+            match &persisted.pending_inbound[0] {
+                PendingInbound::Envelope { envelope } => envelope.ciphertext.as_str(),
+                PendingInbound::Decrypted { .. } => panic!("expected persisted envelope"),
+            },
             "ciphertext"
         );
 
@@ -7068,11 +7195,10 @@ mod tests {
 
         assert_eq!(restored.pending_inbound.len(), 1);
         assert_eq!(
-            restored.pending_inbound[0]
-                .envelope
-                .as_ref()
-                .expect("restored envelope")
-                .encrypted_header,
+            match &restored.pending_inbound[0] {
+                PendingInbound::Envelope { envelope } => envelope.encrypted_header.as_str(),
+                PendingInbound::Decrypted { .. } => panic!("expected restored envelope"),
+            },
             "header"
         );
     }
@@ -8342,6 +8468,7 @@ mod tests {
             let owner_fill = client
                 .owner_fill
                 .expect("scenario restart only supports deterministic owner clients");
+            client.app.shutdown_blocking();
             drop(client.app);
             client.app = app_with_dir(client.data_dir.path(), owner_fill);
             self.clients.insert(label.to_string(), client);
@@ -8747,10 +8874,26 @@ mod tests {
         scenario.wait_for_group("member1", &chat_id, 2);
 
         scenario.add_group_members_by_inputs("admin", &chat_id, vec![npub_for_fill(254)]);
+        scenario.wait_for_group("admin", &chat_id, 3);
+        let persisted_group_id = parse_group_id_from_chat_id(&chat_id).expect("group id");
         wait_for_persisted_state(
             scenario.data_dir("admin"),
             "pending member add",
-            |persisted| !persisted.pending_group_controls.is_empty(),
+            |persisted| {
+                !persisted.pending_group_controls.is_empty()
+                    && persisted.threads.iter().any(|thread| thread.chat_id == chat_id)
+                    && persisted
+                        .group_manager
+                        .as_ref()
+                        .and_then(|snapshot| {
+                            snapshot
+                                .groups
+                                .iter()
+                                .find(|group| group.group_id == persisted_group_id)
+                        })
+                        .map(|group| group.members.len() == 3)
+                        .unwrap_or(false)
+            },
         );
 
         scenario.restart_owner("admin");
