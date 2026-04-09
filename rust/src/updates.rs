@@ -1,6 +1,7 @@
 use crate::actions::AppAction;
 use crate::core::ProtocolSubscriptionPlan;
 use crate::state::AppState;
+use flume::Sender;
 use nostr_sdk::prelude::Event;
 
 #[derive(uniffi::Enum, Clone, Debug)]
@@ -19,6 +20,7 @@ pub enum AppUpdate {
 pub(crate) enum CoreMsg {
     Action(AppAction),
     Internal(Box<InternalEvent>),
+    ExportSupportBundle(Sender<String>),
 }
 
 #[derive(Debug)]

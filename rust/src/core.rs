@@ -25,11 +25,18 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, Duration};
 
-const DEFAULT_RELAYS: &[&str] = &[
+const FALLBACK_DEFAULT_RELAYS: &[&str] = &[
     "wss://relay.damus.io",
     "wss://nos.lol",
     "wss://relay.primal.net",
 ];
+const APP_VERSION: &str = env!("NDR_APP_VERSION");
+const BUILD_CHANNEL: &str = env!("NDR_BUILD_CHANNEL");
+const BUILD_GIT_SHA: &str = env!("NDR_BUILD_GIT_SHA");
+const BUILD_TIMESTAMP_UTC: &str = env!("NDR_BUILD_TIMESTAMP_UTC");
+const COMPILED_DEFAULT_RELAYS_CSV: &str = env!("NDR_DEFAULT_RELAYS");
+const RELAY_SET_ID: &str = env!("NDR_RELAY_SET_ID");
+const TRUSTED_TEST_BUILD: &str = env!("NDR_TRUSTED_TEST_BUILD");
 const MAX_SEEN_EVENT_IDS: usize = 2048;
 const RECENT_HANDSHAKE_TTL_SECS: u64 = 10 * 60;
 const PENDING_RETRY_DELAY_SECS: u64 = 2;
@@ -261,6 +268,40 @@ struct RuntimeDebugSnapshot {
     current_chat_list: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct SupportBuildMetadata {
+    app_version: String,
+    build_channel: String,
+    git_sha: String,
+    build_timestamp_utc: String,
+    relay_set_id: String,
+    trusted_test_build: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SupportBundle {
+    generated_at_secs: u64,
+    build: SupportBuildMetadata,
+    relay_urls: Vec<String>,
+    authorization_state: Option<String>,
+    active_chat_id: Option<String>,
+    current_screen: String,
+    chat_count: usize,
+    direct_chat_count: usize,
+    group_chat_count: usize,
+    unread_chat_count: usize,
+    pending_outbound: Vec<RuntimePendingOutboundDebug>,
+    pending_group_controls: Vec<RuntimePendingGroupControlDebug>,
+    protocol: Option<RuntimeProtocolPlanDebug>,
+    tracked_owner_hexes: Vec<String>,
+    known_users: Vec<RuntimeKnownUserDebug>,
+    recent_handshake_peers: Vec<RuntimeRecentHandshakeDebug>,
+    event_counts: DebugEventCounters,
+    recent_log: Vec<DebugLogEntry>,
+    current_chat_list: Vec<String>,
+    latest_toast: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RuntimeProtocolPlanDebug {
     roster_authors: Vec<String>,
@@ -455,6 +496,9 @@ impl AppCore {
         match msg {
             CoreMsg::Action(action) => self.handle_action(action),
             CoreMsg::Internal(event) => self.handle_internal(*event),
+            CoreMsg::ExportSupportBundle(reply_tx) => {
+                let _ = reply_tx.send(self.export_support_bundle_json());
+            }
         }
     }
 
@@ -2176,7 +2220,15 @@ impl AppCore {
                         if let Err(error) =
                             self.apply_decrypted_payload(message.owner_pubkey, &message.payload, now.get())
                         {
-                            self.state.toast = Some(error.to_string());
+                            if is_retryable_group_payload_error(&error) {
+                                self.push_debug_log(
+                                    "relay.message.pending",
+                                    format!("payload apply deferred: {error}"),
+                                );
+                                self.pending_inbound.push(PendingInbound { envelope });
+                            } else {
+                                self.state.toast = Some(error.to_string());
+                            }
                         }
                         self.request_protocol_subscription_refresh();
                         self.persist_best_effort();
@@ -4009,6 +4061,65 @@ impl AppCore {
         }
     }
 
+    fn export_support_bundle_json(&self) -> String {
+        serde_json::to_string_pretty(&self.build_support_bundle())
+            .unwrap_or_else(|_| "{}".to_string())
+    }
+
+    fn build_support_bundle(&self) -> SupportBundle {
+        let runtime = self.build_runtime_debug_snapshot();
+        let current_screen = self
+            .screen_stack
+            .last()
+            .cloned()
+            .unwrap_or_else(|| self.state.router.default_screen.clone());
+        let direct_chat_count = self
+            .threads
+            .keys()
+            .filter(|chat_id| !is_group_chat_id(chat_id))
+            .count();
+        let group_chat_count = self
+            .threads
+            .keys()
+            .filter(|chat_id| is_group_chat_id(chat_id))
+            .count();
+        let unread_chat_count = self
+            .threads
+            .values()
+            .filter(|thread| thread.unread_count > 0)
+            .count();
+
+        SupportBundle {
+            generated_at_secs: unix_now().get(),
+            build: SupportBuildMetadata {
+                app_version: APP_VERSION.to_string(),
+                build_channel: BUILD_CHANNEL.to_string(),
+                git_sha: BUILD_GIT_SHA.to_string(),
+                build_timestamp_utc: BUILD_TIMESTAMP_UTC.to_string(),
+                relay_set_id: RELAY_SET_ID.to_string(),
+                trusted_test_build: trusted_test_build(),
+            },
+            relay_urls: configured_relays(),
+            authorization_state: runtime.authorization_state,
+            active_chat_id: runtime.active_chat_id,
+            current_screen: format!("{current_screen:?}"),
+            chat_count: self.threads.len(),
+            direct_chat_count,
+            group_chat_count,
+            unread_chat_count,
+            pending_outbound: runtime.pending_outbound,
+            pending_group_controls: runtime.pending_group_controls,
+            protocol: runtime.current_protocol_plan,
+            tracked_owner_hexes: runtime.tracked_owner_hexes,
+            known_users: runtime.known_users,
+            recent_handshake_peers: runtime.recent_handshake_peers,
+            event_counts: runtime.event_counts,
+            recent_log: runtime.recent_log,
+            current_chat_list: runtime.current_chat_list,
+            latest_toast: runtime.toast,
+        }
+    }
+
     fn push_debug_log(&mut self, category: &str, detail: impl Into<String>) {
         self.debug_log.push_back(DebugLogEntry {
             timestamp_secs: unix_now().get(),
@@ -4352,6 +4463,7 @@ impl AppCore {
 }
 
 fn configured_relays() -> Vec<String> {
+    let compiled_defaults = compiled_default_relays();
     match std::env::var("NDR_DEMO_RELAYS") {
         Ok(value) => {
             let custom: Vec<String> = value
@@ -4361,18 +4473,12 @@ fn configured_relays() -> Vec<String> {
                 .map(ToOwned::to_owned)
                 .collect();
             if custom.is_empty() {
-                DEFAULT_RELAYS
-                    .iter()
-                    .map(|relay| (*relay).to_string())
-                    .collect()
+                compiled_defaults
             } else {
                 custom
             }
         }
-        Err(_) => DEFAULT_RELAYS
-            .iter()
-            .map(|relay| (*relay).to_string())
-            .collect(),
+        Err(_) => compiled_defaults,
     }
 }
 
@@ -4382,13 +4488,34 @@ fn configured_relay_urls() -> Vec<RelayUrl> {
         .filter_map(|relay| RelayUrl::parse(relay).ok())
         .collect();
     if parsed.is_empty() {
-        DEFAULT_RELAYS
+        FALLBACK_DEFAULT_RELAYS
             .iter()
             .filter_map(|relay| RelayUrl::parse(*relay).ok())
             .collect()
     } else {
         parsed
     }
+}
+
+fn compiled_default_relays() -> Vec<String> {
+    let compiled = COMPILED_DEFAULT_RELAYS_CSV
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if compiled.is_empty() {
+        FALLBACK_DEFAULT_RELAYS
+            .iter()
+            .map(|relay| (*relay).to_string())
+            .collect()
+    } else {
+        compiled
+    }
+}
+
+fn trusted_test_build() -> bool {
+    matches!(TRUSTED_TEST_BUILD, "1" | "true" | "TRUE" | "True")
 }
 
 async fn ensure_session_relays_configured(client: &Client, relay_urls: &[RelayUrl]) {
@@ -4584,6 +4711,13 @@ fn encode_app_group_message_payload(body: &str) -> anyhow::Result<Vec<u8>> {
         version: APP_GROUP_MESSAGE_PAYLOAD_VERSION,
         body: body.to_string(),
     })?)
+}
+
+fn is_retryable_group_payload_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.contains("create group sender must match created_by") ||
+        message.contains("unknown group") ||
+        message.contains("revision mismatch")
 }
 
 fn decode_app_group_message_payload(payload: &[u8]) -> Option<AppGroupMessagePayload> {
@@ -5515,7 +5649,16 @@ mod tests {
         label: &str,
         predicate: impl Fn(&AppState) -> bool,
     ) -> AppState {
-        let deadline = Instant::now() + StdDuration::from_secs(15);
+        wait_for_state_timeout(app, label, 15, predicate)
+    }
+
+    fn wait_for_state_timeout(
+        app: &Arc<FfiApp>,
+        label: &str,
+        timeout_secs: u64,
+        predicate: impl Fn(&AppState) -> bool,
+    ) -> AppState {
+        let deadline = Instant::now() + StdDuration::from_secs(timeout_secs);
         let mut last = app.state();
 
         while Instant::now() < deadline {
@@ -7570,6 +7713,569 @@ mod tests {
                 .map(|chat| chat.messages.len())
                 .unwrap_or(0),
             before_count
+        );
+    }
+
+    struct ScenarioClient {
+        owner_fill: Option<u8>,
+        data_dir: TempDir,
+        app: Arc<FfiApp>,
+    }
+
+    #[allow(dead_code)]
+    enum ScenarioStep {
+        SendDirect {
+            sender: String,
+            recipient: String,
+            text: String,
+        },
+        SendGroup {
+            sender: String,
+            chat_id: String,
+            text: String,
+        },
+    }
+
+    struct ScenarioRunner<'a> {
+        _guard: std::sync::MutexGuard<'a, ()>,
+        _env: RelayEnvGuard,
+        relay: TestRelay,
+        clients: BTreeMap<String, ScenarioClient>,
+    }
+
+    impl<'a> ScenarioRunner<'a> {
+        fn local() -> Self {
+            Self {
+                _guard: relay_test_lock()
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner()),
+                _env: RelayEnvGuard::local_only(),
+                relay: TestRelay::start(),
+                clients: BTreeMap::new(),
+            }
+        }
+
+        fn add_owner(&mut self, label: &str, fill: u8) {
+            let data_dir = TempDir::new().expect("temp dir");
+            let app = app_with_dir(data_dir.path(), fill);
+            self.clients.insert(
+                label.to_string(),
+                ScenarioClient {
+                    owner_fill: Some(fill),
+                    data_dir,
+                    app,
+                },
+            );
+        }
+
+        fn add_linked(&mut self, label: &str, owner_label: &str) {
+            let data_dir = TempDir::new().expect("temp dir");
+            let app = FfiApp::new(
+                data_dir.path().to_string_lossy().into_owned(),
+                String::new(),
+                "test".to_string(),
+            );
+            app.dispatch(AppAction::StartLinkedDevice {
+                owner_input: self.owner_npub(owner_label),
+            });
+            let linked_account =
+                wait_for_state(&app, "linked awaiting approval", |state| {
+                    state
+                        .account
+                        .as_ref()
+                        .map(|account| {
+                            matches!(
+                                account.authorization_state,
+                                DeviceAuthorizationState::AwaitingApproval
+                            )
+                        })
+                        .unwrap_or(false)
+                })
+                .account
+                .expect("linked account");
+
+            self.app(owner_label).dispatch(AppAction::AddAuthorizedDevice {
+                device_input: linked_account.device_npub.clone(),
+            });
+            wait_for_state(&app, "linked authorized", |state| {
+                state
+                    .account
+                    .as_ref()
+                    .map(|account| {
+                        matches!(
+                            account.authorization_state,
+                            DeviceAuthorizationState::Authorized
+                        )
+                    })
+                    .unwrap_or(false)
+            });
+
+            self.clients.insert(
+                label.to_string(),
+                ScenarioClient {
+                    owner_fill: None,
+                    data_dir,
+                    app,
+                },
+            );
+        }
+
+        fn app(&self, label: &str) -> &Arc<FfiApp> {
+            &self
+                .clients
+                .get(label)
+                .unwrap_or_else(|| panic!("missing scenario client `{label}`"))
+                .app
+        }
+
+        fn data_dir(&self, label: &str) -> &Path {
+            self.clients
+                .get(label)
+                .unwrap_or_else(|| panic!("missing scenario client `{label}`"))
+                .data_dir
+                .path()
+        }
+
+        fn account(&self, label: &str) -> AccountSnapshot {
+            wait_for_state(self.app(label), "scenario account", |state| state.account.is_some())
+                .account
+                .expect("account")
+        }
+
+        fn owner_npub(&self, label: &str) -> String {
+            self.account(label).npub
+        }
+
+        fn owner_hex(&self, label: &str) -> String {
+            self.account(label).public_key_hex
+        }
+
+        fn open_chat(&self, label: &str, chat_id: &str) {
+            self.app(label).dispatch(AppAction::OpenChat {
+                chat_id: chat_id.to_string(),
+            });
+            wait_for_state(self.app(label), "open chat", |state| {
+                state
+                    .current_chat
+                    .as_ref()
+                    .map(|chat| chat.chat_id == chat_id)
+                    .unwrap_or(false)
+            });
+        }
+
+        fn create_group(&self, sender: &str, name: &str, members: &[&str]) -> String {
+            self.create_group_by_inputs(
+                sender,
+                name,
+                members.iter().map(|member| self.owner_npub(member)).collect(),
+            )
+        }
+
+        fn create_group_by_inputs(
+            &self,
+            sender: &str,
+            name: &str,
+            member_inputs: Vec<String>,
+        ) -> String {
+            self.app(sender).dispatch(AppAction::CreateGroup {
+                name: name.to_string(),
+                member_inputs,
+            });
+            wait_for_state_timeout(self.app(sender), "group create", 30, |state| {
+                state
+                    .current_chat
+                    .as_ref()
+                    .map(|chat| matches!(chat.kind, ChatKind::Group))
+                    .unwrap_or(false)
+            })
+            .current_chat
+            .expect("group chat")
+            .chat_id
+        }
+
+        #[allow(dead_code)]
+        fn add_group_members(&self, sender: &str, group_id: &str, members: &[&str]) {
+            self.app(sender).dispatch(AppAction::AddGroupMembers {
+                group_id: group_id.to_string(),
+                member_inputs: members.iter().map(|member| self.owner_npub(member)).collect(),
+            });
+        }
+
+        fn add_group_members_by_inputs(
+            &self,
+            sender: &str,
+            group_id: &str,
+            member_inputs: Vec<String>,
+        ) {
+            self.app(sender).dispatch(AppAction::AddGroupMembers {
+                group_id: group_id.to_string(),
+                member_inputs,
+            });
+        }
+
+        fn remove_group_member(&self, sender: &str, group_id: &str, member: &str) {
+            self.app(sender).dispatch(AppAction::RemoveGroupMember {
+                group_id: group_id.to_string(),
+                owner_pubkey_hex: self.owner_hex(member),
+            });
+        }
+
+        fn run_step(&self, step: ScenarioStep) {
+            match step {
+                ScenarioStep::SendDirect {
+                    sender,
+                    recipient,
+                    text,
+                } => {
+                    self.app(&sender).dispatch(AppAction::SendMessage {
+                        chat_id: self.owner_hex(&recipient),
+                        text,
+                    });
+                }
+                ScenarioStep::SendGroup {
+                    sender,
+                    chat_id,
+                    text,
+                } => {
+                    self.app(&sender).dispatch(AppAction::SendMessage { chat_id, text });
+                }
+            }
+        }
+
+        fn wait_for_group(&self, label: &str, chat_id: &str, member_count: u64) {
+            wait_for_state_timeout(self.app(label), "group thread", 45, |state| {
+                state.chat_list.iter().any(|thread| {
+                    thread.chat_id == chat_id &&
+                        matches!(thread.kind, ChatKind::Group) &&
+                        thread.member_count == member_count
+                })
+            });
+            self.open_chat(label, chat_id);
+        }
+
+        fn wait_for_message(
+            &self,
+            label: &str,
+            chat_id: &str,
+            text: &str,
+            is_outgoing: bool,
+        ) {
+            self.open_chat(label, chat_id);
+            wait_for_state_timeout(self.app(label), "group message", 45, |state| {
+                state
+                    .current_chat
+                    .as_ref()
+                    .filter(|chat| chat.chat_id == chat_id)
+                    .map(|chat| {
+                        chat.messages.iter().any(|message| {
+                            message.body == text && message.is_outgoing == is_outgoing
+                        })
+                    })
+                    .unwrap_or(false)
+            });
+        }
+
+        fn wait_for_message_count(&self, label: &str, chat_id: &str, expected_count: usize) {
+            self.open_chat(label, chat_id);
+            wait_for_state_timeout(self.app(label), "message count", 60, |state| {
+                state
+                    .current_chat
+                    .as_ref()
+                    .filter(|chat| chat.chat_id == chat_id)
+                    .map(|chat| chat.messages.len() == expected_count)
+                    .unwrap_or(false)
+            });
+        }
+
+        fn restart_owner(&mut self, label: &str) {
+            let mut client = self
+                .clients
+                .remove(label)
+                .unwrap_or_else(|| panic!("missing scenario client `{label}`"));
+            let owner_fill = client
+                .owner_fill
+                .expect("scenario restart only supports deterministic owner clients");
+            drop(client.app);
+            client.app = app_with_dir(client.data_dir.path(), owner_fill);
+            self.clients.insert(label.to_string(), client);
+        }
+
+        fn replay_stored(&self) {
+            self.relay.replay_stored();
+            thread::sleep(StdDuration::from_secs(1));
+        }
+    }
+
+    #[test]
+    fn support_bundle_export_is_redacted_and_contains_build_metadata() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let (_data_dir, app) = app(211);
+
+        let bundle = app.export_support_bundle_json();
+        let parsed: Value = serde_json::from_str(&bundle).expect("support bundle json");
+
+        assert_eq!(
+            parsed["build"]["app_version"].as_str(),
+            Some(APP_VERSION)
+        );
+        assert_eq!(
+            parsed["build"]["relay_set_id"].as_str(),
+            Some(RELAY_SET_ID)
+        );
+        assert!(parsed["relay_urls"].is_array());
+        assert!(parsed["known_users"].is_array());
+        assert!(parsed["pending_outbound"].is_array());
+        assert!(!bundle.contains("secret_key"));
+        assert!(!bundle.contains("\"body\""));
+    }
+
+    #[test]
+    fn twenty_owner_group_converges() {
+        let mut scenario = ScenarioRunner::local();
+        scenario.add_owner("admin", 220);
+        for offset in 1..20 {
+            scenario.add_owner(&format!("owner{offset:02}"), 220 + offset as u8);
+        }
+
+        let mut member_labels = Vec::new();
+        for offset in 1..20 {
+            member_labels.push(format!("owner{offset:02}"));
+        }
+        let member_refs = member_labels.iter().map(String::as_str).collect::<Vec<_>>();
+        let chat_id = scenario.create_group("admin", "Twenty owners", &member_refs);
+
+        for label in member_refs.iter().copied().chain(std::iter::once("admin")) {
+            scenario.wait_for_group(label, &chat_id, 20);
+        }
+
+        let senders = std::iter::once("admin".to_string()).chain(member_labels.clone());
+        for (index, sender) in senders.enumerate() {
+            let text = format!("twenty-{index:02}");
+            scenario.run_step(ScenarioStep::SendGroup {
+                sender: sender.clone(),
+                chat_id: chat_id.clone(),
+                text: text.clone(),
+            });
+            for label in member_refs.iter().copied().chain(std::iter::once("admin")) {
+                let is_outgoing = label == sender;
+                scenario.wait_for_message(label, &chat_id, &text, is_outgoing);
+            }
+        }
+
+        for label in member_refs.iter().copied().chain(std::iter::once("admin")) {
+            scenario.wait_for_message_count(label, &chat_id, 20);
+        }
+    }
+
+    #[test]
+    fn group_with_linked_devices_converges() {
+        let mut scenario = ScenarioRunner::local();
+        scenario.add_owner("primary", 240);
+        scenario.add_linked("linked", "primary");
+        scenario.add_owner("admin", 242);
+        scenario.add_owner("member", 243);
+
+        let chat_id = scenario.create_group("admin", "Linked converge", &["primary", "member"]);
+        for label in ["admin", "primary", "linked", "member"] {
+            scenario.wait_for_group(label, &chat_id, 3);
+        }
+
+        for (sender, text) in [
+            ("admin", "from-admin"),
+            ("linked", "from-linked"),
+            ("member", "from-member"),
+        ] {
+            scenario.run_step(ScenarioStep::SendGroup {
+                sender: sender.to_string(),
+                chat_id: chat_id.clone(),
+                text: text.to_string(),
+            });
+        }
+
+        scenario.wait_for_message("admin", &chat_id, "from-admin", true);
+        scenario.wait_for_message("primary", &chat_id, "from-admin", false);
+        scenario.wait_for_message("linked", &chat_id, "from-admin", false);
+        scenario.wait_for_message("member", &chat_id, "from-admin", false);
+
+        scenario.wait_for_message("admin", &chat_id, "from-linked", false);
+        scenario.wait_for_message("primary", &chat_id, "from-linked", true);
+        scenario.wait_for_message("linked", &chat_id, "from-linked", true);
+        scenario.wait_for_message("member", &chat_id, "from-linked", false);
+
+        scenario.wait_for_message("admin", &chat_id, "from-member", false);
+        scenario.wait_for_message("primary", &chat_id, "from-member", false);
+        scenario.wait_for_message("linked", &chat_id, "from-member", false);
+        scenario.wait_for_message("member", &chat_id, "from-member", true);
+    }
+
+    #[test]
+    fn restart_mid_group_create_recovers() {
+        let mut scenario = ScenarioRunner::local();
+        scenario.add_owner("admin", 250);
+
+        let pending_member_npub = npub_for_fill(251);
+        let chat_id = scenario.create_group_by_inputs(
+            "admin",
+            "Restart create",
+            vec![pending_member_npub.clone()],
+        );
+        wait_for_persisted_state(scenario.data_dir("admin"), "pending group create", |persisted| {
+            !persisted.pending_group_controls.is_empty()
+        });
+
+        scenario.restart_owner("admin");
+        scenario.add_owner("member", 251);
+
+        scenario.wait_for_group("member", &chat_id, 2);
+        scenario.run_step(ScenarioStep::SendGroup {
+            sender: "admin".to_string(),
+            chat_id: chat_id.clone(),
+            text: "after-create-restart".to_string(),
+        });
+        scenario.wait_for_message("member", &chat_id, "after-create-restart", false);
+    }
+
+    #[test]
+    fn restart_mid_member_add_recovers() {
+        let mut scenario = ScenarioRunner::local();
+        scenario.add_owner("admin", 252);
+        scenario.add_owner("member1", 253);
+
+        let chat_id = scenario.create_group("admin", "Restart add", &["member1"]);
+        scenario.wait_for_group("member1", &chat_id, 2);
+
+        scenario.add_group_members_by_inputs("admin", &chat_id, vec![npub_for_fill(254)]);
+        wait_for_persisted_state(scenario.data_dir("admin"), "pending member add", |persisted| {
+            !persisted.pending_group_controls.is_empty()
+        });
+
+        scenario.restart_owner("admin");
+        scenario.add_owner("member2", 254);
+
+        for label in ["admin", "member1", "member2"] {
+            scenario.wait_for_group(label, &chat_id, 3);
+        }
+        scenario.run_step(ScenarioStep::SendGroup {
+            sender: "member2".to_string(),
+            chat_id: chat_id.clone(),
+            text: "member-two-arrived".to_string(),
+        });
+        scenario.wait_for_message("admin", &chat_id, "member-two-arrived", false);
+        scenario.wait_for_message("member1", &chat_id, "member-two-arrived", false);
+    }
+
+    #[test]
+    fn duplicate_and_replayed_events_do_not_duplicate_threads_or_messages() {
+        let mut scenario = ScenarioRunner::local();
+        scenario.add_owner("admin", 244);
+        scenario.add_owner("member", 246);
+
+        let chat_id = scenario.create_group("admin", "Replay safe", &["member"]);
+        scenario.wait_for_group("member", &chat_id, 2);
+
+        scenario.run_step(ScenarioStep::SendGroup {
+            sender: "admin".to_string(),
+            chat_id: chat_id.clone(),
+            text: "dedupe-group".to_string(),
+        });
+        scenario.wait_for_message("admin", &chat_id, "dedupe-group", true);
+        scenario.wait_for_message("member", &chat_id, "dedupe-group", false);
+
+        scenario.replay_stored();
+
+        let admin_state = scenario.app("admin").state();
+        let member_state = scenario.app("member").state();
+        assert_eq!(
+            admin_state
+                .chat_list
+                .iter()
+                .filter(|thread| thread.chat_id == chat_id)
+                .count(),
+            1
+        );
+        assert_eq!(
+            member_state
+                .chat_list
+                .iter()
+                .filter(|thread| thread.chat_id == chat_id)
+                .count(),
+            1
+        );
+        scenario.wait_for_message_count("admin", &chat_id, 1);
+        scenario.wait_for_message_count("member", &chat_id, 1);
+    }
+
+    #[test]
+    fn member_removal_blocks_future_sends() {
+        let mut scenario = ScenarioRunner::local();
+        scenario.add_owner("admin", 247);
+        scenario.add_owner("member", 248);
+
+        let chat_id = scenario.create_group("admin", "Removal block", &["member"]);
+        scenario.wait_for_group("member", &chat_id, 2);
+        scenario.remove_group_member("admin", &chat_id, "member");
+        scenario.wait_for_group("admin", &chat_id, 1);
+        scenario.wait_for_group("member", &chat_id, 1);
+
+        scenario.open_chat("member", &chat_id);
+        let before_count = scenario
+            .app("member")
+            .state()
+            .current_chat
+            .as_ref()
+            .map(|chat| chat.messages.len())
+            .unwrap_or(0);
+        scenario.run_step(ScenarioStep::SendGroup {
+            sender: "member".to_string(),
+            chat_id: chat_id.clone(),
+            text: "blocked-after-removal".to_string(),
+        });
+        thread::sleep(StdDuration::from_secs(1));
+        let after_state = scenario.app("member").state();
+        assert_eq!(
+            after_state
+                .current_chat
+                .as_ref()
+                .map(|chat| chat.messages.len())
+                .unwrap_or(0),
+            before_count
+        );
+    }
+
+    #[test]
+    fn post_removal_messages_reach_only_remaining_members() {
+        let mut scenario = ScenarioRunner::local();
+        scenario.add_owner("admin", 249);
+        scenario.add_owner("member1", 250);
+        scenario.add_owner("member2", 251);
+
+        let chat_id = scenario.create_group("admin", "Post removal", &["member1", "member2"]);
+        for label in ["admin", "member1", "member2"] {
+            scenario.wait_for_group(label, &chat_id, 3);
+        }
+
+        scenario.remove_group_member("admin", &chat_id, "member2");
+        scenario.wait_for_group("admin", &chat_id, 2);
+        scenario.wait_for_group("member1", &chat_id, 2);
+        scenario.wait_for_group("member2", &chat_id, 2);
+
+        scenario.run_step(ScenarioStep::SendGroup {
+            sender: "admin".to_string(),
+            chat_id: chat_id.clone(),
+            text: "after-removal".to_string(),
+        });
+        scenario.wait_for_message("admin", &chat_id, "after-removal", true);
+        scenario.wait_for_message("member1", &chat_id, "after-removal", false);
+        thread::sleep(StdDuration::from_secs(2));
+        let member2_state = scenario.app("member2").state();
+        assert!(
+            member2_state
+                .current_chat
+                .as_ref()
+                .map(|chat| chat.messages.iter().all(|message| message.body != "after-removal"))
+                .unwrap_or(true)
         );
     }
 }

@@ -66,6 +66,18 @@ impl FfiApp {
         let _ = self.core_tx.send(CoreMsg::Action(action));
     }
 
+    pub fn export_support_bundle_json(&self) -> String {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        if self
+            .core_tx
+            .send(CoreMsg::ExportSupportBundle(reply_tx))
+            .is_err()
+        {
+            return "{}".to_string();
+        }
+        reply_rx.recv().unwrap_or_else(|_| "{}".to_string())
+    }
+
     pub fn listen_for_updates(&self, reconciler: Box<dyn AppReconciler>) {
         if self
             .listening

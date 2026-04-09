@@ -184,6 +184,7 @@ fun ChatListScreen(
 
     if (showProfile && account != null) {
         MyProfileSheet(
+            appManager = appManager,
             npub = account.npub,
             publicKeyHex = account.publicKeyHex,
             deviceNpub = account.deviceNpub,

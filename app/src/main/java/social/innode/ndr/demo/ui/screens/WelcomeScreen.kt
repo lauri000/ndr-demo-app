@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import social.innode.ndr.demo.BuildConfig
 import social.innode.ndr.demo.rust.isValidPeerInput
 import social.innode.ndr.demo.rust.normalizePeerInput
 import social.innode.ndr.demo.ui.components.IrisIcons
@@ -79,6 +80,25 @@ fun WelcomeScreen(
                         .fillMaxWidth()
                         .testTag("generateKeyButton"),
             )
+        }
+
+        if (BuildConfig.TRUSTED_TEST_BUILD) {
+            IrisSectionCard {
+                Text(
+                    text = "Trusted test build",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    text = "This beta is for trusted testers only. It uses a controlled relay set, lacks encrypted local state, and should not be used for sensitive conversations.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = IrisTheme.palette.muted,
+                )
+                Text(
+                    text = "Build ${BuildConfig.VERSION_NAME} (${BuildConfig.BUILD_GIT_SHA})",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = IrisTheme.palette.muted,
+                )
+            }
         }
 
         IrisSectionCard {

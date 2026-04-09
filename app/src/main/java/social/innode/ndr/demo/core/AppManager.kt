@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import social.innode.ndr.demo.BuildConfig
 import social.innode.ndr.demo.account.AccountBootstrapState
 import social.innode.ndr.demo.account.AccountState
 import social.innode.ndr.demo.account.AndroidKeystoreSecretStore
@@ -213,6 +214,21 @@ class AppManager(
         withContext(ioDispatcher) {
             loadPersistedBundle()?.ownerNsec
         }
+
+    suspend fun exportSupportBundleJson(): String =
+        withContext(ioDispatcher) {
+            rust.exportSupportBundleJson()
+        }
+
+    fun resetAppState() {
+        logout()
+    }
+
+    fun buildSummary(): String = "${BuildConfig.VERSION_NAME} (${BuildConfig.BUILD_GIT_SHA})"
+
+    fun relaySetId(): String = BuildConfig.RELAY_SET_ID
+
+    fun isTrustedTestBuild(): Boolean = BuildConfig.TRUSTED_TEST_BUILD
 
     override fun reconcile(update: AppUpdate) {
         when (update) {

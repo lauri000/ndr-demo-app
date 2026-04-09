@@ -1,5 +1,6 @@
 package social.innode.ndr.demo
 
+import android.util.Base64
 import android.os.Bundle
 import android.os.SystemClock
 import androidx.test.core.app.ActivityScenario
@@ -914,11 +915,15 @@ class RealRelayHarnessTest {
         }
 
     private fun optionalArg(name: String): String? =
-        arguments.getString(name)?.trim()?.takeIf { it.isNotEmpty() }
+        arguments.getString("${name}_b64")
+            ?.takeIf { it.isNotBlank() }
+            ?.let(::decodeBase64Arg)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: arguments.getString(name)?.trim()?.takeIf { it.isNotEmpty() }
 
     private fun requiredArg(name: String): String =
-        arguments.getString(name)?.trim()?.takeIf { it.isNotEmpty() }
-            ?: throw AssertionError("Missing instrumentation argument: $name")
+        optionalArg(name) ?: throw AssertionError("Missing instrumentation argument: $name")
 
     private fun requiredListArg(name: String): List<String> =
         requiredArg(name)
@@ -927,6 +932,9 @@ class RealRelayHarnessTest {
             .filter(String::isNotEmpty)
             .takeIf { it.isNotEmpty() }
             ?: throw AssertionError("Missing non-empty list argument: $name")
+
+    private fun decodeBase64Arg(value: String): String =
+        String(Base64.decode(value, Base64.NO_WRAP or Base64.URL_SAFE), Charsets.UTF_8)
 
     private fun storageEntries(root: File): List<String> =
         root

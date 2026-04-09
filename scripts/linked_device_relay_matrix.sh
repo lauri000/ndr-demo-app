@@ -17,6 +17,7 @@ fi
 
 ADB="${SDK_DIR}/platform-tools/adb"
 EMULATOR="${SDK_DIR}/emulator/emulator"
+HARNESS="${ROOT_DIR}/scripts/run_harness.py"
 RUNNER="social.innode.ndr.demo.test/androidx.test.runner.AndroidJUnitRunner"
 PACKAGE_NAME="social.innode.ndr.demo"
 DEFAULT_AVDS=("Pixel_9a" "Medium_Phone_API_36.1" "Pixel_Fold")
@@ -28,6 +29,11 @@ fi
 
 if [[ ! -x "${EMULATOR}" ]]; then
   echo "emulator not found at ${EMULATOR}" >&2
+  exit 1
+fi
+
+if [[ ! -f "${HARNESS}" ]]; then
+  echo "Harness runner not found at ${HARNESS}" >&2
   exit 1
 fi
 
@@ -77,7 +83,28 @@ run_instrumentation() {
   local class_name="$2"
   shift 2
 
-  "${ADB}" -s "${serial}" shell am instrument -w -r -e clearPackageData false -e class "${class_name}" "$@" "${RUNNER}"
+  local test_class="${class_name%%#*}"
+  local test_name="${class_name#*#}"
+  local cmd=(
+    python3
+    "${HARNESS}"
+    --adb "${ADB}"
+    --serial "${serial}"
+    --runner "${RUNNER}"
+    --class-name "${test_class}"
+    --test-name "${test_name}"
+    --arg "clearPackageData=false"
+  )
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "-e" ]]; then
+      cmd+=(--arg "$2=$3")
+      shift 3
+    else
+      echo "Unsupported instrumentation argument sequence: $1" >&2
+      return 1
+    fi
+  done
+  "${cmd[@]}"
 }
 
 extract_status() {

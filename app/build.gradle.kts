@@ -1,4 +1,5 @@
 import java.util.Properties
+import java.time.Instant
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
@@ -7,6 +8,8 @@ plugins {
 }
 
 val ndkVersionValue = "26.3.11579264"
+val appVersionCode = 1
+val appVersionName = "0.1.0"
 val rustAppDir = rootProject.file("rust")
 val rustManifestPath = rustAppDir.resolve("Cargo.toml")
 val rustSourceDir = rustAppDir.resolve("src")
@@ -27,6 +30,55 @@ val androidSdkDir =
 val androidNdkDir = file("$androidSdkDir/ndk/$ndkVersionValue")
 val cargoBinary = file("${System.getProperty("user.home")}/.cargo/bin/cargo")
 val uniffiBindgenBinary = file("${System.getProperty("user.home")}/.cargo/bin/uniffi-bindgen")
+val buildGitSha =
+    runCatching {
+        providers.exec {
+            commandLine("git", "-C", rootProject.rootDir.absolutePath, "rev-parse", "--short=12", "HEAD")
+        }.standardOutput.asText.get().trim()
+    }.getOrElse { "unknown" }
+val buildTimestampUtc = Instant.now().toString()
+val publicRelayFallbackCsv = "wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net"
+
+fun configValue(propertyName: String, envName: String): String? =
+    localProperties.getProperty(propertyName)?.takeIf { it.isNotBlank() }
+        ?: System.getenv(envName)?.takeIf { it.isNotBlank() }
+
+fun stringLiteral(value: String): String =
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+data class BuildRelayConfig(
+    val relaySetId: String,
+    val relaysCsv: String,
+    val trustedTestBuild: Boolean,
+)
+
+val debugRelayConfig =
+    BuildRelayConfig(
+        relaySetId = "public-dev",
+        relaysCsv = configValue("debug.relays", "NDR_DEBUG_RELAYS") ?: publicRelayFallbackCsv,
+        trustedTestBuild = false,
+    )
+val betaRelayConfig =
+    BuildRelayConfig(
+        relaySetId = configValue("beta.relaySetId", "NDR_BETA_RELAY_SET_ID") ?: "beta-fallback",
+        relaysCsv = configValue("beta.relays", "NDR_BETA_RELAYS") ?: publicRelayFallbackCsv,
+        trustedTestBuild = true,
+    )
+val releaseRelayConfig =
+    BuildRelayConfig(
+        relaySetId = configValue("release.relaySetId", "NDR_RELEASE_RELAY_SET_ID") ?: "public-release",
+        relaysCsv = configValue("release.relays", "NDR_RELEASE_RELAYS") ?: publicRelayFallbackCsv,
+        trustedTestBuild = false,
+    )
+val betaSigningStoreFile = configValue("beta.storeFile", "NDR_BETA_KEYSTORE_PATH")
+val betaSigningStorePassword = configValue("beta.storePassword", "NDR_BETA_KEYSTORE_PASSWORD")
+val betaSigningKeyAlias = configValue("beta.keyAlias", "NDR_BETA_KEY_ALIAS")
+val betaSigningKeyPassword = configValue("beta.keyPassword", "NDR_BETA_KEY_PASSWORD")
+val hasDedicatedBetaSigning =
+    !betaSigningStoreFile.isNullOrBlank() &&
+        !betaSigningStorePassword.isNullOrBlank() &&
+        !betaSigningKeyAlias.isNullOrBlank() &&
+        !betaSigningKeyPassword.isNullOrBlank()
 val hostLibraryFile =
     rustAppDir.resolve(
         when {
@@ -45,8 +97,8 @@ android {
         applicationId = "social.innode.ndr.demo"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testInstrumentationRunnerArguments["clearPackageData"] = "true"
 
@@ -55,13 +107,59 @@ android {
         }
     }
 
+    signingConfigs {
+        if (hasDedicatedBetaSigning) {
+            create("beta") {
+                storeFile = file(betaSigningStoreFile!!)
+                storePassword = betaSigningStorePassword
+                keyAlias = betaSigningKeyAlias
+                keyPassword = betaSigningKeyPassword
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            buildConfigField("String", "BUILD_CHANNEL", stringLiteral("debug"))
+            buildConfigField("String", "BUILD_GIT_SHA", stringLiteral(buildGitSha))
+            buildConfigField("String", "BUILD_TIMESTAMP_UTC", stringLiteral(buildTimestampUtc))
+            buildConfigField("String", "RELAY_SET_ID", stringLiteral(debugRelayConfig.relaySetId))
+            buildConfigField("String", "DEFAULT_RELAYS_CSV", stringLiteral(debugRelayConfig.relaysCsv))
+            buildConfigField("boolean", "TRUSTED_TEST_BUILD", debugRelayConfig.trustedTestBuild.toString())
+        }
+
+        create("beta") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".beta"
+            versionNameSuffix = "-beta"
+            isDebuggable = false
+            matchingFallbacks += listOf("release")
+            signingConfig =
+                if (hasDedicatedBetaSigning) {
+                    signingConfigs.getByName("beta")
+                } else {
+                    signingConfigs.getByName("debug")
+                }
+            buildConfigField("String", "BUILD_CHANNEL", stringLiteral("beta"))
+            buildConfigField("String", "BUILD_GIT_SHA", stringLiteral(buildGitSha))
+            buildConfigField("String", "BUILD_TIMESTAMP_UTC", stringLiteral(buildTimestampUtc))
+            buildConfigField("String", "RELAY_SET_ID", stringLiteral(betaRelayConfig.relaySetId))
+            buildConfigField("String", "DEFAULT_RELAYS_CSV", stringLiteral(betaRelayConfig.relaysCsv))
+            buildConfigField("boolean", "TRUSTED_TEST_BUILD", betaRelayConfig.trustedTestBuild.toString())
+        }
+
         release {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            buildConfigField("String", "BUILD_CHANNEL", stringLiteral("release"))
+            buildConfigField("String", "BUILD_GIT_SHA", stringLiteral(buildGitSha))
+            buildConfigField("String", "BUILD_TIMESTAMP_UTC", stringLiteral(buildTimestampUtc))
+            buildConfigField("String", "RELAY_SET_ID", stringLiteral(releaseRelayConfig.relaySetId))
+            buildConfigField("String", "DEFAULT_RELAYS_CSV", stringLiteral(releaseRelayConfig.relaysCsv))
+            buildConfigField("boolean", "TRUSTED_TEST_BUILD", releaseRelayConfig.trustedTestBuild.toString())
         }
     }
 
@@ -72,6 +170,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
@@ -91,6 +190,13 @@ val buildRustHostDebug by tasks.registering(Exec::class) {
     group = "rust"
     description = "Build the host Rust library for UniFFI binding generation."
     workingDir = rustAppDir
+    environment("NDR_APP_VERSION", appVersionName)
+    environment("NDR_BUILD_CHANNEL", "debug")
+    environment("NDR_BUILD_GIT_SHA", buildGitSha)
+    environment("NDR_BUILD_TIMESTAMP_UTC", buildTimestampUtc)
+    environment("NDR_DEFAULT_RELAYS", debugRelayConfig.relaysCsv)
+    environment("NDR_RELAY_SET_ID", debugRelayConfig.relaySetId)
+    environment("NDR_TRUSTED_TEST_BUILD", debugRelayConfig.trustedTestBuild.toString())
     commandLine(
         cargoBinary.absolutePath,
         "build",
@@ -128,38 +234,84 @@ val generateRustBindings by tasks.registering(Exec::class) {
     outputs.dir(generatedUniffiDir)
 }
 
-val buildRustAndroid by tasks.registering(Exec::class) {
-    group = "rust"
-    description = "Build the Android Rust app core library for arm64-v8a devices."
-    workingDir = rustAppDir
-    doFirst {
-        generatedJniDir.get().asFile.deleteRecursively()
-        generatedJniDir.get().asFile.mkdirs()
+fun registerRustAndroidTask(
+    taskName: String,
+    descriptionText: String,
+    buildChannel: String,
+    relayConfig: BuildRelayConfig,
+    releaseMode: Boolean,
+) =
+    tasks.register(taskName, Exec::class) {
+        group = "rust"
+        description = descriptionText
+        workingDir = rustAppDir
+        doFirst {
+            generatedJniDir.get().asFile.deleteRecursively()
+            generatedJniDir.get().asFile.mkdirs()
+        }
+        environment("ANDROID_HOME", androidSdkDir)
+        environment("ANDROID_SDK_ROOT", androidSdkDir)
+        environment("ANDROID_NDK_HOME", androidNdkDir.absolutePath)
+        environment("NDR_APP_VERSION", appVersionName)
+        environment("NDR_BUILD_CHANNEL", buildChannel)
+        environment("NDR_BUILD_GIT_SHA", buildGitSha)
+        environment("NDR_BUILD_TIMESTAMP_UTC", buildTimestampUtc)
+        environment("NDR_DEFAULT_RELAYS", relayConfig.relaysCsv)
+        environment("NDR_RELAY_SET_ID", relayConfig.relaySetId)
+        environment("NDR_TRUSTED_TEST_BUILD", relayConfig.trustedTestBuild.toString())
+        val command =
+            mutableListOf(
+                cargoBinary.absolutePath,
+                "ndk",
+                "-t",
+                "arm64-v8a",
+                "-P",
+                "26",
+                "-o",
+                generatedJniDir.get().asFile.absolutePath,
+                "--manifest-path",
+                rustManifestPath.absolutePath,
+                "build",
+            )
+        if (releaseMode) {
+            command += "--release"
+        }
+        commandLine(command)
+        inputs.file(rustManifestPath)
+        inputs.file(rustAppDir.resolve("uniffi.toml"))
+        inputs.dir(rustSourceDir)
+        outputs.dir(generatedJniDir)
     }
-    environment("ANDROID_HOME", androidSdkDir)
-    environment("ANDROID_SDK_ROOT", androidSdkDir)
-    environment("ANDROID_NDK_HOME", androidNdkDir.absolutePath)
-    commandLine(
-        cargoBinary.absolutePath,
-        "ndk",
-        "-t",
-        "arm64-v8a",
-        "-P",
-        "26",
-        "-o",
-        generatedJniDir.get().asFile.absolutePath,
-        "--manifest-path",
-        rustManifestPath.absolutePath,
-        "build",
-    )
-    inputs.file(rustManifestPath)
-    inputs.file(rustAppDir.resolve("uniffi.toml"))
-    inputs.dir(rustSourceDir)
-    outputs.dir(generatedJniDir)
-}
 
-buildRustAndroid.configure {
-    mustRunAfter(generateRustBindings)
+val buildRustAndroidDebug =
+    registerRustAndroidTask(
+        "buildRustAndroidDebug",
+        "Build the Android Rust app core library for debug devices.",
+        "debug",
+        debugRelayConfig,
+        releaseMode = false,
+    )
+val buildRustAndroidBeta =
+    registerRustAndroidTask(
+        "buildRustAndroidBeta",
+        "Build the Android Rust app core library for beta devices.",
+        "beta",
+        betaRelayConfig,
+        releaseMode = true,
+    )
+val buildRustAndroidRelease =
+    registerRustAndroidTask(
+        "buildRustAndroidRelease",
+        "Build the Android Rust app core library for release devices.",
+        "release",
+        releaseRelayConfig,
+        releaseMode = true,
+    )
+
+listOf(buildRustAndroidDebug, buildRustAndroidBeta, buildRustAndroidRelease).forEach { taskProvider ->
+    taskProvider.configure {
+        mustRunAfter(generateRustBindings)
+    }
 }
 
 tasks.withType<KotlinCompile>().configureEach {
@@ -168,8 +320,15 @@ tasks.withType<KotlinCompile>().configureEach {
 }
 
 tasks.named("preBuild").configure {
-    dependsOn(buildRustAndroid)
     dependsOn(generateRustBindings)
+}
+
+tasks.configureEach {
+    when (name) {
+        "mergeDebugJniLibFolders" -> dependsOn(buildRustAndroidDebug)
+        "mergeBetaJniLibFolders" -> dependsOn(buildRustAndroidBeta)
+        "mergeReleaseJniLibFolders" -> dependsOn(buildRustAndroidRelease)
+    }
 }
 
 dependencies {

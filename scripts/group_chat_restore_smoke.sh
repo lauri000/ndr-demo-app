@@ -16,8 +16,14 @@ if [[ -z "${SDK_DIR}" ]]; then
 fi
 
 ADB="${SDK_DIR}/platform-tools/adb"
+HARNESS="${ROOT_DIR}/scripts/run_harness.py"
 if [[ ! -x "${ADB}" ]]; then
   echo "adb not found at ${ADB}" >&2
+  exit 1
+fi
+
+if [[ ! -f "${HARNESS}" ]]; then
+  echo "Harness runner not found at ${HARNESS}" >&2
   exit 1
 fi
 
@@ -109,12 +115,19 @@ run_test() {
 
   "${ADB}" -s "${serial}" shell am force-stop "${TEST_PACKAGE_NAME}" >/dev/null 2>&1 || true
 
-  local cmd=("${ADB}" -s "${serial}" shell am instrument -w -r)
+  local cmd=(
+    python3
+    "${HARNESS}"
+    --adb "${ADB}"
+    --serial "${serial}"
+    --runner "${RUNNER}"
+    --class-name "${CLASS}"
+    --test-name "${test_name}"
+  )
   while [[ $# -gt 0 ]]; do
-    cmd+=(-e "$1" "$2")
+    cmd+=(--arg "$1=$2")
     shift 2
   done
-  cmd+=(-e class "${CLASS}#${test_name}" "${RUNNER}")
   "${cmd[@]}"
 }
 
