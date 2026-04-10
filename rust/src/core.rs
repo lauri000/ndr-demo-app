@@ -44,6 +44,7 @@ const PENDING_RETRY_DELAY_SECS: u64 = 2;
 const FIRST_CONTACT_STAGE_DELAY_MS: u64 = 1500;
 const FIRST_CONTACT_RETRY_DELAY_SECS: u64 = 5;
 const CATCH_UP_LOOKBACK_SECS: u64 = 30;
+const UNKNOWN_GROUP_RECOVERY_LOOKBACK_SECS: u64 = 24 * 60 * 60;
 const DEVICE_INVITE_DISCOVERY_LOOKBACK_SECS: u64 = 30 * 24 * 60 * 60;
 const DEVICE_INVITE_DISCOVERY_LIMIT: usize = 256;
 const RELAY_CONNECT_TIMEOUT_SECS: u64 = 5;
@@ -628,6 +629,9 @@ impl AppCore {
                 self.push_debug_log("protocol.catch_up.schedule", "fetch tracked peers");
                 self.fetch_recent_protocol_state();
                 self.fetch_recent_messages_for_tracked_peers(now);
+                if self.is_device_roster_open() {
+                    self.fetch_pending_device_invites_for_local_owner();
+                }
             }
             InternalEvent::FetchCatchUpEvents(events) => {
                 for event in events {
@@ -1995,6 +1999,10 @@ impl AppCore {
         self.emit_state();
     }
 
+    fn is_device_roster_open(&self) -> bool {
+        matches!(self.screen_stack.last(), Some(Screen::DeviceRoster))
+    }
+
     fn add_authorized_device(&mut self, device_input: &str) {
         let Some(logged_in) = self.logged_in.as_ref() else {
             self.state.toast = Some("Create or restore an account first.".to_string());
@@ -2238,30 +2246,14 @@ impl AppCore {
                     let invite_owner = invite.inviter_owner_pubkey.unwrap_or_else(|| {
                         OwnerPubkey::from_bytes(invite.inviter_device_pubkey.to_bytes())
                     });
-                    let (local_owner, local_device) = {
+                    let local_device = {
                         let logged_in = self.logged_in.as_ref().expect("checked above");
-                        (
-                            logged_in.owner_pubkey,
-                            local_device_from_keys(&logged_in.device_keys),
-                        )
+                        local_device_from_keys(&logged_in.device_keys)
                     };
-                    let should_observe = if invite.inviter_device_pubkey == local_device {
-                        false
-                    } else if invite_owner == local_owner {
-                        local_roster_from_session_manager(
-                            &self
-                                .logged_in
-                                .as_ref()
-                                .expect("checked above")
-                                .session_manager,
-                        )
-                        .and_then(|roster| {
-                            roster.get_device(&invite.inviter_device_pubkey).copied()
-                        })
-                        .is_some()
-                    } else {
-                        true
-                    };
+                    // Pending linked-device invites for the local owner arrive before the
+                    // device has been added to the owner-signed roster. Observe every
+                    // non-self invite so the primary can render it as "Pending".
+                    let should_observe = invite.inviter_device_pubkey != local_device;
                     if should_observe {
                         if let Err(error) = self
                             .logged_in
@@ -2420,6 +2412,13 @@ impl AppCore {
                             now.get(),
                         ) {
                             if is_retryable_group_payload_error(&error) {
+                                if is_unknown_group_payload_error(&error) {
+                                    self.fetch_recent_messages_for_owner_with_lookback(
+                                        message.owner_pubkey,
+                                        now,
+                                        UNKNOWN_GROUP_RECOVERY_LOOKBACK_SECS,
+                                    );
+                                }
                                 self.push_debug_log(
                                     "relay.message.pending",
                                     format!("payload apply deferred: {error}"),
@@ -2754,6 +2753,13 @@ impl AppCore {
                             made_progress = true;
                         }
                         Err(error) if is_retryable_group_payload_error(&error) => {
+                            if is_unknown_group_payload_error(&error) {
+                                self.fetch_recent_messages_for_owner_with_lookback(
+                                    OwnerPubkey::from_bytes(sender_pubkey.to_bytes()),
+                                    now,
+                                    UNKNOWN_GROUP_RECOVERY_LOOKBACK_SECS,
+                                );
+                            }
                             still_pending.push(item);
                         }
                         Err(error) => {
@@ -2793,6 +2799,13 @@ impl AppCore {
                             made_progress = true;
                         }
                         Err(error) if is_retryable_group_payload_error(&error) => {
+                            if is_unknown_group_payload_error(&error) {
+                                self.fetch_recent_messages_for_owner_with_lookback(
+                                    message.owner_pubkey,
+                                    now,
+                                    UNKNOWN_GROUP_RECOVERY_LOOKBACK_SECS,
+                                );
+                            }
                             still_pending.push(PendingInbound::decrypted(
                                 message.owner_pubkey,
                                 message.payload,
@@ -3254,6 +3267,14 @@ impl AppCore {
         for pending in &self.pending_group_controls {
             owners.extend(pending.target_owner_hexes.iter().cloned());
         }
+        for pending in &self.pending_inbound {
+            if let PendingInbound::Decrypted {
+                sender_owner_hex, ..
+            } = pending
+            {
+                owners.insert(sender_owner_hex.clone());
+            }
+        }
         if let Some(logged_in) = self.logged_in.as_ref() {
             for group in logged_in.group_manager.groups() {
                 for member in group.members {
@@ -3527,6 +3548,19 @@ impl AppCore {
     }
 
     fn fetch_recent_messages_for_owner(&self, owner_pubkey: OwnerPubkey, now: UnixSeconds) {
+        self.fetch_recent_messages_for_owner_with_lookback(
+            owner_pubkey,
+            now,
+            CATCH_UP_LOOKBACK_SECS,
+        );
+    }
+
+    fn fetch_recent_messages_for_owner_with_lookback(
+        &self,
+        owner_pubkey: OwnerPubkey,
+        now: UnixSeconds,
+        lookback_secs: u64,
+    ) {
         let Some(client) = self
             .logged_in
             .as_ref()
@@ -3535,7 +3569,7 @@ impl AppCore {
             return;
         };
 
-        let filters = self.message_filters_for_owner(owner_pubkey, now);
+        let filters = self.message_filters_for_owner(owner_pubkey, now, lookback_secs);
         if filters.is_empty() {
             return;
         }
@@ -3574,7 +3608,7 @@ impl AppCore {
             summarize_protocol_plan(Some(&plan)),
         );
 
-        let filters = build_protocol_state_catch_up_filters(&plan);
+        let filters = build_protocol_state_catch_up_filters(&plan, unix_now());
         if filters.is_empty() {
             return;
         }
@@ -3753,6 +3787,7 @@ impl AppCore {
         &self,
         owner_pubkey: OwnerPubkey,
         now: UnixSeconds,
+        lookback_secs: u64,
     ) -> Vec<Filter> {
         let Some(logged_in) = self.logged_in.as_ref() else {
             return Vec::new();
@@ -3791,9 +3826,7 @@ impl AppCore {
         vec![Filter::new()
             .kind(Kind::from(codec::MESSAGE_EVENT_KIND as u16))
             .authors(authors)
-            .since(Timestamp::from(
-                now.get().saturating_sub(CATCH_UP_LOOKBACK_SECS),
-            ))]
+            .since(Timestamp::from(now.get().saturating_sub(lookback_secs)))]
     }
 
     fn update_message_delivery(
@@ -5095,7 +5128,10 @@ fn build_protocol_filters(plan: &ProtocolSubscriptionPlan) -> Vec<Filter> {
     filters
 }
 
-fn build_protocol_state_catch_up_filters(plan: &ProtocolSubscriptionPlan) -> Vec<Filter> {
+fn build_protocol_state_catch_up_filters(
+    plan: &ProtocolSubscriptionPlan,
+    now: UnixSeconds,
+) -> Vec<Filter> {
     let mut filters = Vec::new();
 
     let roster_authors = plan
@@ -5133,6 +5169,22 @@ fn build_protocol_state_catch_up_filters(plan: &ProtocolSubscriptionPlan) -> Vec
                     .pubkey(recipient),
             );
         }
+    }
+
+    let message_authors = plan
+        .message_authors
+        .iter()
+        .filter_map(|hex| PublicKey::parse(hex).ok())
+        .collect::<Vec<_>>();
+    if !message_authors.is_empty() {
+        filters.push(
+            Filter::new()
+                .kind(Kind::from(codec::MESSAGE_EVENT_KIND as u16))
+                .authors(message_authors)
+                .since(Timestamp::from(
+                    now.get().saturating_sub(CATCH_UP_LOOKBACK_SECS),
+                )),
+        );
     }
 
     filters
@@ -5280,6 +5332,10 @@ fn is_retryable_group_payload_error(error: &anyhow::Error) -> bool {
     message.contains("create group sender must match created_by")
         || message.contains("unknown group")
         || message.contains("revision mismatch")
+}
+
+fn is_unknown_group_payload_error(error: &anyhow::Error) -> bool {
+    error.to_string().contains("unknown group")
 }
 
 fn decode_app_group_message_payload(payload: &[u8]) -> Option<AppGroupMessagePayload> {
@@ -7332,6 +7388,38 @@ mod tests {
     }
 
     #[test]
+    fn decrypted_pending_inbound_sender_is_tracked_for_recovery() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let data_dir = TempDir::new().expect("temp dir");
+        let owner_keys = keys_for_fill(75);
+        let device_keys = device_keys_for_fill(75);
+        let owner = local_owner_from_keys(&owner_keys);
+        let now = UnixSeconds(500);
+        let local_device = local_device_from_keys(&device_keys);
+
+        let mut session_manager =
+            SessionManager::new(owner, device_keys.secret_key().to_secret_bytes());
+        session_manager.apply_local_roster(DeviceRoster::new(
+            now,
+            vec![AuthorizedDevice::new(local_device, now)],
+        ));
+
+        let mut core = logged_in_core_with_manager(data_dir.path(), 75, session_manager);
+        let sender_owner = local_owner_from_keys(&keys_for_fill(76));
+        core.pending_inbound.push(PendingInbound::decrypted(
+            sender_owner,
+            b"pending".to_vec(),
+            now.get(),
+        ));
+
+        assert!(core
+            .tracked_peer_owner_hexes()
+            .contains(&sender_owner.to_string()));
+    }
+
+    #[test]
     fn recent_handshake_peer_tracks_claimed_owner_after_roster_verification() {
         let _guard = relay_test_lock()
             .lock()
@@ -7435,6 +7523,50 @@ mod tests {
         assert!(!core
             .protocol_owner_hexes()
             .contains(&alice_device_owner.to_string()));
+    }
+
+    #[test]
+    fn protocol_state_catch_up_fetches_recent_message_events() {
+        let plan = ProtocolSubscriptionPlan {
+            roster_authors: vec![
+                "0193d5c691ea39b12343c37ac26a0455cf4c64bdacfa218e29ee582c552859db".to_string(),
+            ],
+            invite_authors: vec![],
+            invite_response_recipient: Some(
+                "a3f5e52d1a528f41f4dcffc8ef7c46cc32299f92472fba3aa8006839becbfad6".to_string(),
+            ),
+            message_authors: vec![
+                "e7d079b75972e1774a5cb0fe36566faea814999bab5330081cfb6d4763314915".to_string(),
+            ],
+        };
+
+        let now = UnixSeconds(1_900_000_000);
+        let filters = build_protocol_state_catch_up_filters(&plan, now);
+        let serialized = serde_json::to_value(&filters).expect("serialize filters");
+        let filters = serialized.as_array().expect("filter array");
+
+        let message_filter = filters
+            .iter()
+            .find(|filter| {
+                filter["kinds"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|kind| kind.as_u64() == Some(codec::MESSAGE_EVENT_KIND as u64))
+            })
+            .expect("message catch-up filter");
+
+        assert_eq!(
+            message_filter["authors"]
+                .as_array()
+                .expect("authors array")
+                .len(),
+            1
+        );
+        assert_eq!(
+            message_filter["since"].as_u64(),
+            Some(now.get().saturating_sub(CATCH_UP_LOOKBACK_SECS))
+        );
     }
 
     #[test]
@@ -8423,6 +8555,71 @@ mod tests {
                 })
                 .unwrap_or(false)
         });
+    }
+
+    #[test]
+    fn linked_device_appears_live_when_primary_device_roster_is_already_open() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::local_only();
+        let _relay = TestRelay::start();
+        let primary_dir = TempDir::new().expect("primary dir");
+        let linked_dir = TempDir::new().expect("linked dir");
+
+        let primary = app_with_dir(primary_dir.path(), 216);
+        let primary_account =
+            wait_for_state(&primary, "primary account", |state| state.account.is_some())
+                .account
+                .expect("primary account");
+
+        primary.dispatch(AppAction::PushScreen {
+            screen: Screen::DeviceRoster,
+        });
+        wait_for_state(&primary, "primary device roster open", |state| {
+            state.device_roster.is_some()
+        });
+
+        let linked = FfiApp::new(
+            linked_dir.path().to_string_lossy().into_owned(),
+            String::new(),
+            "test".to_string(),
+        );
+        linked.dispatch(AppAction::StartLinkedDevice {
+            owner_input: primary_account.npub.clone(),
+        });
+
+        let linked_account = wait_for_state(&linked, "linked awaiting approval", |state| {
+            state
+                .account
+                .as_ref()
+                .map(|account| {
+                    matches!(
+                        account.authorization_state,
+                        DeviceAuthorizationState::AwaitingApproval
+                    )
+                })
+                .unwrap_or(false)
+        })
+        .account
+        .expect("linked account");
+
+        wait_for_state(
+            &primary,
+            "primary observed pending linked device via live relay invite",
+            |state| {
+                state
+                    .device_roster
+                    .as_ref()
+                    .map(|roster| {
+                        roster.devices.iter().any(|device| {
+                            device.device_pubkey_hex == linked_account.device_public_key_hex
+                                && !device.is_authorized
+                        })
+                    })
+                    .unwrap_or(false)
+            },
+        );
     }
 
     struct ScenarioClient {
