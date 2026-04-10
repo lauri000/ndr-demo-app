@@ -96,7 +96,6 @@ impl FfiApp {
             }
         });
     }
-
 }
 
 #[cfg(test)]

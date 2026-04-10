@@ -46,6 +46,7 @@ const FIRST_CONTACT_RETRY_DELAY_SECS: u64 = 5;
 const CATCH_UP_LOOKBACK_SECS: u64 = 30;
 const DEVICE_INVITE_DISCOVERY_LOOKBACK_SECS: u64 = 30 * 24 * 60 * 60;
 const DEVICE_INVITE_DISCOVERY_LIMIT: usize = 256;
+const RELAY_CONNECT_TIMEOUT_SECS: u64 = 5;
 const RESUBSCRIBE_CATCH_UP_DELAY_SECS: u64 = 5;
 const PROTOCOL_SUBSCRIPTION_ID: &str = "ndr-protocol";
 const APP_DIRECT_MESSAGE_PAYLOAD_VERSION: u8 = 1;
@@ -4629,7 +4630,9 @@ impl AppCore {
         let relay_urls = logged_in.relay_urls.clone();
         self.runtime.spawn(async move {
             ensure_session_relays_configured(&client, &relay_urls).await;
-            client.connect().await;
+            client
+                .connect_with_timeout(Duration::from_secs(RELAY_CONNECT_TIMEOUT_SECS))
+                .await;
         });
     }
 
@@ -5650,7 +5653,9 @@ async fn publish_event_with_retry(
     let mut last_error = "no relays configured".to_string();
 
     for attempt in 0..5 {
-        client.connect().await;
+        client
+            .connect_with_timeout(Duration::from_secs(RELAY_CONNECT_TIMEOUT_SECS))
+            .await;
         match publish_event_once(client, relay_urls, &event).await {
             Ok(()) => return Ok(()),
             Err(error) => last_error = error.to_string(),
@@ -5697,6 +5702,10 @@ async fn publish_event_first_ack(
     if relay_urls.is_empty() {
         return Err(anyhow::anyhow!("{label}: no relays configured"));
     }
+
+    client
+        .connect_with_timeout(Duration::from_secs(RELAY_CONNECT_TIMEOUT_SECS))
+        .await;
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<(), String>>(relay_urls.len().max(1));
 
