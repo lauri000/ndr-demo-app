@@ -62,7 +62,7 @@ fun AwaitingDeviceApprovalScreen(
                 style = MaterialTheme.typography.headlineSmall,
             )
             Text(
-                text = "This device already published its own invite. On the primary device, open Manage devices and scan the QR below.",
+                text = "This device already published its own invite. On the primary device, open Manage devices and approve it there. If it does not appear, scan the QR below as fallback.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = IrisTheme.palette.muted,
             )

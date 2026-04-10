@@ -30,6 +30,7 @@ pub(crate) enum InternalEvent {
     RetryPendingOutbound,
     FetchTrackedPeerCatchUp,
     FetchCatchUpEvents(Vec<Event>),
+    FetchPendingDeviceInvites(Vec<Event>),
     DebugLog {
         category: String,
         detail: String,

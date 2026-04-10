@@ -134,7 +134,7 @@ fun DeviceRosterScreen(
                 Text(
                     text =
                         if (roster.canManageDevices) {
-                            "Scan the waiting device’s approval QR or paste its device npub."
+                            "New linked devices should appear here automatically after they scan your owner QR. You can still scan an approval QR or paste a device npub as fallback."
                         } else {
                             "This linked device can read the roster but cannot publish roster changes."
                         },
@@ -210,7 +210,7 @@ fun DeviceRosterScreen(
             }
 
             Text(
-                text = "Authorized devices",
+                text = "Devices",
                 style = MaterialTheme.typography.titleMedium,
             )
 
@@ -222,6 +222,8 @@ fun DeviceRosterScreen(
                     DeviceRosterRow(
                         device = device,
                         canManageDevices = roster.canManageDevices,
+                        isUpdatingRoster = appState.busy.updatingRoster,
+                        onApprove = { appManager.addAuthorizedDevice(device.devicePubkeyHex) },
                         onRemove = { appManager.removeAuthorizedDevice(device.devicePubkeyHex) },
                     )
                 }
@@ -256,6 +258,8 @@ fun DeviceRosterScreen(
 private fun DeviceRosterRow(
     device: DeviceEntrySnapshot,
     canManageDevices: Boolean,
+    isUpdatingRoster: Boolean,
+    onApprove: () -> Unit,
     onRemove: () -> Unit,
 ) {
     IrisSectionCard(
@@ -294,14 +298,29 @@ private fun DeviceRosterRow(
         }
 
         if (canManageDevices && !device.isCurrentDevice) {
-            IrisSecondaryButton(
-                text = "Remove device",
-                onClick = onRemove,
-                modifier =
-                    Modifier.testTag(
-                        "deviceRosterRemove-${device.devicePubkeyHex.take(12)}",
-                    ),
-            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (!device.isAuthorized) {
+                    IrisPrimaryButton(
+                        text = if (isUpdatingRoster) "Approving…" else "Approve",
+                        onClick = onApprove,
+                        enabled = !isUpdatingRoster,
+                        modifier =
+                            Modifier.testTag(
+                                "deviceRosterApprove-${device.devicePubkeyHex.take(12)}",
+                            ),
+                    )
+                }
+
+                IrisSecondaryButton(
+                    text = "Remove device",
+                    onClick = onRemove,
+                    enabled = !isUpdatingRoster,
+                    modifier =
+                        Modifier.testTag(
+                            "deviceRosterRemove-${device.devicePubkeyHex.take(12)}",
+                        ),
+                )
+            }
         }
     }
 }

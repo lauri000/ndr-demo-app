@@ -44,6 +44,8 @@ const PENDING_RETRY_DELAY_SECS: u64 = 2;
 const FIRST_CONTACT_STAGE_DELAY_MS: u64 = 1500;
 const FIRST_CONTACT_RETRY_DELAY_SECS: u64 = 5;
 const CATCH_UP_LOOKBACK_SECS: u64 = 30;
+const DEVICE_INVITE_DISCOVERY_LOOKBACK_SECS: u64 = 30 * 24 * 60 * 60;
+const DEVICE_INVITE_DISCOVERY_LIMIT: usize = 256;
 const RESUBSCRIBE_CATCH_UP_DELAY_SECS: u64 = 5;
 const PROTOCOL_SUBSCRIPTION_ID: &str = "ndr-protocol";
 const APP_DIRECT_MESSAGE_PAYLOAD_VERSION: u8 = 1;
@@ -630,6 +632,9 @@ impl AppCore {
                 for event in events {
                     self.handle_relay_event(event);
                 }
+            }
+            InternalEvent::FetchPendingDeviceInvites(events) => {
+                self.handle_pending_device_invite_events(events);
             }
             InternalEvent::DebugLog { category, detail } => {
                 self.push_debug_log(&category, detail);
@@ -1423,14 +1428,9 @@ impl AppCore {
                     .is_ok()
                     {
                         sleep(Duration::from_millis(FIRST_CONTACT_STAGE_DELAY_MS)).await;
-                        publish_events_with_retry(
-                            &client,
-                            &relay_urls,
-                            batch.message_events,
-                            label,
-                        )
-                        .await
-                        .is_ok()
+                        publish_events_with_retry(&client, &relay_urls, batch.message_events, label)
+                            .await
+                            .is_ok()
                     } else {
                         false
                     };
@@ -1937,6 +1937,7 @@ impl AppCore {
             Screen::DeviceRoster => {
                 self.screen_stack = vec![Screen::DeviceRoster];
                 self.active_chat_id = None;
+                self.fetch_pending_device_invites_for_local_owner();
             }
             Screen::AwaitingDeviceApproval | Screen::DeviceRevoked | Screen::Welcome => return,
         }
@@ -2385,7 +2386,8 @@ impl AppCore {
                         "sender owner unresolved; queued as pending inbound",
                     );
                     self.remember_event(event_id.clone());
-                    self.pending_inbound.push(PendingInbound::envelope(envelope));
+                    self.pending_inbound
+                        .push(PendingInbound::envelope(envelope));
                     self.persist_best_effort();
                     return;
                 };
@@ -2443,7 +2445,8 @@ impl AppCore {
                             "session_manager returned None; queued as pending inbound",
                         );
                         self.remember_event(event_id.clone());
-                        self.pending_inbound.push(PendingInbound::envelope(envelope));
+                        self.pending_inbound
+                            .push(PendingInbound::envelope(envelope));
                         self.persist_best_effort();
                     }
                     Err(error) => {
@@ -3603,6 +3606,121 @@ impl AppCore {
                 }
             }
         });
+    }
+
+    fn fetch_pending_device_invites_for_local_owner(&mut self) {
+        let Some(logged_in) = self.logged_in.as_ref() else {
+            return;
+        };
+        if logged_in.owner_keys.is_none() {
+            return;
+        }
+
+        let owner_pubkey = logged_in.owner_pubkey;
+        let device_keys = logged_in.device_keys.clone();
+        let relay_urls = logged_in.relay_urls.clone();
+        let since = unix_now()
+            .get()
+            .saturating_sub(DEVICE_INVITE_DISCOVERY_LOOKBACK_SECS);
+        self.push_debug_log(
+            "device.invite.fetch",
+            format!(
+                "owner={} since={} limit={}",
+                owner_pubkey, since, DEVICE_INVITE_DISCOVERY_LIMIT
+            ),
+        );
+        let tx = self.core_sender.clone();
+        let filters = vec![Filter::new()
+            .kind(Kind::from(codec::INVITE_EVENT_KIND as u16))
+            .since(Timestamp::from(since))
+            .limit(DEVICE_INVITE_DISCOVERY_LIMIT)];
+
+        self.runtime.spawn(async move {
+            let client = Client::new(device_keys);
+            ensure_session_relays_configured(&client, &relay_urls).await;
+            client.connect_with_timeout(Duration::from_secs(5)).await;
+            match client
+                .fetch_events(filters, Some(Duration::from_secs(5)))
+                .await
+            {
+                Ok(events) => {
+                    let collected = events.into_iter().collect::<Vec<_>>();
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::FetchPendingDeviceInvites(collected),
+                    )));
+                }
+                Err(error) => {
+                    let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::DebugLog {
+                        category: "device.invite.fetch.error".to_string(),
+                        detail: error.to_string(),
+                    })));
+                }
+            }
+            let _ = client.shutdown().await;
+        });
+    }
+
+    fn handle_pending_device_invite_events(&mut self, events: Vec<Event>) {
+        let Some((local_owner, local_device)) = self.logged_in.as_ref().and_then(|logged_in| {
+            logged_in.owner_keys.as_ref().map(|_| {
+                (
+                    logged_in.owner_pubkey,
+                    local_device_from_keys(&logged_in.device_keys),
+                )
+            })
+        }) else {
+            return;
+        };
+
+        let mut observed = 0usize;
+        let mut last_error = None;
+
+        for event in events {
+            let event_id = event.id.to_string();
+            if self.has_seen_event(&event_id) {
+                continue;
+            }
+
+            let Ok(invite) = codec::parse_invite_event(&event) else {
+                continue;
+            };
+            if invite.inviter_owner_pubkey != Some(local_owner)
+                || invite.inviter_device_pubkey == local_device
+            {
+                continue;
+            }
+
+            match self
+                .logged_in
+                .as_mut()
+                .expect("logged-in state checked above")
+                .session_manager
+                .observe_device_invite(local_owner, invite)
+            {
+                Ok(()) => {
+                    observed += 1;
+                    self.remember_event(event_id);
+                }
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                }
+            }
+        }
+
+        if let Some(error) = last_error {
+            self.push_debug_log("device.invite.observe.error", error);
+        }
+
+        self.push_debug_log(
+            "device.invite.observe",
+            format!("owner={} observed={}", local_owner, observed),
+        );
+
+        if observed > 0 {
+            self.persist_best_effort();
+            self.rebuild_state();
+            self.emit_state();
+        }
     }
 
     fn nudge_protocol_state_for_pending_reason(&mut self, reason: &PendingSendReason) {
@@ -7170,7 +7288,8 @@ mod tests {
         ));
 
         let mut core = logged_in_core_with_manager(data_dir.path(), 75, session_manager);
-        core.pending_inbound.push(PendingInbound::envelope(MessageEnvelope {
+        core.pending_inbound
+            .push(PendingInbound::envelope(MessageEnvelope {
                 sender: local_device_from_keys(&device_keys_for_fill(76)),
                 signer_secret_key: [9; 32],
                 created_at: UnixSeconds(501),
@@ -8186,6 +8305,117 @@ mod tests {
         );
     }
 
+    #[test]
+    fn linked_device_can_be_approved_after_single_owner_qr_scan() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::local_only();
+        let _relay = TestRelay::start();
+        let primary_dir = TempDir::new().expect("primary dir");
+        let linked_dir = TempDir::new().expect("linked dir");
+
+        let primary = app_with_dir(primary_dir.path(), 214);
+        let primary_account =
+            wait_for_state(&primary, "primary account", |state| state.account.is_some())
+                .account
+                .expect("primary account");
+
+        let linked = FfiApp::new(
+            linked_dir.path().to_string_lossy().into_owned(),
+            String::new(),
+            "test".to_string(),
+        );
+        linked.dispatch(AppAction::StartLinkedDevice {
+            owner_input: primary_account.npub.clone(),
+        });
+
+        let linked_account = wait_for_state(&linked, "linked awaiting approval", |state| {
+            state
+                .account
+                .as_ref()
+                .map(|account| {
+                    matches!(
+                        account.authorization_state,
+                        DeviceAuthorizationState::AwaitingApproval
+                    )
+                })
+                .unwrap_or(false)
+        })
+        .account
+        .expect("linked account");
+        let linked_device_pubkey =
+            PublicKey::parse(&linked_account.device_public_key_hex).expect("linked device pubkey");
+
+        let invite_deadline = Instant::now() + StdDuration::from_secs(5);
+        loop {
+            let invites = fetch_local_relay_events(vec![
+                Filter::new().kind(Kind::from(codec::INVITE_EVENT_KIND as u16))
+            ]);
+            let published = invites.iter().any(|event| {
+                codec::parse_invite_event(event).is_ok() && event.pubkey == linked_device_pubkey
+            });
+            if published {
+                break;
+            }
+            assert!(
+                Instant::now() < invite_deadline,
+                "timed out waiting for linked device invite publish"
+            );
+            thread::sleep(StdDuration::from_millis(50));
+        }
+
+        primary.dispatch(AppAction::PushScreen {
+            screen: Screen::DeviceRoster,
+        });
+
+        wait_for_state(
+            &primary,
+            "primary discovered pending linked device",
+            |state| {
+                state
+                    .device_roster
+                    .as_ref()
+                    .map(|roster| {
+                        roster.devices.iter().any(|device| {
+                            device.device_pubkey_hex == linked_account.device_public_key_hex
+                                && !device.is_authorized
+                        })
+                    })
+                    .unwrap_or(false)
+            },
+        );
+
+        primary.dispatch(AppAction::AddAuthorizedDevice {
+            device_input: linked_account.device_public_key_hex.clone(),
+        });
+
+        wait_for_state(&primary, "primary authorized linked device", |state| {
+            state
+                .device_roster
+                .as_ref()
+                .map(|roster| {
+                    roster.devices.iter().any(|device| {
+                        device.device_pubkey_hex == linked_account.device_public_key_hex
+                            && device.is_authorized
+                    })
+                })
+                .unwrap_or(false)
+        });
+        wait_for_state(&linked, "linked authorized", |state| {
+            state
+                .account
+                .as_ref()
+                .map(|account| {
+                    matches!(
+                        account.authorization_state,
+                        DeviceAuthorizationState::Authorized
+                    )
+                })
+                .unwrap_or(false)
+        });
+    }
+
     struct ScenarioClient {
         owner_fill: Option<u8>,
         data_dir: TempDir,
@@ -8881,7 +9111,10 @@ mod tests {
             "pending member add",
             |persisted| {
                 !persisted.pending_group_controls.is_empty()
-                    && persisted.threads.iter().any(|thread| thread.chat_id == chat_id)
+                    && persisted
+                        .threads
+                        .iter()
+                        .any(|thread| thread.chat_id == chat_id)
                     && persisted
                         .group_manager
                         .as_ref()
