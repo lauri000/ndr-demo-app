@@ -58,7 +58,7 @@ The support bundle intentionally excludes:
 Canonical local entrypoints:
 
 ```bash
-cd /Users/l/Projects/iris-fork/ndr-demo-android
+cd /Users/l/Projects/iris-fork/ndr-demo-app
 ./scripts/test_fast.sh
 ./scripts/test_beta_local.sh
 ```
@@ -74,7 +74,7 @@ cd /Users/l/Projects/iris-fork/ndr-demo-android
 Recommended full beta gate before sending an APK to testers:
 
 ```bash
-cd /Users/l/Projects/iris-fork/ndr-demo-android
+cd /Users/l/Projects/iris-fork/ndr-demo-app
 ./scripts/test_beta_local.sh
 ./scripts/local_relay_scenario_soak.sh --iterations 100
 ./scripts/linked_device_relay_matrix.sh
@@ -90,7 +90,7 @@ The relay/device scripts remain explicit manual gates and are not part of the de
 Build the beta APK:
 
 ```bash
-cd /Users/l/Projects/iris-fork/ndr-demo-android
+cd /Users/l/Projects/iris-fork/ndr-demo-app
 ./gradlew :app:assembleBeta
 ```
 

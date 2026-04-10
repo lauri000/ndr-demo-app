@@ -8,7 +8,7 @@ This file is the source of truth for the Android app architecture. Future change
   - Rust engine repo
   - `nostr-double-ratchet`: protocol/domain logic
   - `nostr-double-ratchet-nostr`: Nostr wire conversion
-- `/Users/l/Projects/iris-fork/ndr-demo-android`
+- `/Users/l/Projects/iris-fork/ndr-demo-app`
   - Android product repo
   - Compose UI and app-specific Rust runtime
   - `rust/`: app-facing UniFFI crate that owns the mobile app core
@@ -86,7 +86,7 @@ struct ProtocolSubscriptionRuntime {
 
 The Kotlin to Rust boundary is UniFFI.
 
-Kotlin should not call `SessionManager` directly. Kotlin talks only to the Rust `FfiApp` facade exposed by `/Users/l/Projects/iris-fork/ndr-demo-android/rust`.
+Kotlin should not call `SessionManager` directly. Kotlin talks only to the Rust `FfiApp` facade exposed by `/Users/l/Projects/iris-fork/ndr-demo-app/rust`.
 
 The protocol repo remains pure Rust. It contains no mobile bridge code and no UniFFI surface.
 

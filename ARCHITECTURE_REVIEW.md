@@ -3,11 +3,11 @@
 Review date: 2026-04-08
 
 Scope:
-- `/Users/l/Projects/iris-fork/ndr-demo-android`
+- `/Users/l/Projects/iris-fork/ndr-demo-app`
 - `/Users/l/Projects/iris-fork/nostr-double-ratchet`
 
 Target revisions reviewed:
-- `ndr-demo-android`: post-`e9ed7ea`, including linked-device validation and three-device fanout hardening from this pass
+- `ndr-demo-app`: post-`e9ed7ea`, including linked-device validation and three-device fanout hardening from this pass
 - `nostr-double-ratchet`: post-`9b6c9a1`
 
 This is the current architecture and code review after the app moved to the explicit owner/device model, passed three-emulator public-relay validation, and adopted the Pika-style ordinary publish path with stable protocol subscription planning.
@@ -404,7 +404,7 @@ Recommended fix direction:
 
 ### Rust and Android validation
 
-- `cargo test` in `ndr-demo-android/rust` passed
+- `cargo test` in `ndr-demo-app/rust` passed
 - `./gradlew :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin` passed
 
 ### Public-relay three-emulator validation
@@ -484,10 +484,10 @@ Recommended next steps:
 ## 9. References
 
 Primary code anchors for the current design:
-- `ndr-demo-android/rust/src/core.rs`
-- `ndr-demo-android/rust/src/state.rs`
-- `ndr-demo-android/rust/src/actions.rs`
-- `ndr-demo-android/app/src/main/java/social/innode/ndr/demo/core/AppManager.kt`
-- `ndr-demo-android/app/src/androidTest/java/social/innode/ndr/demo/RealRelayHarnessTest.kt`
+- `ndr-demo-app/rust/src/core.rs`
+- `ndr-demo-app/rust/src/state.rs`
+- `ndr-demo-app/rust/src/actions.rs`
+- `ndr-demo-app/app/src/main/java/social/innode/ndr/demo/core/AppManager.kt`
+- `ndr-demo-app/app/src/androidTest/java/social/innode/ndr/demo/RealRelayHarnessTest.kt`
 - `nostr-double-ratchet/rust/crates/nostr-double-ratchet/src/session_manager.rs`
 - `nostr-double-ratchet/rust/crates/nostr-double-ratchet/src/roster_editor.rs`
