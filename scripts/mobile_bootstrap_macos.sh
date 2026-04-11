@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOCAL_PROPERTIES="${ROOT_DIR}/local.properties"
+LOCAL_PROPERTIES="${ROOT_DIR}/android/local.properties"
 NDK_VERSION="26.3.11579264"
 
 find_android_sdk() {
@@ -38,12 +38,17 @@ UNIFFI_BIN="$(require_cmd uniffi-bindgen)"
 PYTHON_BIN="$(require_cmd python3)"
 XCODEBUILD_BIN="$(require_cmd xcodebuild)"
 XCRUN_BIN="$(require_cmd xcrun)"
+JUST_BIN="$(require_cmd just)"
+XCODEGEN_BIN="$(require_cmd xcodegen)"
 
 print_status "Repo root" "${ROOT_DIR}"
 print_status "cargo" "${CARGO_BIN:-missing}"
 print_status "rustup" "${RUSTUP_BIN:-missing}"
-print_status "uniffi-bindgen" "${UNIFFI_BIN:-missing}"
+print_status "local uniffi-bindgen" "$( [[ -f "${ROOT_DIR}/core/uniffi-bindgen/src/main.rs" ]] && printf '%s' "${ROOT_DIR}/core/uniffi-bindgen" || printf 'missing' )"
+print_status "global uniffi-bindgen" "${UNIFFI_BIN:-optional}"
 print_status "python3" "${PYTHON_BIN:-missing}"
+print_status "just" "${JUST_BIN:-missing}"
+print_status "xcodegen" "${XCODEGEN_BIN:-missing}"
 print_status "xcodebuild" "${XCODEBUILD_BIN:-missing}"
 print_status "xcrun" "${XCRUN_BIN:-missing}"
 print_status "Android SDK" "${SDK_DIR:-missing}"
@@ -78,5 +83,5 @@ Recommended next steps:
    ./scripts/run_ios_simulators.sh
 
 4. Run the fast local gate:
-   ./scripts/test_fast.sh
+   just qa
 EOF

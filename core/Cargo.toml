@@ -1,0 +1,26 @@
+[package]
+name = "ndr-demo-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+anyhow = "1"
+flume = "0.11"
+nostr = { version = "0.37", default-features = false, features = ["std", "nip44"] }
+nostr-sdk = { version = "0.37", default-features = false, features = ["nip44"] }
+nostr-double-ratchet = { path = "vendor/nostr-double-ratchet/rust/crates/nostr-double-ratchet" }
+nostr-double-ratchet-nostr = { path = "vendor/nostr-double-ratchet/rust/crates/nostr-double-ratchet-nostr" }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net"] }
+uniffi = "0.31"
+url = "2"
+
+[dev-dependencies]
+futures-util = "0.3"
+tempfile = "3"
+tokio-tungstenite = "0.24"

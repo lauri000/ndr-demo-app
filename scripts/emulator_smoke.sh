@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOCAL_PROPERTIES="${ROOT_DIR}/local.properties"
+LOCAL_PROPERTIES="${ROOT_DIR}/android/local.properties"
 SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 
 if [[ -z "${SDK_DIR}" && -f "${LOCAL_PROPERTIES}" ]]; then
@@ -22,7 +22,7 @@ if [[ ! -x "${ADB}" ]]; then
 fi
 
 PACKAGE_NAME="social.innode.ndr.demo"
-APK_PATH="${ROOT_DIR}/app/build/outputs/apk/debug/app-debug.apk"
+APK_PATH="${ROOT_DIR}/android/app/build/outputs/apk/debug/app-debug.apk"
 DEFAULT_DEVICES=("emulator-5554" "emulator-5556")
 
 usage() {
@@ -30,7 +30,7 @@ usage() {
 Usage: scripts/emulator_smoke.sh [--clear] [device...]
 
 Build expectations:
-  - Run ./gradlew :app:assembleDebug first, or let this script fail if the APK is missing.
+  - Run just android-assemble first, or let this script fail if the APK is missing.
 
 Behavior:
   - Verifies each requested emulator is online.
@@ -65,7 +65,7 @@ if [[ ${#DEVICES[@]} -eq 0 ]]; then
 fi
 
 if [[ ! -f "${APK_PATH}" ]]; then
-  echo "Debug APK missing at ${APK_PATH}. Run ./gradlew :app:assembleDebug first." >&2
+  echo "Debug APK missing at ${APK_PATH}. Run just android-assemble first." >&2
   exit 1
 fi
 

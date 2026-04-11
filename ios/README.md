@@ -1,11 +1,11 @@
 # iOS
 
-This directory is reserved for the native iOS UI.
+This directory contains the native iOS UI shell.
 
 Planned shape:
 
 - SwiftUI app shell
-- UniFFI-generated Swift bindings from `../rust`
+- UniFFI-generated Swift bindings from `../core`
 - XCFramework packaging for `ndr_demo_core`
 - simulator smoke and upgrade test entrypoints in `../scripts`
 

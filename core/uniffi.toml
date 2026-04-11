@@ -1,0 +1,6 @@
+[bindings.kotlin]
+package_name = "social.innode.ndr.demo.rust"
+cdylib_name = "ndr_demo_core"
+
+[bindings.swift]
+module_name = "NdrDemoCore"

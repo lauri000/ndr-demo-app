@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ITERATIONS="${ITERATIONS:-100}"
-RUST_DIR="${ROOT_DIR}/rust"
+RUST_DIR="${ROOT_DIR}/core"
 
 SCENARIOS=(
   "core::tests::twenty_owner_group_converges"

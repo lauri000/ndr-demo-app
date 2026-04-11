@@ -2,9 +2,13 @@
 .kotlin/
 .idea/
 .relay-venv/
-local.properties
+android/local.properties
 build/
-app/build/
-rust/target/
+android/app/build/
+core/target/
+ios/Bindings/
+ios/.build/
+ios/Frameworks/
+ios/NdrDemo.xcodeproj/
 *.iml
 .DS_Store

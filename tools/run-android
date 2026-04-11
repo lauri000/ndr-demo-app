@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SERIAL="${NDR_ANDROID_SERIAL:-}"
+DEFAULT_AVD="${NDR_ANDROID_DEFAULT_AVD:-Medium_Phone_API_36.1}"
+BOOT_MODE="${NDR_ANDROID_BOOT_MODE:-headless}"
+LOCAL_PROPERTIES="$ROOT/android/local.properties"
+SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+
+if [[ -z "${SDK_DIR}" && -f "${LOCAL_PROPERTIES}" ]]; then
+  SDK_DIR="$(
+    awk -F= '
+      $1 == "sdk.dir" {
+        value = substr($0, index($0, "=") + 1)
+        gsub(/\\:/, ":", value)
+        gsub(/\\\\/, "\\", value)
+        print value
+      }
+    ' "${LOCAL_PROPERTIES}" | tail -n 1
+  )"
+fi
+
+if [[ -n "${ADB:-}" ]]; then
+  :
+elif command -v adb >/dev/null 2>&1; then
+  ADB="$(command -v adb)"
+elif [[ -n "${SDK_DIR:-}" && -x "${SDK_DIR}/platform-tools/adb" ]]; then
+  ADB="${SDK_DIR}/platform-tools/adb"
+else
+  ADB=""
+fi
+
+if [[ -z "${ADB:-}" || ! -x "${ADB}" ]]; then
+  echo "adb not found. Set ANDROID_HOME/ANDROID_SDK_ROOT or android/local.properties." >&2
+  exit 1
+fi
+
+usage() {
+  cat <<'EOF'
+usage: ./tools/run-android [--serial <adb-serial>] [--list-targets]
+EOF
+}
+
+first_online_device() {
+  "$ADB" devices | awk 'NR>1 && $2=="device" { print $1; exit }'
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --serial)
+      SERIAL="$2"
+      shift 2
+      ;;
+    --list-targets)
+      exec "$ROOT/tools/ndr-run" android list-targets
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "${SERIAL:-}" ]]; then
+  SERIAL="$(first_online_device)"
+fi
+
+if [[ -z "${SERIAL:-}" ]]; then
+  emulator_args=()
+  if [[ "$BOOT_MODE" == "headless" ]]; then
+    emulator_args+=(--headless)
+  fi
+  SERIAL="$("$ROOT/scripts/run_android_emulators.sh" "${emulator_args[@]}" "$DEFAULT_AVD" | awk 'END { print $2 }')"
+fi
+
+if [[ -n "${SERIAL:-}" ]]; then
+  if ! "$ADB" -s "$SERIAL" get-state >/dev/null 2>&1; then
+    echo "Android target $SERIAL is not online." >&2
+    exit 1
+  fi
+fi
+
+if [[ -z "${SERIAL:-}" ]]; then
+  echo "No Android device or emulator available." >&2
+  exit 1
+fi
+
+"$ROOT/scripts/android-build" android-assemble
+
+APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
+"$ADB" -s "$SERIAL" install -r "$APK" >/dev/null
+"$ADB" -s "$SERIAL" shell am start -n social.innode.ndr.demo/.MainActivity >/dev/null
+echo "Android app launched on $SERIAL"

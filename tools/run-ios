@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SIMULATOR_NAME="${NDR_IOS_SIMULATOR_NAME:-NDR Demo iPhone}"
+DESTINATION="${NDR_IOS_SIM_DESTINATION:-platform=iOS Simulator,name=${SIMULATOR_NAME}}"
+BUNDLE_ID="${NDR_IOS_BUNDLE_ID:-social.innode.ndr.demo.ios}"
+
+usage() {
+  cat <<'EOF'
+usage: ./tools/run-ios [--list-targets]
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --list-targets)
+      exec "$ROOT/tools/ndr-run" ios list-targets
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+"$ROOT/scripts/run_ios_simulators.sh" --no-open "$SIMULATOR_NAME" >/dev/null
+"$ROOT/scripts/ios-build" ios-build-sim
+UDID="$(xcrun simctl list devices available | sed -n "s/^ *${SIMULATOR_NAME} (\\([^)]*\\)).*/\\1/p" | head -n 1)"
+APP_PATH="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*Debug-iphonesimulator/NdrDemo.app' | head -n 1)"
+if [[ -z "${UDID:-}" || -z "${APP_PATH:-}" ]]; then
+  echo "Built simulator app not found." >&2
+  exit 1
+fi
+xcrun simctl install "$UDID" "$APP_PATH" >/dev/null
+nohup xcrun simctl launch "$UDID" "$BUNDLE_ID" >/tmp/ndr-demo-ios-launch.log 2>&1 &
+open -a Simulator >/dev/null 2>&1 || true
+echo "iOS app launched on $SIMULATOR_NAME"

@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CORE_DIR="$ROOT/core"
+IOS_DIR="$ROOT/ios"
+IOS_BINDINGS_DIR="$IOS_DIR/Bindings"
+IOS_FRAMEWORKS_DIR="$IOS_DIR/Frameworks"
+IOS_BUILD_DIR="$IOS_DIR/.build"
+PROFILE="${NDR_IOS_RUST_PROFILE:-debug}"
+TARGETS="${NDR_IOS_RUST_TARGETS:-aarch64-apple-ios aarch64-apple-ios-sim}"
+
+usage() {
+  cat <<'EOF'
+usage: ./scripts/ios-build <ios-gen-swift|ios-rust|ios-xcframework|ios-xcodeproj|ios-build-sim|ios-test>
+EOF
+}
+
+host_dynamic_lib() {
+  local ext
+  case "$(uname -s)" in
+    Darwin) ext="dylib" ;;
+    Linux) ext="so" ;;
+    *) ext="dylib" ;;
+  esac
+  printf '%s/target/%s/libndr_demo_core.%s\n' "$CORE_DIR" "$PROFILE" "$ext"
+}
+
+target_static_lib() {
+  local target="$1"
+  printf '%s/target/%s/%s/libndr_demo_core.a\n' "$CORE_DIR" "$target" "$PROFILE"
+}
+
+build_host() {
+  (
+    cd "$CORE_DIR"
+    if [[ "$PROFILE" == "release" ]]; then
+      cargo build --release
+    else
+      cargo build
+    fi
+  )
+}
+
+run_ios_gen_swift() {
+  local lib_path
+  build_host
+  lib_path="$(host_dynamic_lib)"
+  rm -rf "$IOS_BINDINGS_DIR"
+  mkdir -p "$IOS_BINDINGS_DIR"
+  (
+    cd "$CORE_DIR"
+    cargo run -q --manifest-path "$CORE_DIR/uniffi-bindgen/Cargo.toml" -- generate \
+      --library "$lib_path" \
+      --language swift \
+      --out-dir "$IOS_BINDINGS_DIR" \
+      --config "$CORE_DIR/uniffi.toml"
+  )
+}
+
+run_ios_rust() {
+  local target
+  local dev_dir
+  local toolchain_bin
+  local cc_bin
+  local cxx_bin
+  local ar_bin
+  local ranlib_bin
+  local sdkroot_ios
+  local sdkroot_sim
+  local sdkroot
+  local min_flag
+  local min_version
+
+  dev_dir="$(xcode-select -p)"
+  toolchain_bin="$dev_dir/Toolchains/XcodeDefault.xctoolchain/usr/bin"
+  cc_bin="$toolchain_bin/clang"
+  cxx_bin="$toolchain_bin/clang++"
+  ar_bin="$toolchain_bin/ar"
+  ranlib_bin="$toolchain_bin/ranlib"
+  sdkroot_ios="$(xcrun --sdk iphoneos --show-sdk-path)"
+  sdkroot_sim="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+
+  (
+    cd "$CORE_DIR"
+    for target in $TARGETS; do
+      case "$target" in
+        aarch64-apple-ios)
+          sdkroot="$sdkroot_ios"
+          min_flag="-miphoneos-version-min=16.0"
+          min_version="16.0"
+          ;;
+        aarch64-apple-ios-sim)
+          sdkroot="$sdkroot_sim"
+          min_flag="-mios-simulator-version-min=16.0"
+          min_version="16.0"
+          ;;
+        *)
+          echo "Unsupported iOS target: $target" >&2
+          exit 2
+          ;;
+      esac
+      if [[ "$PROFILE" == "release" ]]; then
+        env \
+          SDKROOT="$sdkroot" \
+          IPHONEOS_DEPLOYMENT_TARGET="$min_version" \
+          CC="$cc_bin" \
+          CXX="$cxx_bin" \
+          AR="$ar_bin" \
+          RANLIB="$ranlib_bin" \
+          CFLAGS_aarch64_apple_ios="$min_flag" \
+          CFLAGS_aarch64_apple_ios_sim="$min_flag" \
+          CXXFLAGS_aarch64_apple_ios="$min_flag" \
+          CXXFLAGS_aarch64_apple_ios_sim="$min_flag" \
+          CARGO_TARGET_AARCH64_APPLE_IOS_LINKER="$cc_bin" \
+          CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER="$cc_bin" \
+          RUSTFLAGS="-C linker=$cc_bin -C link-arg=$min_flag" \
+          cargo build --release --target "$target"
+      else
+        env \
+          SDKROOT="$sdkroot" \
+          IPHONEOS_DEPLOYMENT_TARGET="$min_version" \
+          CC="$cc_bin" \
+          CXX="$cxx_bin" \
+          AR="$ar_bin" \
+          RANLIB="$ranlib_bin" \
+          CFLAGS_aarch64_apple_ios="$min_flag" \
+          CFLAGS_aarch64_apple_ios_sim="$min_flag" \
+          CXXFLAGS_aarch64_apple_ios="$min_flag" \
+          CXXFLAGS_aarch64_apple_ios_sim="$min_flag" \
+          CARGO_TARGET_AARCH64_APPLE_IOS_LINKER="$cc_bin" \
+          CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER="$cc_bin" \
+          RUSTFLAGS="-C linker=$cc_bin -C link-arg=$min_flag" \
+          cargo build --target "$target"
+      fi
+    done
+  )
+}
+
+run_ios_xcframework() {
+  local headers_dir="$IOS_BUILD_DIR/headers"
+  local output="$IOS_FRAMEWORKS_DIR/NdrDemoCore.xcframework"
+  local header_path
+  local modulemap_path
+  local target
+  local -a cmd
+
+  run_ios_gen_swift
+  run_ios_rust
+
+  header_path="$(find "$IOS_BINDINGS_DIR" -maxdepth 1 -name '*.h' | head -n 1)"
+  modulemap_path="$(find "$IOS_BINDINGS_DIR" -maxdepth 1 -name '*.modulemap' | head -n 1)"
+  if [[ -z "${header_path:-}" || -z "${modulemap_path:-}" ]]; then
+    echo "Missing generated Swift headers/modulemap in $IOS_BINDINGS_DIR" >&2
+    exit 1
+  fi
+
+  rm -rf "$headers_dir" "$output"
+  mkdir -p "$headers_dir" "$IOS_FRAMEWORKS_DIR"
+  cp "$header_path" "$headers_dir/"
+  cp "$modulemap_path" "$headers_dir/module.modulemap"
+
+  cmd=(xcodebuild -create-xcframework)
+  for target in $TARGETS; do
+    cmd+=(-library "$(target_static_lib "$target")" -headers "$headers_dir")
+  done
+  cmd+=(-output "$output")
+  "${cmd[@]}"
+}
+
+run_ios_xcodeproj() {
+  (
+    cd "$IOS_DIR"
+    xcodegen generate --spec project.yml
+  )
+}
+
+run_ios_build_sim() {
+  local destination="${NDR_IOS_SIM_DESTINATION:-platform=iOS Simulator,name=NDR Demo iPhone}"
+  run_ios_xcframework
+  run_ios_xcodeproj
+  xcodebuild \
+    -project "$IOS_DIR/NdrDemo.xcodeproj" \
+    -scheme NdrDemo \
+    -destination "$destination" \
+    build
+}
+
+run_ios_test() {
+  local destination="${NDR_IOS_SIM_DESTINATION:-platform=iOS Simulator,name=NDR Demo iPhone}"
+  run_ios_xcframework
+  run_ios_xcodeproj
+  xcodebuild \
+    -project "$IOS_DIR/NdrDemo.xcodeproj" \
+    -scheme NdrDemo \
+    -destination "$destination" \
+    test
+}
+
+case "${1:-}" in
+  ios-gen-swift) run_ios_gen_swift ;;
+  ios-rust) run_ios_rust ;;
+  ios-xcframework) run_ios_xcframework ;;
+  ios-xcodeproj) run_ios_xcodeproj ;;
+  ios-build-sim) run_ios_build_sim ;;
+  ios-test) run_ios_test ;;
+  -h|--help|help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

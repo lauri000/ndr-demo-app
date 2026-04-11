@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+usage() {
+  cat <<'EOF'
+usage: ./tools/ndr-run <ios|android> list-targets
+EOF
+}
+
+case "${1:-}:${2:-}" in
+  android:list-targets)
+    "$ROOT/scripts/run_android_emulators.sh" --list
+    ;;
+  ios:list-targets)
+    "$ROOT/scripts/run_ios_simulators.sh" --list
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

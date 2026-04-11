@@ -1,0 +1,61 @@
+name: NdrDemo
+options:
+  bundleIdPrefix: social.innode.ndr.demo
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: social.innode.ndr.demo.ios
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: 5.0
+
+targets:
+  NdrDemo:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Bindings
+        excludes:
+          - "*.h"
+          - "*.modulemap"
+    settings:
+      base:
+        PRODUCT_NAME: NdrDemo
+        DEFINES_MODULE: YES
+        INFOPLIST_FILE: Info.plist
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+    dependencies:
+      - framework: Frameworks/NdrDemoCore.xcframework
+        embed: false
+
+  NdrDemoTests:
+    type: bundle.unit-test
+    platform: iOS
+    settings:
+      base:
+        PRODUCT_NAME: "$(TARGET_NAME)"
+        PRODUCT_MODULE_NAME: "$(TARGET_NAME)"
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: NdrDemo
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/NdrDemo.app/NdrDemo"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+    sources:
+      - path: Tests
+    dependencies:
+      - target: NdrDemo
+
+  NdrDemoUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    settings:
+      base:
+        PRODUCT_NAME: "$(TARGET_NAME)"
+        PRODUCT_MODULE_NAME: "$(TARGET_NAME)"
+        GENERATE_INFOPLIST_FILE: YES
+    sources:
+      - path: UITests
+    dependencies:
+      - target: NdrDemo

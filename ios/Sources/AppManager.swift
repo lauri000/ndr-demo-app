@@ -1,0 +1,313 @@
+import Foundation
+import Security
+import SwiftUI
+import UIKit
+
+struct StoredAccountBundle: Codable, Equatable {
+    let ownerNsec: String?
+    let ownerPubkeyHex: String
+    let deviceNsec: String
+}
+
+protocol AccountSecretStore {
+    func load() -> StoredAccountBundle?
+    func save(_ bundle: StoredAccountBundle)
+    func clear()
+}
+
+final class KeychainSecretStore: AccountSecretStore {
+    private let service: String
+    private let account: String
+
+    init(
+        service: String = "social.innode.ndr.demo.ios",
+        account: String = "stored-account-bundle"
+    ) {
+        self.service = service
+        self.account = account
+    }
+
+    func load() -> StoredAccountBundle? {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account,
+            kSecReturnData: true,
+            kSecMatchLimit: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess, let data = item as? Data else {
+            return nil
+        }
+        return try? JSONDecoder().decode(StoredAccountBundle.self, from: data)
+    }
+
+    func save(_ bundle: StoredAccountBundle) {
+        guard let data = try? JSONEncoder().encode(bundle) else {
+            return
+        }
+
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account,
+        ]
+        let update: [CFString: Any] = [kSecValueData: data]
+        let updateStatus = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        if updateStatus == errSecItemNotFound {
+            var insert = query
+            insert[kSecValueData] = data
+            SecItemAdd(insert as CFDictionary, nil)
+        }
+    }
+
+    func clear() {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account,
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+}
+
+protocol RustAppClient: AnyObject {
+    func state() -> AppState
+    func dispatch(action: AppAction)
+    func exportSupportBundleJson() -> String
+    func listenForUpdates(reconciler: AppReconciler)
+}
+
+final class LiveRustAppClient: RustAppClient {
+    private let ffi: FfiApp
+
+    init(dataDir: String, appVersion: String) {
+        self.ffi = FfiApp(dataDir: dataDir, keychainGroup: "", appVersion: appVersion)
+    }
+
+    func state() -> AppState {
+        ffi.state()
+    }
+
+    func dispatch(action: AppAction) {
+        ffi.dispatch(action: action)
+    }
+
+    func exportSupportBundleJson() -> String {
+        ffi.exportSupportBundleJson()
+    }
+
+    func listenForUpdates(reconciler: AppReconciler) {
+        ffi.listenForUpdates(reconciler: reconciler)
+    }
+}
+
+private enum AppPaths {
+    static func appVersion(bundle: Bundle = .main) -> String {
+        bundle.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
+    }
+
+    static func keychainService(environment: [String: String]) -> String {
+        let base = "social.innode.ndr.demo.ios"
+        guard let runId = environment["NDR_UI_TEST_RUN_ID"], !runId.isEmpty else {
+            return base
+        }
+        return "\(base).\(runId)"
+    }
+
+    static func dataDir(fileManager: FileManager, environment: [String: String]) -> URL {
+        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let suffix = environment["NDR_UI_TEST_RUN_ID"].flatMap { $0.isEmpty ? nil : $0 } ?? "ndr-demo"
+        return base.appendingPathComponent(suffix, isDirectory: true)
+    }
+}
+
+@MainActor
+final class AppManager: ObservableObject {
+    @Published private(set) var state: AppState
+    @Published private(set) var bootstrapInFlight = true
+    @Published var toastMessage: String?
+
+    private let rust: RustAppClient
+    private let secretStore: AccountSecretStore
+    private let dataDir: URL
+    private let fileManager: FileManager
+    private var lastRevApplied: UInt64
+    private lazy var reconciler = UpdateBridge(owner: self)
+
+    init(
+        rust: RustAppClient? = nil,
+        secretStore: AccountSecretStore? = nil,
+        dataDir: URL? = nil,
+        fileManager: FileManager = .default,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        appVersion: String = AppPaths.appVersion()
+    ) {
+        self.fileManager = fileManager
+        let resolvedDataDir = dataDir ?? AppPaths.dataDir(fileManager: fileManager, environment: environment)
+        let resolvedSecretStore = secretStore ?? KeychainSecretStore(service: AppPaths.keychainService(environment: environment))
+
+        if environment["NDR_UI_TEST_RESET"] == "1" {
+            resolvedSecretStore.clear()
+            try? fileManager.removeItem(at: resolvedDataDir)
+        }
+        try? fileManager.createDirectory(at: resolvedDataDir, withIntermediateDirectories: true)
+
+        let resolvedRust = rust ?? LiveRustAppClient(dataDir: resolvedDataDir.path, appVersion: appVersion)
+        let initialState = resolvedRust.state()
+
+        self.rust = resolvedRust
+        self.secretStore = resolvedSecretStore
+        self.dataDir = resolvedDataDir
+        self.state = initialState
+        self.lastRevApplied = initialState.rev
+
+        resolvedRust.listenForUpdates(reconciler: reconciler)
+
+        Task {
+            restorePersistedSession()
+        }
+    }
+
+    var activeScreen: Screen {
+        state.router.screenStack.last ?? state.router.defaultScreen
+    }
+
+    var canNavigateBack: Bool {
+        !state.router.screenStack.isEmpty
+    }
+
+    func navigateBack() {
+        guard !state.router.screenStack.isEmpty else {
+            return
+        }
+        var stack = state.router.screenStack
+        _ = stack.removeLast()
+        rust.dispatch(action: .updateScreenStack(stack: stack))
+    }
+
+    func dispatch(_ action: AppAction) {
+        rust.dispatch(action: action)
+    }
+
+    func createAccount(name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return
+        }
+        rust.dispatch(action: .createAccount(name: trimmed))
+    }
+
+    func restoreSession(ownerNsec: String) {
+        let trimmed = ownerNsec.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return
+        }
+        rust.dispatch(action: .restoreSession(ownerNsec: trimmed))
+    }
+
+    func startLinkedDevice(ownerInput: String) {
+        let normalized = normalizePeerInput(input: ownerInput.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !normalized.isEmpty, isValidPeerInput(input: normalized) else {
+            return
+        }
+        rust.dispatch(action: .startLinkedDevice(ownerInput: normalized))
+    }
+
+    func copyToClipboard(_ value: String) {
+        UIPasteboard.general.string = value
+        showToast("Copied")
+    }
+
+    func supportBundleJson() -> String {
+        rust.exportSupportBundleJson()
+    }
+
+    func resetAppState() {
+        logout()
+    }
+
+    func buildSummaryText() -> String {
+        buildSummary()
+    }
+
+    func relaySetIdText() -> String {
+        relaySetId()
+    }
+
+    func trustedTestBuildEnabled() -> Bool {
+        isTrustedTestBuild()
+    }
+
+    func logout() {
+        rust.dispatch(action: .logout)
+        secretStore.clear()
+        try? fileManager.removeItem(at: dataDir)
+        try? fileManager.createDirectory(at: dataDir, withIntermediateDirectories: true)
+    }
+
+    func apply(update: AppUpdate) {
+        switch update {
+        case .persistAccountBundle(_, let ownerNsec, let ownerPubkeyHex, let deviceNsec):
+            secretStore.save(
+                StoredAccountBundle(
+                    ownerNsec: ownerNsec,
+                    ownerPubkeyHex: ownerPubkeyHex,
+                    deviceNsec: deviceNsec
+                )
+            )
+        case .fullState(let nextState):
+            guard nextState.rev > lastRevApplied else {
+                return
+            }
+            lastRevApplied = nextState.rev
+            state = nextState
+            bootstrapInFlight = false
+            if let toast = nextState.toast, !toast.isEmpty {
+                showToast(toast)
+            }
+        }
+    }
+
+    private func restorePersistedSession() {
+        defer {
+            bootstrapInFlight = false
+        }
+        guard let bundle = secretStore.load() else {
+            return
+        }
+        rust.dispatch(
+            action: .restoreAccountBundle(
+                ownerNsec: bundle.ownerNsec,
+                ownerPubkeyHex: bundle.ownerPubkeyHex,
+                deviceNsec: bundle.deviceNsec
+            )
+        )
+    }
+
+    private func showToast(_ text: String) {
+        toastMessage = text
+        let message = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard self?.toastMessage == message else {
+                return
+            }
+            self?.toastMessage = nil
+        }
+    }
+}
+
+final class UpdateBridge: NSObject, AppReconciler, @unchecked Sendable {
+    weak var owner: AppManager?
+
+    init(owner: AppManager) {
+        self.owner = owner
+    }
+
+    func reconcile(update: AppUpdate) {
+        Task { @MainActor [weak owner] in
+            owner?.apply(update: update)
+        }
+    }
+}

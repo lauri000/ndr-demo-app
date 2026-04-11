@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ANDROID_DIR="$ROOT/android"
+
+usage() {
+  cat <<'EOF'
+usage: ./scripts/android-build <gen-kotlin|android-rust|android-local-properties|android-assemble>
+EOF
+}
+
+write_android_local_properties() {
+  local sdk
+  sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+  if [[ -z "${sdk:-}" ]]; then
+    echo "ANDROID_HOME or ANDROID_SDK_ROOT must be set to write android/local.properties" >&2
+    return 1
+  fi
+  printf 'sdk.dir=%s\n' "$sdk" > "$ANDROID_DIR/local.properties"
+}
+
+run_gradle() {
+  (
+    cd "$ANDROID_DIR"
+    ./gradlew "$@"
+  )
+}
+
+case "${1:-}" in
+  gen-kotlin)
+    run_gradle :app:generateRustBindings
+    ;;
+  android-rust)
+    run_gradle :app:buildRustAndroidDebug
+    ;;
+  android-local-properties)
+    write_android_local_properties
+    ;;
+  android-assemble)
+    if [[ ! -f "$ANDROID_DIR/local.properties" ]]; then
+      write_android_local_properties || true
+    fi
+    run_gradle :app:assembleDebug
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOCAL_PROPERTIES="${ROOT_DIR}/local.properties"
+LOCAL_PROPERTIES="${ROOT_DIR}/android/local.properties"
 SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 DEFAULT_AVDS=("Medium_Phone_API_36.1" "Pixel_9a" "Pixel_Fold")
 

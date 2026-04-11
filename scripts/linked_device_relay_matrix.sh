@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOCAL_PROPERTIES="${ROOT_DIR}/local.properties"
+LOCAL_PROPERTIES="${ROOT_DIR}/android/local.properties"
 SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 
 if [[ -z "${SDK_DIR}" && -f "${LOCAL_PROPERTIES}" ]]; then
@@ -118,7 +118,7 @@ SERIAL_B="$(ensure_avd_running "${DEFAULT_AVDS[1]}")"
 SERIAL_C="$(ensure_avd_running "${DEFAULT_AVDS[2]}")"
 
 echo "Installing app and test APKs"
-(cd "${ROOT_DIR}" && ./gradlew :app:installDebug :app:installDebugAndroidTest >/dev/null)
+(cd "${ROOT_DIR}/android" && ./gradlew :app:installDebug :app:installDebugAndroidTest >/dev/null)
 
 for serial in "${SERIAL_A}" "${SERIAL_B}" "${SERIAL_C}"; do
   echo "Clearing ${PACKAGE_NAME} on ${serial}"

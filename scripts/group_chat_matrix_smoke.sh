@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOCAL_PROPERTIES="${ROOT_DIR}/local.properties"
+LOCAL_PROPERTIES="${ROOT_DIR}/android/local.properties"
 SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 
 if [[ -z "${SDK_DIR}" && -f "${LOCAL_PROPERTIES}" ]]; then
@@ -217,7 +217,7 @@ if [[ "${CLEAR_STATE}" -eq 1 ]]; then
 fi
 
 echo "Installing app and test APKs"
-(cd "${ROOT_DIR}" && ./gradlew :app:installDebug :app:installDebugAndroidTest >/dev/null)
+(cd "${ROOT_DIR}/android" && ./gradlew :app:installDebug :app:installDebugAndroidTest >/dev/null)
 
 echo "Creating primary owner on ${PRIMARY_SERIAL}"
 run_test "${PRIMARY_SERIAL}" create_account_and_report_identity >/dev/null
