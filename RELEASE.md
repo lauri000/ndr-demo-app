@@ -1,10 +1,10 @@
 # Release Guide
 
-This repo now has repeatable release entrypoints for both platforms:
+This repo has repeatable release entrypoints for both platforms:
 
 - Android: `./scripts/android-release`
 - iOS: `./scripts/ios-release`
-- Shared release inputs: `release.env` copied from [release.env.example](/Users/l/Projects/iris-fork/ndr-demo-app/release.env.example)
+- Shared release inputs: copy `release.env.example` to `release.env`
 
 ## Official References
 
@@ -21,10 +21,15 @@ This repo now has repeatable release entrypoints for both platforms:
 
 ## Repo Layout
 
-- `core/`: shared Rust core. Mobile build metadata and default relay sets are compiled here via `core/build.rs`.
-- `android/`: Gradle/Compose shell. Android package metadata, signing config, and Rust Android packaging are controlled from `android/app/build.gradle.kts`.
-- `ios/`: SwiftUI shell. The Xcode project is generated from `ios/project.yml`, while version/build values come from Xcode build settings referenced by `ios/Info.plist`.
-- `scripts/`: release/test/build entrypoints.
+- `core/`: shared Rust core. Mobile build metadata and default relay sets are
+  compiled here via `core/build.rs`.
+- `android/`: Gradle/Compose shell. Android package metadata, signing config,
+  and Rust Android packaging are controlled from
+  `android/app/build.gradle.kts`.
+- `ios/`: SwiftUI shell. The Xcode project is generated from `ios/project.yml`,
+  while version/build values come from Xcode build settings referenced by
+  `ios/Info.plist`.
+- `scripts/`: release, test, and build entrypoints.
 
 ## Shared Build Inputs
 
@@ -37,11 +42,35 @@ These values are the common boundary between Android, iOS, and the Rust core:
 - `NDR_RELEASE_RELAY_SET_ID`
 - `NDR_RELEASE_RELAYS`
 
-If you leave `NDR_BUILD_GIT_SHA` and `NDR_BUILD_TIMESTAMP_UTC` unset, the release scripts derive them from the current Git `HEAD`. If you want a stricter deterministic build, set them explicitly or provide `SOURCE_DATE_EPOCH`.
+If `NDR_BUILD_GIT_SHA` and `NDR_BUILD_TIMESTAMP_UTC` are unset, the release
+scripts derive them from the current Git `HEAD`. For stricter reproducibility,
+set them explicitly or provide `SOURCE_DATE_EPOCH`.
+
+## Recommended Release Gates
+
+Minimum blocking gate before cutting a release artifact:
+
+```bash
+cd /path/to/ndr-demo-app
+just qa-native-contract
+```
+
+Heavier confidence lane before widening rollout:
+
+```bash
+cd /path/to/ndr-demo-app
+just qa-interop
+```
+
+These scripts do not publish anything. They only verify the build and behavior
+surface before packaging.
 
 ## Android Organization
 
-Android release inputs are read in this order: `android/local.properties` then environment variables.
+Android release inputs are read in this order:
+
+1. `android/local.properties`
+2. environment variables
 
 Supported keys:
 
@@ -73,9 +102,12 @@ Primary commands:
 - `./scripts/android-release print-config`
 - `./scripts/android-release beta-apk`
 - `./scripts/android-release beta-bundle`
+- `./scripts/android-release release-apk`
 - `./scripts/android-release release-bundle`
 
-Artifacts are copied into `dist/android/` with a stable `IrisChat-<channel>-<version>+<build>-<sha>` naming scheme and a matching `.env` manifest.
+Artifacts are copied into `dist/android/` with a stable
+`IrisChat-<channel>-<version>+<build>-<sha>` naming scheme and a matching `.env`
+manifest.
 
 ## iOS Organization
 
@@ -83,10 +115,11 @@ iOS has two layers:
 
 - `./scripts/ios-build`: native build primitives
   - generate Swift bindings
-  - build Rust static libs/XCFramework
+  - build Rust static libs and XCFramework
   - generate the Xcode project
-  - run simulator builds/tests
+  - run simulator builds and tests
 - `./scripts/ios-release`: release orchestration
+  - `print-config`
   - `prepare`
   - `archive`
   - `export`
@@ -104,53 +137,99 @@ iOS release environment:
 - `NDR_ASC_AUTH_KEY_ID`
 - `NDR_ASC_AUTH_KEY_ISSUER_ID`
 
-The generated project now takes its version/build from `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION`, so `ios-release` can archive the same source tree with explicit release values instead of editing plist files in place.
+Current defaults:
+
+- bundle ID: `social.innode.irischat`
+- signing style: `automatic`
+- export method: `app-store-connect`
+
+`ios-release` currently automates automatic signing only.
+
+The generated project takes its version/build from `MARKETING_VERSION` and
+`CURRENT_PROJECT_VERSION`, so `ios-release` can archive the same source tree
+with explicit release values instead of rewriting plist files in place.
 
 ## Step By Step
 
 ### Android closed test or release
 
 1. Copy `release.env.example` to `release.env`.
-2. Fill `NDR_APP_VERSION_NAME`, `NDR_APP_VERSION_CODE`, relay values, and release signing values.
-3. Build a Play artifact:
+2. Fill `NDR_APP_VERSION_NAME`, `NDR_APP_VERSION_CODE`, relay values, and
+   signing values.
+3. Inspect the resolved config:
 
 ```bash
-cd /Users/l/Projects/iris-fork/ndr-demo-app
+cd /path/to/ndr-demo-app
+./scripts/android-release print-config
+```
+
+4. Build the target artifact:
+
+```bash
 ./scripts/android-release release-bundle
 ```
 
-4. Upload the `.aab` from `dist/android/` to the correct track in Play Console.
-5. For a side-loadable trusted beta, use `./scripts/android-release beta-apk`.
+5. Upload the `.aab` from `dist/android/` to the correct Play track.
+6. For a side-loadable trusted beta, use `./scripts/android-release beta-apk`
+   or `./scripts/android-release beta-bundle`.
 
 ### iOS TestFlight
 
-1. In App Store Connect, create the app record first. Apple requires the app record before the first upload.
+1. In App Store Connect, create the app record first.
 2. Copy `release.env.example` to `release.env`.
-3. Fill `NDR_APP_VERSION_NAME`, `NDR_APP_VERSION_CODE`, relay values, `NDR_IOS_BUNDLE_ID`, and `NDR_IOS_DEVELOPMENT_TEAM`.
-4. If you want Xcode to create/fetch signing assets, set `NDR_IOS_ALLOW_PROVISIONING_UPDATES=true`.
-5. Build the archive:
+3. Fill `NDR_APP_VERSION_NAME`, `NDR_APP_VERSION_CODE`, relay values,
+   `NDR_IOS_BUNDLE_ID`, and `NDR_IOS_DEVELOPMENT_TEAM`.
+4. If you want Xcode to create/fetch signing assets, set
+   `NDR_IOS_ALLOW_PROVISIONING_UPDATES=true`.
+5. Inspect the resolved config:
 
 ```bash
-cd /Users/l/Projects/iris-fork/ndr-demo-app
+cd /path/to/ndr-demo-app
+./scripts/ios-release print-config
+```
+
+6. Build the archive:
+
+```bash
 ./scripts/ios-release archive
 ```
 
-6. Export an IPA if you want a local artifact:
+7. Export an IPA if you want a local artifact:
 
 ```bash
 ./scripts/ios-release export
 ```
 
-7. Upload either from Xcode Organizer or with:
+8. Upload either from Xcode Organizer or with:
 
 ```bash
 ./scripts/ios-release upload
 ```
 
-8. Wait for App Store Connect processing, then add the build to internal or external TestFlight groups.
+9. Wait for App Store Connect processing, then add the build to internal or
+   external TestFlight groups.
+
+## Reproducibility Notes
+
+The release scripts normalize:
+
+- version/build
+- git SHA
+- build timestamp
+- release relay configuration
+- artifact naming
+- per-artifact `.env` manifests in `dist/`
+
+These scripts improve repeatability, but they do not guarantee bit-for-bit
+identical output across different toolchain versions or machines. To tighten
+that further, keep Xcode, Gradle, Android SDK/NDK, JDK, and Cargo inputs pinned
+and build from a clean commit with explicit metadata.
 
 ## Current Limits
 
-- `ios-release` automates automatic signing only. Manual provisioning profile mapping is not encoded in the script.
-- App Store Connect metadata, tester groups, screenshots, privacy questionnaires, and review submissions still happen in Apple/Google consoles.
-- The scripts make the build inputs explicit and repeatable. They do not guarantee bit-for-bit identical output across different toolchain versions or machines. To tighten that further, keep Xcode, Gradle, NDK, JDK, and Cargo inputs pinned and build from a clean commit with explicit metadata.
+- `ios-release` automates automatic signing only. Manual provisioning-profile
+  mapping is not encoded in the script.
+- App Store Connect metadata, tester groups, screenshots, privacy
+  questionnaires, and review submissions still happen in Apple/Google consoles.
+- `qa-interop` is intentionally a heavier confidence lane, not a per-commit
+  blocking gate.

@@ -1,199 +1,280 @@
 # Architecture
 
-This file is the source of truth for the Android app architecture. Future changes should follow this split, and if implementation diverges this document must be updated in the same change.
+This document is the canonical source of truth for the Iris Chat architecture.
+When the ownership boundary changes, update this document in the same branch.
 
-## Repo Roles
+The repo follows a Rust-first mobile architecture inspired by the Pika app in
+the sibling `iris/pika` workspace.
 
-- `/Users/l/Projects/iris-fork/nostr-double-ratchet`
-  - Rust engine repo
-  - `nostr-double-ratchet`: protocol/domain logic
-  - `nostr-double-ratchet-nostr`: Nostr wire conversion
-- `/Users/l/Projects/iris-fork/ndr-demo-app`
-  - Android product repo
-  - Compose UI and app-specific Rust runtime
-  - `rust/`: app-facing UniFFI crate that owns the mobile app core
+## Goal
+
+Keep as much product behavior as possible in Rust so that:
+
+- app state is cross-platform
+- navigation is cross-platform
+- business logic is cross-platform
+- protocol and relay behavior are cross-platform
+- adding another native shell is mostly a rendering and platform-integration task
+
+Android and iOS are intentionally thin shells over one shared Rust app core.
+
+## Repo Shape
+
+- `core/`
+  - shared Rust mobile app core
+  - UniFFI boundary
+  - router, app state, protocol/runtime logic, persistence, and support/debug data
+- `android/`
+  - Android shell
+  - Compose rendering
+  - Android secure storage and platform integrations
+- `ios/`
+  - iOS shell
+  - SwiftUI rendering
+  - Keychain and iOS platform integrations
+- `scripts/`
+  - local build, test, harness, and release entrypoints
+- `tools/`
+  - higher-signal local run and doctor commands
+
+The protocol crates under `core/vendor/` are dependencies. The product boundary
+for this app is the `core/` crate in this repo.
+
+## Core Principles
+
+### Rust owns app truth
+
+Rust is the authoritative owner of:
+
+- routing and navigation state
+- account and session state
+- device authorization state
+- direct-chat and group-chat behavior
+- relay/protocol behavior
+- retry, catch-up, and background messaging policy
+- user-visible long-running operation state
+- durable application persistence
+
+Native code must not introduce alternate correctness rules for those areas.
+
+### Native shells render Rust state
+
+Android and iOS should primarily:
+
+- construct the Rust core
+- restore secure credentials into Rust at startup
+- persist Rust-emitted secure side effects
+- render Rust `AppState`
+- dispatch user actions back to Rust
+- host real platform integrations such as camera, clipboard, and sharing
+
+### Rust-first does not mean Rust-only at any cost
+
+If a platform API is required for first-class UX, native code may host a narrow
+capability bridge. Rust still owns:
+
+- policy
+- state transitions
+- retries and fallbacks
+- user-visible outcomes
+
+Native executes platform effects. It does not fork app logic.
 
 ## Ownership Split
 
 ### Rust owns
 
-- `FfiApp`, `AppCore`, and the UniFFI boundary used by Android
-- account creation, import, and identity derivation
-- app state transitions through `AppCore`
-- `SessionManager`, `Session`, and `Invite`
-- local chat thread and message state
-- local outbox state and delivery state transitions
-- persistence blob schema and versioning
-- relay session configuration, protocol subscription planning, event interpretation, and protocol decisions
-- publication of rosters, invites, invite responses, and messages
+- `FfiApp` and the UniFFI boundary
+- `AppAction`, `AppState`, `AppUpdate`
+- `Router` and `Screen`
+- account creation and restore rules
+- linked-device authorization rules
+- chat/group state and mutations
+- relay session configuration
+- subscription planning and catch-up
+- relay-event interpretation
+- outbound/inbound message lifecycle
+- persistence schema and migration
+- support bundle and runtime debug projection
 
-### Kotlin owns
+### Native owns
 
-- Compose rendering and navigation
-- Android lifecycle and process startup
-- Android Keystore persistence for the encrypted nsec
-- platform integrations like clipboard, notifications, camera, and background behavior
+- rendering and UI composition
+- secure secret storage primitives
+  - Android Keystore and DataStore
+  - iOS Keychain
+- platform lifecycle hooks
+- clipboard, share sheet, camera, and QR host APIs
+- shell-only ephemeral UI state
+  - text input drafts
+  - focus
+  - scroll position
+  - local presentation toggles
 
-## Runtime Topology
+### Native must not own
 
-```mermaid
-flowchart LR
-  UI["Compose UI"] --> AM["AppManager"]
-  AM --> FFI["FfiApp"]
-  FFI --> CORE["AppCore actor"]
-  CORE --> STATE["AppState / ThreadRecord / PendingOutbound"]
-  CORE --> SESSION["LoggedInState"]
-  SESSION --> CLIENT["Long-lived nostr-sdk Client"]
-  CORE --> SUBS["ProtocolSubscriptionRuntime"]
-  SESSION --> SM["SessionManager"]
-  CLIENT --> RELAYS["Configured relays"]
-```
+- message transport policy
+- protocol interpretation
+- alternate routing logic
+- synthetic authoritative app state
+- domain-specific retry rules
+- authorization or chat/group business rules
 
-Important internal runtime structs:
+## Data Flow
 
-```rust
-struct LoggedInState {
-    owner_pubkey: OwnerPubkey,
-    owner_keys: Option<Keys>,
-    device_keys: Keys,
-    client: Client,
-    relay_urls: Vec<RelayUrl>,
-    session_manager: SessionManager,
-    authorization_state: LocalAuthorizationState,
-}
+The app uses a one-way Rust-owned state flow:
 
-struct PendingOutbound {
-    message_id: String,
-    chat_id: String,
-    body: String,
-    prepared_publish: Option<PreparedPublishBatch>,
-    publish_mode: OutboundPublishMode,
-    reason: PendingSendReason,
-    next_retry_at_secs: u64,
-    in_flight: bool,
-}
+1. Native constructs `FfiApp`.
+2. Native calls `state()` once for the initial snapshot.
+3. Native starts listening for `AppUpdate`.
+4. User interactions dispatch `AppAction` into Rust.
+5. Rust mutates internal actor state.
+6. Rust emits a new `AppUpdate`.
+7. Native applies the update and re-renders.
 
-struct ProtocolSubscriptionRuntime {
-    current_plan: Option<ProtocolSubscriptionPlan>,
-    applying_plan: Option<ProtocolSubscriptionPlan>,
-    refresh_in_flight: bool,
-    refresh_dirty: bool,
-    refresh_token: u64,
-}
-```
+The Rust actor is the only authoritative owner of app state transitions.
 
-## Boundary
+## State Model
 
-The Kotlin to Rust boundary is UniFFI.
+`AppState` is the UI-facing snapshot sent to native shells. It intentionally
+contains:
 
-Kotlin should not call `SessionManager` directly. Kotlin talks only to the Rust `FfiApp` facade exposed by `/Users/l/Projects/iris-fork/ndr-demo-app/rust`.
+- `router`
+- account/device authorization slices
+- chat list and current chat slices
+- group details
+- busy/in-flight flags
+- toast and other user-visible transient state
 
-The protocol repo remains pure Rust. It contains no mobile bridge code and no UniFFI surface.
+Rust may keep additional internal bookkeeping that is not exposed directly in
+`AppState`. Native renders the projection, not the internal storage.
+
+Current relevant files:
+
+- `core/src/actions.rs`
+- `core/src/state.rs`
+- `core/src/updates.rs`
+
+## Router Model
+
+Routing is Rust-owned.
+
+`AppState.router` is the authoritative navigation model:
+
+- `default_screen`
+- `screen_stack`
+
+Rust decides:
+
+- what the current logical route is
+- when business actions move the user to another screen
+- what render slice must exist for a route
+
+Native decides only how to present that route with platform UI frameworks.
+
+Invariant:
+
+- when the top route points at a screen that needs data, Rust is responsible for
+  keeping the corresponding `AppState` slice populated
+
+Example:
+
+- if the top route is `Screen::Chat { chat_id }`, Rust keeps `current_chat`
+  consistent with that chat
+
+Native should not fetch screen data on its own.
+
+## Update Model
+
+The current boundary uses:
+
+- `AppUpdate::FullState(AppState)`
+- side-effect updates for secure credential persistence
+
+Each full-state snapshot carries a monotonic `rev`.
+
+Native keeps `lastRevApplied` and drops stale `FullState` snapshots. Side-effect
+updates that persist secure material must still be applied even when their `rev`
+is older than the latest full snapshot.
+
+This simple model remains acceptable until profiling shows that FFI transfer
+size or snapshot cloning is a real bottleneck.
 
 ## Persistence Model
 
-There is one persistence boundary:
+There are two persistence layers.
 
-- Kotlin stores the Rust secret key bytes encrypted with Android Keystore
-- Rust stores the rest of the app snapshot and protocol state in app-local files
-- Rust owns the format of that persisted state
-- Rust persists prepared outbound publish batches so retry does not re-run `SessionManager::prepare_send(...)`
+### Native secure storage
 
-Kotlin must treat the Rust app core as authoritative for runtime and persisted protocol state.
+Native stores only secret/auth material that should not live in the Rust
+plaintext app snapshot.
 
-## Runtime Flow
+Examples:
 
-### Startup
+- owner/device secret bundle
+- future signer/session credentials if needed
 
-1. Kotlin constructs `FfiApp`.
-2. Kotlin restores the encrypted account bundle from Android Keystore storage.
-3. Kotlin dispatches `RestoreAccountBundle` into Rust if an account exists.
-4. Rust restores account, protocol state, local outbox state, and chat state.
-5. Rust configures relays on the session client once and schedules a background `client.connect()`.
-6. Rust requests one canonical protocol-subscription refresh.
-7. Kotlin renders from `AppState` updates emitted by Rust.
+### Rust app persistence
 
-### Ordinary Send
+Rust stores the rest of the durable app model.
 
-1. User enters text in Compose.
-2. Kotlin dispatches `SendMessage`.
-3. Rust calls `SessionManager::prepare_send(...)`.
-4. Rust appends a local pending message immediately and persists the prepared publish batch.
-5. Rust starts background ordinary publish against the already-configured session client.
-6. Publish succeeds when the first relay accepts each event.
-7. Rust marks the message `Sent` on publish completion and emits the updated `AppState`.
+Examples:
 
-```mermaid
-sequenceDiagram
-  participant UI as "Compose UI"
-  participant CORE as "AppCore"
-  participant SM as "SessionManager"
-  participant CLIENT as "Long-lived Client"
-  participant RELAY as "Relays"
+- session manager snapshot
+- group manager snapshot
+- thread/message model
+- pending outbound state
+- owner profile cache
+- relay-event de-duplication metadata
 
-  UI->>CORE: "SendMessage(chat_id, text)"
-  CORE->>SM: "prepare_send(...)"
-  CORE->>CORE: "append pending bubble"
-  CORE-->>UI: "AppState with pending message"
-  CORE->>CLIENT: "background first-ack publish"
-  CLIENT->>RELAY: "send event to configured relays"
-  RELAY-->>CLIENT: "first relay accepts"
-  CLIENT-->>CORE: "PublishFinished(success=true)"
-  CORE-->>UI: "delivery = Sent"
-```
+Rust owns the format, versioning, and migration of that persisted state.
 
-### First Contact Send
+## Native Shell Contract
 
-First-contact sends are intentionally different:
+The shell contract is:
 
-1. Rust persists a staged `PreparedPublishBatch`.
-2. Rust publishes invite-response events first.
-3. Rust waits `1500 ms`.
-4. Rust publishes message events.
-5. Retry reuses the stored prepared batch and does not re-run `prepare_send(...)`.
+1. Build the Rust object.
+2. Load secure credentials from native secure storage.
+3. Dispatch a restore action into Rust if credentials exist.
+4. Persist secure side-effect updates emitted by Rust.
+5. Render Rust state.
+6. Forward user actions and lifecycle signals into Rust.
 
-### Protocol Subscriptions
+Two rules matter here:
 
-Subscriptions are not rebuilt opportunistically from raw filter vectors. `AppCore` computes a canonical sorted `ProtocolSubscriptionPlan` and coalesces refresh work.
+- Rust owns authoritative state and routing.
+- Native shells may not synthesize app truth to paper over Rust behavior.
 
-```mermaid
-flowchart TD
-  A["state change may affect filters"] --> B["request_protocol_subscription_refresh()"]
-  B --> C{"refresh in flight?"}
-  C -->|yes| D["mark dirty"]
-  C -->|no| E["compute canonical plan"]
-  E --> F{"plan changed?"}
-  F -->|no| G["done"]
-  F -->|yes| H["unsubscribe stable protocol id"]
-  H --> I["subscribe new filters with same id"]
-  I --> J{"dirty set while running?"}
-  J -->|yes| E
-  J -->|no| K["done"]
-```
+Current shell implementations:
 
-### Receive
+- Android: `android/app/src/main/java/social/innode/ndr/demo/core/AppManager.kt`
+- iOS: `ios/Sources/AppManager.swift`
 
-1. Rust receives raw relay data from its own relay client.
-2. Rust interprets the event and mutates protocol/chat state.
-3. Rust persists the updated state.
-4. Kotlin renders the resulting `AppState`.
+## Verification Gates
 
-## Mobile Rule
+The architecture now has explicit boundary tests:
 
-All mobile business logic belongs in Rust unless it is Android platform behavior.
+- Android shell contract suite:
+  - `android/app/src/androidTest/java/social/innode/ndr/demo/core/AppManagerContractTest.kt`
+- iOS shell contract and unit suite:
+  - `ios/Tests/IrisChatTests.swift`
+- Android local UI smoke:
+  - `android/app/src/androidTest/java/social/innode/ndr/demo/PikaLikeUiTest.kt`
+- iOS local UI smoke:
+  - `ios/UITests/IrisChatUITests.swift`
 
-That means Kotlin should not own:
+Blocking refactor gate:
 
-- key generation/import rules
-- chat message history
-- protocol interpretation
-- session bootstrap logic
-- Nostr event meaning
-- relay connection management for the messaging runtime
-- outbox retry semantics or subscription planning
+- `just qa-native-contract`
 
-Kotlin may own:
+Heavier non-blocking confidence lane:
 
-- UI-only ephemeral state such as current text field contents
-- lifecycle orchestration
-- encrypted secret storage
+- `just qa-interop`
+
+## Current Refactor Focus
+
+The architecture direction is correct. The next work is internal Rust
+modularization, not moving behavior out of Rust.
+
+The main remaining hotspot is `core/src/core.rs`. It should become a
+coordinator over smaller modules while the public UniFFI boundary stays stable.

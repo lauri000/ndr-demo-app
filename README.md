@@ -1,71 +1,114 @@
 # Iris Chat
 
-Shared mobile app workspace for Iris Chat, built on Nostr Double Ratchet.
+Iris Chat is a Rust-first mobile workspace built on Nostr Double Ratchet.
 
-Current shape:
+`core/` owns the app model, router, messaging logic, relay/runtime behavior,
+and persistence. Android and iOS are thin native shells that restore secure
+credentials, persist secure side effects, render `AppState`, and forward
+`AppAction` back to Rust.
 
-- `core/`: shared Rust app core consumed by native UIs
-- `android/`: Android UI and Gradle project
-- `ios/`: iOS SwiftUI shell, bindings, and XcodeGen project spec
-- `scripts/`: local tooling for bootstrap, emulators, simulators, and test gates
-- `tools/`: high-signal run/doctor entrypoints
+## Repo Shape
 
-The Rust app core already uses UniFFI and is the intended single integration surface for both
-Android and iOS.
+- `core/`: shared Rust app core and UniFFI boundary
+- `android/`: Android shell, Gradle project, and Compose UI
+- `ios/`: iOS shell, SwiftUI UI, XcodeGen spec, and tests
+- `scripts/`: build, test, release, emulator, simulator, and harness entrypoints
+- `tools/`: higher-signal local run/doctor wrappers
 
-Tracking:
+## Docs
 
-- parity status: [PARITY_MATRIX.md](/Users/l/Projects/iris-fork/ndr-demo-app/PARITY_MATRIX.md)
-- release process: [RELEASE.md](/Users/l/Projects/iris-fork/ndr-demo-app/RELEASE.md)
+- [Architecture](ARCHITECTURE.md)
+- [Architecture review](ARCHITECTURE_REVIEW.md)
+- [Implementation plan](ARCHITECTURE_IMPLEMENTATION_PLAN.md)
+- [Parity matrix](PARITY_MATRIX.md)
+- [Release guide](RELEASE.md)
+- [Android beta release](BETA_RELEASE.md)
 
 ## Get Started
 
 ```bash
-cd /Users/l/Projects/iris-fork/ndr-demo-app
+cd /path/to/ndr-demo-app
 ./scripts/mobile_bootstrap_macos.sh
 just info
 just run-android
 just run-ios
-just qa
 ```
+
+## Daily Test Lanes
+
+- `just qa`
+  - Rust tests
+  - one local-relay soak iteration
+  - Android debug compile gates
+  - iOS XCTest and UI tests
+- `just qa-native-contract`
+  - `just qa`
+  - Android `AppManagerContractTest`
+  - Android `PikaLikeUiTest`
+  - Android `AndroidKeystoreSecretStoreTest`
+- `just qa-interop`
+  - mixed Android+iOS group/direct matrix
+  - Android restore/group relay smoke
+  - Android linked-device relay matrix
+
+Use `just qa-native-contract` as the blocking gate before refactoring the Rust
+core. Use `just qa-interop` as the heavier confidence lane.
 
 ## Android
 
-Build and install the Android debug app:
+Build and install the debug app:
 
 ```bash
-cd /Users/l/Projects/iris-fork/ndr-demo-app
+cd /path/to/ndr-demo-app
 just android-assemble
 ./scripts/emulator_smoke.sh --clear emulator-5554 emulator-5556 emulator-5558
 ```
 
-Build the shareable beta APK:
+Build release artifacts:
 
 ```bash
-cd /Users/l/Projects/iris-fork/ndr-demo-app
+cd /path/to/ndr-demo-app
+./scripts/android-release print-config
 ./scripts/android-release beta-apk
+./scripts/android-release beta-bundle
+./scripts/android-release release-bundle
 ```
+
+Android release details live in [BETA_RELEASE.md](BETA_RELEASE.md) and
+[RELEASE.md](RELEASE.md).
 
 ## iOS
 
-The iOS app is generated from `ios/project.yml` and consumes the same `core/` Rust crate via
-generated Swift UniFFI bindings plus an XCFramework packaging step.
+The iOS app is generated from `ios/project.yml` and links the shared Rust core
+through generated Swift bindings plus `ios/Frameworks/NdrDemoCore.xcframework`.
 
-Common flows:
+Common local flows:
 
 ```bash
-cd /Users/l/Projects/iris-fork/ndr-demo-app
+cd /path/to/ndr-demo-app
 just ios-gen-swift
 just ios-xcframework
 just ios-xcodeproj
 just run-ios
+./scripts/ios-build ios-test
 ```
 
-Archive the iOS app for TestFlight/App Store distribution:
+Prepare and archive a release build:
 
 ```bash
-cd /Users/l/Projects/iris-fork/ndr-demo-app
+cd /path/to/ndr-demo-app
 cp release.env.example release.env
 $EDITOR release.env
+./scripts/ios-release print-config
 ./scripts/ios-release archive
 ```
+
+## Interop Harnesses
+
+Repo-native harnesses exist for the heavy relay-backed matrixes:
+
+- Android harness runner: `scripts/run_harness.py`
+- iOS harness runner: `scripts/run_ios_harness.py`
+- mixed-platform matrix: `scripts/mixed_platform_group_chat_matrix.sh`
+
+These are intentionally separate from the fast local UI smoke suites.

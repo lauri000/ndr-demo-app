@@ -1,18 +1,23 @@
 # Android Beta Release
 
-This app now has a dedicated `beta` build intended for a trusted closed test group.
+This repo has a dedicated Android `beta` build intended for a trusted closed
+test group.
 
-## Beta warning
+## Beta Warning
 
 - The beta is for trusted testers only.
 - Local app-core state is not encrypted at rest yet.
 - Do not use the beta for sensitive conversations.
 
-## Build configuration
+The trusted-test warning is surfaced in both Android welcome/profile UI and the
+iOS profile UI when the build is configured as a trusted test build.
 
-The `beta` build type is release-like, optimized, and installable alongside `debug`.
+## Build Configuration
 
-Build metadata is embedded in both the app UI and the Rust support bundle:
+The `beta` build type is release-like, optimized, and installable alongside
+`debug`.
+
+Build metadata is embedded in the app UI and support bundle:
 
 - app version
 - git SHA
@@ -20,9 +25,9 @@ Build metadata is embedded in both the app UI and the Rust support bundle:
 - relay-set ID
 - build channel
 
-## Relay configuration
+## Relay Configuration
 
-The Rust core reads its compiled default relay set from the Android build.
+The Rust core reads its compiled relay defaults from the Android build.
 
 Override values before packaging the beta:
 
@@ -36,9 +41,10 @@ Optional dedicated beta signing config:
 - `beta.keyAlias` or `NDR_BETA_KEY_ALIAS`
 - `beta.keyPassword` or `NDR_BETA_KEY_PASSWORD`
 
-If no dedicated beta signing config is supplied, the beta build falls back to the debug signing config.
+If dedicated beta signing is not supplied, the beta build falls back to release
+signing and then to debug signing.
 
-## Support flow
+## Support Flow
 
 Open the profile sheet to:
 
@@ -53,65 +59,75 @@ The support bundle intentionally excludes:
 - raw persisted protocol snapshots
 - message bodies
 
-## Automated gates
+## Recommended Gates
 
-Canonical local entrypoints:
+Fast local gate:
 
 ```bash
-cd /Users/l/Projects/iris-fork/ndr-demo-app
-./scripts/test_fast.sh
+cd /path/to/ndr-demo-app
+just qa
+```
+
+Blocking native-shell gate before cutting a beta:
+
+```bash
+cd /path/to/ndr-demo-app
+just qa-native-contract
 ./scripts/test_beta_local.sh
 ```
 
-- `./scripts/test_fast.sh`
-  - app Rust suite
-  - one local-relay scenario soak iteration
-- `./scripts/test_beta_local.sh`
-  - library Rust suite
-  - app Rust suite
-  - local Android compile gates for debug/beta/androidTest
-
-Recommended full beta gate before sending an APK to testers:
+Heavier confidence lane before widening the tester group:
 
 ```bash
-cd /Users/l/Projects/iris-fork/ndr-demo-app
-./scripts/test_beta_local.sh
+cd /path/to/ndr-demo-app
+just qa-interop
 ./scripts/local_relay_scenario_soak.sh --iterations 100
-./scripts/linked_device_relay_matrix.sh
-./scripts/group_chat_restore_smoke.sh
 ./scripts/group_chat_matrix_smoke.sh
-./gradlew :app:assembleBeta
 ```
 
-The relay/device scripts remain explicit manual gates and are not part of the default fast path.
+`./scripts/test_beta_local.sh` keeps the Android build surface honest for:
+
+- Rust tests
+- Android debug compile
+- Android beta compile
+- Android androidTest compile
 
 ## Packaging
+
+Print the resolved release inputs:
+
+```bash
+cd /path/to/ndr-demo-app
+./scripts/android-release print-config
+```
 
 Build the beta APK:
 
 ```bash
-cd /Users/l/Projects/iris-fork/ndr-demo-app
+cd /path/to/ndr-demo-app
 ./scripts/android-release beta-apk
 ```
 
 Output:
 
 - `dist/android/IrisChat-beta-<version>+<build>-<sha>.apk`
+- matching `dist/android/IrisChat-beta-<version>+<build>-<sha>.env`
 
 Build the Play-ready beta bundle:
 
 ```bash
-cd /Users/l/Projects/iris-fork/ndr-demo-app
+cd /path/to/ndr-demo-app
 ./scripts/android-release beta-bundle
 ```
 
 Output:
 
 - `dist/android/IrisChat-beta-<version>+<build>-<sha>.aab`
+- matching `dist/android/IrisChat-beta-<version>+<build>-<sha>.env`
 
-## Manual acceptance
+## Manual Acceptance
 
-Before inviting testers, manually verify on a real phone:
+Before inviting testers, verify on at least one real phone:
 
 1. Install the beta APK.
 2. Confirm the trusted-test warning is visible.
@@ -124,7 +140,7 @@ Before inviting testers, manually verify on a real phone:
 9. Force-stop and reopen the app, then verify chats/groups restore.
 10. Export and share a support bundle.
 
-## Upgrade smoke
+## Upgrade Smoke
 
 Before publishing beta `N+1`:
 
