@@ -33,7 +33,7 @@ class RealRelayHarnessTest {
         get() = InstrumentationRegistry.getArguments()
 
     private fun appManager(): AppManager =
-        (instrumentation.targetContext.applicationContext as NdrDemoApp).container.appManager
+        (instrumentation.targetContext.applicationContext as IrisChatApp).container.appManager
 
     private fun appFilesDir(): File = instrumentation.targetContext.filesDir
 

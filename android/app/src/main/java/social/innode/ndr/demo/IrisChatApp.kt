@@ -3,7 +3,7 @@ package social.innode.ndr.demo
 import android.app.Application
 import social.innode.ndr.demo.core.AppContainer
 
-class NdrDemoApp : Application() {
+class IrisChatApp : Application() {
     lateinit var container: AppContainer
         private set
 

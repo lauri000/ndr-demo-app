@@ -91,12 +91,23 @@ Build the beta APK:
 
 ```bash
 cd /Users/l/Projects/iris-fork/ndr-demo-app
-./gradlew :app:assembleBeta
+./scripts/android-release beta-apk
 ```
 
 Output:
 
-- `app/build/outputs/apk/beta/app-beta.apk`
+- `dist/android/IrisChat-beta-<version>+<build>-<sha>.apk`
+
+Build the Play-ready beta bundle:
+
+```bash
+cd /Users/l/Projects/iris-fork/ndr-demo-app
+./scripts/android-release beta-bundle
+```
+
+Output:
+
+- `dist/android/IrisChat-beta-<version>+<build>-<sha>.aab`
 
 ## Manual acceptance
 

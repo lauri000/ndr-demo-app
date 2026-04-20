@@ -1,5 +1,5 @@
 import XCTest
-@testable import NdrDemo
+@testable import IrisChat
 
 private final class InMemorySecretStore: AccountSecretStore {
     var bundle: StoredAccountBundle?
@@ -72,7 +72,7 @@ private final class MockRustApp: RustAppClient {
     }
 }
 
-final class NdrDemoTests: XCTestCase {
+final class IrisChatTests: XCTestCase {
     func testDeviceApprovalQrRoundTrip() {
         let encoded = DeviceApprovalQr.encode(ownerInput: "npub-owner", deviceInput: "npub-device")
         let decoded = DeviceApprovalQr.decode(encoded)

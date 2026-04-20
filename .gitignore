@@ -9,6 +9,8 @@ core/target/
 ios/Bindings/
 ios/.build/
 ios/Frameworks/
-ios/NdrDemo.xcodeproj/
+ios/*.xcodeproj/
+dist/
+release.env
 *.iml
 .DS_Store

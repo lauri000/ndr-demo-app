@@ -176,24 +176,30 @@ run_ios_xcodeproj() {
   )
 }
 
+default_ios_destination() {
+  local simulator_name="${NDR_IOS_SIMULATOR_NAME:-Iris Chat iPhone}"
+  "$ROOT/scripts/run_ios_simulators.sh" --no-open "$simulator_name" >/dev/null
+  printf 'platform=iOS Simulator,name=%s\n' "$simulator_name"
+}
+
 run_ios_build_sim() {
-  local destination="${NDR_IOS_SIM_DESTINATION:-platform=iOS Simulator,name=NDR Demo iPhone}"
+  local destination="${NDR_IOS_SIM_DESTINATION:-$(default_ios_destination)}"
   run_ios_xcframework
   run_ios_xcodeproj
   xcodebuild \
-    -project "$IOS_DIR/NdrDemo.xcodeproj" \
-    -scheme NdrDemo \
+    -project "$IOS_DIR/IrisChat.xcodeproj" \
+    -scheme IrisChat \
     -destination "$destination" \
     build
 }
 
 run_ios_test() {
-  local destination="${NDR_IOS_SIM_DESTINATION:-platform=iOS Simulator,name=NDR Demo iPhone}"
+  local destination="${NDR_IOS_SIM_DESTINATION:-$(default_ios_destination)}"
   run_ios_xcframework
   run_ios_xcodeproj
   xcodebuild \
-    -project "$IOS_DIR/NdrDemo.xcodeproj" \
-    -scheme NdrDemo \
+    -project "$IOS_DIR/IrisChat.xcodeproj" \
+    -scheme IrisChat \
     -destination "$destination" \
     test
 }

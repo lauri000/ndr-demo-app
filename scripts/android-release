@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/release_common.sh"
+
+load_release_env "$ROOT"
+resolve_shared_build_metadata "$ROOT"
+
+ANDROID_DIR="$ROOT/android"
+ANDROID_DIST_DIR="$ROOT/dist/android"
+
+usage() {
+  cat <<'EOF'
+usage: ./scripts/android-release <print-config|beta-apk|beta-bundle|release-apk|release-bundle>
+EOF
+}
+
+ensure_local_properties() {
+  if [[ ! -f "$ANDROID_DIR/local.properties" ]]; then
+    "$ROOT/scripts/android-build" android-local-properties || true
+  fi
+}
+
+print_config() {
+  cat <<EOF
+android.dir=$ANDROID_DIR
+app.version.name=$NDR_APP_VERSION_NAME
+app.version.code=$NDR_APP_VERSION_CODE
+build.git.sha=$NDR_BUILD_GIT_SHA
+build.timestamp.utc=$NDR_BUILD_TIMESTAMP_UTC
+debug.relay.set.id=${NDR_DEBUG_RELAY_SET_ID:-public-dev}
+beta.relay.set.id=${NDR_BETA_RELAY_SET_ID:-beta-fallback}
+release.relay.set.id=${NDR_RELEASE_RELAY_SET_ID:-public-release}
+beta.signing.configured=$([[ -n "${NDR_BETA_KEYSTORE_PATH:-}" && -n "${NDR_BETA_KEY_ALIAS:-}" ]] && printf true || printf false)
+release.signing.configured=$([[ -n "${NDR_RELEASE_KEYSTORE_PATH:-}" && -n "${NDR_RELEASE_KEY_ALIAS:-}" ]] && printf true || printf false)
+dist.dir=$ANDROID_DIST_DIR
+EOF
+}
+
+copy_artifact() {
+  local source_path="$1"
+  local channel="$2"
+  local extension="$3"
+  local basename
+  local destination
+  local manifest
+
+  ensure_dir "$ANDROID_DIST_DIR"
+  basename="$(release_slug "$channel")"
+  destination="$ANDROID_DIST_DIR/${basename}.${extension}"
+  manifest="$ANDROID_DIST_DIR/${basename}.env"
+
+  cp "$source_path" "$destination"
+  write_manifest "$manifest" \
+    artifact_path "$destination" \
+    artifact_source "$source_path" \
+    build_channel "$channel" \
+    app_version_name "$NDR_APP_VERSION_NAME" \
+    app_version_code "$NDR_APP_VERSION_CODE" \
+    build_git_sha "$NDR_BUILD_GIT_SHA" \
+    build_timestamp_utc "$NDR_BUILD_TIMESTAMP_UTC"
+
+  printf '%s\n' "$destination"
+}
+
+build_variant() {
+  local channel="$1"
+  local gradle_task="$2"
+  local outputs_subdir="$3"
+  local extension="$4"
+  local artifact_source
+
+  if [[ "$channel" == "release" ]]; then
+    require_var NDR_RELEASE_KEYSTORE_PATH
+    require_var NDR_RELEASE_KEYSTORE_PASSWORD
+    require_var NDR_RELEASE_KEY_ALIAS
+    require_var NDR_RELEASE_KEY_PASSWORD
+  fi
+
+  ensure_local_properties
+  (
+    cd "$ANDROID_DIR"
+    ./gradlew ":app:${gradle_task}"
+  )
+
+  artifact_source="$(find "$ANDROID_DIR/app/build/outputs/${outputs_subdir}" -maxdepth 1 -type f -name "*.${extension}" | sort | tail -n 1)"
+  if [[ -z "${artifact_source:-}" ]]; then
+    echo "Android artifact was not produced in $outputs_subdir" >&2
+    exit 1
+  fi
+
+  copy_artifact "$artifact_source" "$channel" "$extension"
+}
+
+case "${1:-}" in
+  print-config)
+    print_config
+    ;;
+  beta-apk)
+    build_variant beta assembleBeta apk/beta apk
+    ;;
+  beta-bundle)
+    build_variant beta bundleBeta bundle/beta aab
+    ;;
+  release-apk)
+    build_variant release assembleRelease apk/release apk
+    ;;
+  release-bundle)
+    build_variant release bundleRelease bundle/release aab
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

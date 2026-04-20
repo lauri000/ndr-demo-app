@@ -9,8 +9,6 @@ plugins {
 }
 
 val ndkVersionValue = "26.3.11579264"
-val appVersionCode = 1
-val appVersionName = "0.1.0"
 val rustAppDir = rootProject.file("../core")
 val rustManifestPath = rustAppDir.resolve("Cargo.toml")
 val rustSourceDir = rustAppDir.resolve("src")
@@ -30,21 +28,33 @@ val androidSdkDir =
         ?: error("Android SDK path was not found. Define sdk.dir in android/local.properties.")
 val androidNdkDir = file("$androidSdkDir/ndk/$ndkVersionValue")
 val cargoBinary = file("${System.getProperty("user.home")}/.cargo/bin/cargo")
-val buildGitSha =
-    runCatching {
-        providers.exec {
-            commandLine("git", "-C", rootProject.rootDir.absolutePath, "rev-parse", "--short=12", "HEAD")
-        }.standardOutput.asText.get().trim()
-    }.getOrElse { "unknown" }
-val buildTimestampUtc = Instant.now().toString()
 val publicRelayFallbackCsv = "wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net"
 
 fun configValue(propertyName: String, envName: String): String? =
     localProperties.getProperty(propertyName)?.takeIf { it.isNotBlank() }
         ?: System.getenv(envName)?.takeIf { it.isNotBlank() }
 
+fun configIntValue(propertyName: String, envName: String): Int? =
+    configValue(propertyName, envName)?.toIntOrNull()
+
 fun stringLiteral(value: String): String =
     "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+fun gitValue(vararg args: String): String? =
+    runCatching {
+        providers.exec {
+            commandLine("git", "-C", rootProject.rootDir.absolutePath, *args)
+        }.standardOutput.asText.get().trim()
+    }.getOrNull()?.takeIf { it.isNotBlank() }
+
+val appVersionCode = configIntValue("app.versionCode", "NDR_APP_VERSION_CODE") ?: 1
+val appVersionName = configValue("app.versionName", "NDR_APP_VERSION_NAME") ?: "0.1.0"
+val buildGitSha = configValue("build.gitSha", "NDR_BUILD_GIT_SHA") ?: gitValue("rev-parse", "--short=12", "HEAD") ?: "unknown"
+val buildTimestampUtc =
+    configValue("build.timestampUtc", "NDR_BUILD_TIMESTAMP_UTC")
+        ?: System.getenv("SOURCE_DATE_EPOCH")?.toLongOrNull()?.let { Instant.ofEpochSecond(it).toString() }
+        ?: gitValue("log", "-1", "--format=%ct", "HEAD")?.toLongOrNull()?.let { Instant.ofEpochSecond(it).toString() }
+        ?: Instant.now().toString()
 
 data class BuildRelayConfig(
     val relaySetId: String,
@@ -74,11 +84,20 @@ val betaSigningStoreFile = configValue("beta.storeFile", "NDR_BETA_KEYSTORE_PATH
 val betaSigningStorePassword = configValue("beta.storePassword", "NDR_BETA_KEYSTORE_PASSWORD")
 val betaSigningKeyAlias = configValue("beta.keyAlias", "NDR_BETA_KEY_ALIAS")
 val betaSigningKeyPassword = configValue("beta.keyPassword", "NDR_BETA_KEY_PASSWORD")
+val releaseSigningStoreFile = configValue("release.storeFile", "NDR_RELEASE_KEYSTORE_PATH")
+val releaseSigningStorePassword = configValue("release.storePassword", "NDR_RELEASE_KEYSTORE_PASSWORD")
+val releaseSigningKeyAlias = configValue("release.keyAlias", "NDR_RELEASE_KEY_ALIAS")
+val releaseSigningKeyPassword = configValue("release.keyPassword", "NDR_RELEASE_KEY_PASSWORD")
 val hasDedicatedBetaSigning =
     !betaSigningStoreFile.isNullOrBlank() &&
         !betaSigningStorePassword.isNullOrBlank() &&
         !betaSigningKeyAlias.isNullOrBlank() &&
         !betaSigningKeyPassword.isNullOrBlank()
+val hasReleaseSigning =
+    !releaseSigningStoreFile.isNullOrBlank() &&
+        !releaseSigningStorePassword.isNullOrBlank() &&
+        !releaseSigningKeyAlias.isNullOrBlank() &&
+        !releaseSigningKeyPassword.isNullOrBlank()
 val hostLibraryFile =
     rustAppDir.resolve(
         when {
@@ -108,6 +127,14 @@ android {
     }
 
     signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseSigningStoreFile!!)
+                storePassword = releaseSigningStorePassword
+                keyAlias = releaseSigningKeyAlias
+                keyPassword = releaseSigningKeyPassword
+            }
+        }
         if (hasDedicatedBetaSigning) {
             create("beta") {
                 storeFile = file(betaSigningStoreFile!!)
@@ -137,6 +164,8 @@ android {
             signingConfig =
                 if (hasDedicatedBetaSigning) {
                     signingConfigs.getByName("beta")
+                } else if (hasReleaseSigning) {
+                    signingConfigs.getByName("release")
                 } else {
                     signingConfigs.getByName("debug")
                 }
@@ -160,6 +189,9 @@ android {
             buildConfigField("String", "RELAY_SET_ID", stringLiteral(releaseRelayConfig.relaySetId))
             buildConfigField("String", "DEFAULT_RELAYS_CSV", stringLiteral(releaseRelayConfig.relaysCsv))
             buildConfigField("boolean", "TRUSTED_TEST_BUILD", releaseRelayConfig.trustedTestBuild.toString())
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

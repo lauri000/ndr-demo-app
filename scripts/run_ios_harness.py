@@ -12,17 +12,17 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 IOS_DIR = ROOT_DIR / "ios"
-PROJECT_PATH = IOS_DIR / "NdrDemo.xcodeproj"
-SCHEME = "NdrDemo"
+PROJECT_PATH = IOS_DIR / "IrisChat.xcodeproj"
+SCHEME = "IrisChat"
 DERIVED_DATA = IOS_DIR / ".build" / "harness-derived-data"
-ONLY_TEST = "NdrDemoTests/InteropHarnessTests/testHarnessAction"
+ONLY_TEST = "IrisChatTests/InteropHarnessTests/testHarnessAction"
 STATUS_PATTERN = re.compile(r"^HARNESS_STATUS: ([^=]+)=(.*)$")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the iOS interop harness with explicit xctestrun environment injection.")
     parser.add_argument("--udid", help="Simulator UDID")
-    parser.add_argument("--simulator", default="NDR Demo iPhone", help="Simulator name if --udid is omitted")
+    parser.add_argument("--simulator", default="Iris Chat iPhone", help="Simulator name if --udid is omitted")
     parser.add_argument("--action", required=True, help="Harness action name")
     parser.add_argument("--arg", action="append", default=[], help="Harness argument in KEY=VALUE form")
     parser.add_argument("--run-id", help="Stable logical run id for harness storage")
@@ -94,7 +94,7 @@ def prepare_xctestrun(source: Path, env_vars: dict[str, str]) -> Path:
     if "TestConfigurations" in data:
         for test_configuration in data.get("TestConfigurations", []):
             for candidate in test_configuration.get("TestTargets", []):
-                if candidate.get("BlueprintName") == "NdrDemoTests":
+                if candidate.get("BlueprintName") == "IrisChatTests":
                     target_config = candidate
                     break
             if target_config is not None:
@@ -103,15 +103,15 @@ def prepare_xctestrun(source: Path, env_vars: dict[str, str]) -> Path:
         for key, value in data.items():
             if key == "__xctestrun_metadata__":
                 continue
-            if isinstance(value, dict) and value.get("BlueprintName") == "NdrDemoTests":
+            if isinstance(value, dict) and value.get("BlueprintName") == "IrisChatTests":
                 target_config = value
                 break
-            if key == "NdrDemoTests":
+            if key == "IrisChatTests":
                 target_config = value
                 break
 
     if target_config is None:
-        raise SystemExit("Unable to find NdrDemoTests target in xctestrun file.")
+        raise SystemExit("Unable to find IrisChatTests target in xctestrun file.")
 
     existing_env = dict(target_config.get("EnvironmentVariables", {}))
     existing_env.update(env_vars)

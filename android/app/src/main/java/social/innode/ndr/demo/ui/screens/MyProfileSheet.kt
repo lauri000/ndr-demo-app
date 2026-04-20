@@ -193,7 +193,7 @@ fun MyProfileSheet(
                             val intent =
                                 Intent(Intent.ACTION_SEND).apply {
                                     type = "application/json"
-                                    putExtra(Intent.EXTRA_SUBJECT, "NDR Demo support bundle")
+                                    putExtra(Intent.EXTRA_SUBJECT, "Iris Chat support bundle")
                                     putExtra(Intent.EXTRA_TEXT, bundle)
                                 }
                             context.startActivity(

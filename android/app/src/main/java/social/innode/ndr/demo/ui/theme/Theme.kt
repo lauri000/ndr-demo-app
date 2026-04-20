@@ -149,7 +149,7 @@ object IrisTheme {
 }
 
 @Composable
-fun NdrDemoTheme(
+fun IrisChatTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {

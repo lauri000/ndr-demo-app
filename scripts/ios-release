@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/release_common.sh"
+
+load_release_env "$ROOT"
+resolve_shared_build_metadata "$ROOT"
+
+IOS_PROJECT="$ROOT/ios/IrisChat.xcodeproj"
+IOS_SCHEME="IrisChat"
+IOS_DIST_DIR="$ROOT/dist/ios"
+IOS_EXPORT_METHOD="${NDR_IOS_EXPORT_METHOD:-app-store-connect}"
+IOS_SIGNING_STYLE="${NDR_IOS_SIGNING_STYLE:-automatic}"
+IOS_BUNDLE_ID="${NDR_IOS_BUNDLE_ID:-social.innode.ndr.demo.ios}"
+IOS_DEVELOPMENT_TEAM="${NDR_IOS_DEVELOPMENT_TEAM:-}"
+IOS_INTERNAL_ONLY="${NDR_IOS_INTERNAL_ONLY:-false}"
+IOS_ARCHIVE_BASENAME="${NDR_IOS_ARCHIVE_BASENAME:-$(release_slug ios)}"
+IOS_ARCHIVE_PATH="${NDR_IOS_ARCHIVE_PATH:-$IOS_DIST_DIR/${IOS_ARCHIVE_BASENAME}.xcarchive}"
+IOS_EXPORT_PATH="${NDR_IOS_EXPORT_PATH:-$IOS_DIST_DIR/${IOS_ARCHIVE_BASENAME}}"
+IOS_UPLOAD_LOG_PATH="${NDR_IOS_UPLOAD_LOG_PATH:-$IOS_DIST_DIR/${IOS_ARCHIVE_BASENAME}-upload}"
+
+AUTH_ARGS=()
+
+usage() {
+  cat <<'EOF'
+usage: ./scripts/ios-release <print-config|prepare|archive|export|upload>
+EOF
+}
+
+normalize_signing_style() {
+  case "$IOS_SIGNING_STYLE" in
+    automatic|Automatic)
+      IOS_SIGNING_STYLE="automatic"
+      IOS_CODE_SIGN_STYLE="Automatic"
+      ;;
+    manual|Manual)
+      IOS_SIGNING_STYLE="manual"
+      IOS_CODE_SIGN_STYLE="Manual"
+      ;;
+    *)
+      echo "Unsupported NDR_IOS_SIGNING_STYLE: $IOS_SIGNING_STYLE" >&2
+      exit 2
+      ;;
+  esac
+}
+
+configure_auth_args() {
+  AUTH_ARGS=()
+  if [[ -n "${NDR_ASC_AUTH_KEY_PATH:-}" || -n "${NDR_ASC_AUTH_KEY_ID:-}" || -n "${NDR_ASC_AUTH_KEY_ISSUER_ID:-}" ]]; then
+    require_var NDR_ASC_AUTH_KEY_PATH
+    require_var NDR_ASC_AUTH_KEY_ID
+    require_var NDR_ASC_AUTH_KEY_ISSUER_ID
+    AUTH_ARGS+=(
+      -authenticationKeyPath "$NDR_ASC_AUTH_KEY_PATH"
+      -authenticationKeyID "$NDR_ASC_AUTH_KEY_ID"
+      -authenticationKeyIssuerID "$NDR_ASC_AUTH_KEY_ISSUER_ID"
+    )
+  fi
+  if bool_is_true "${NDR_IOS_ALLOW_PROVISIONING_UPDATES:-false}"; then
+    AUTH_ARGS+=(-allowProvisioningUpdates)
+  fi
+}
+
+require_automatic_signing() {
+  if [[ "$IOS_SIGNING_STYLE" != "automatic" ]]; then
+    echo "ios-release currently automates only automatic signing. Set NDR_IOS_SIGNING_STYLE=automatic." >&2
+    exit 1
+  fi
+}
+
+print_config() {
+  cat <<EOF
+ios.project=$IOS_PROJECT
+ios.scheme=$IOS_SCHEME
+ios.bundle.id=$IOS_BUNDLE_ID
+ios.development.team=${IOS_DEVELOPMENT_TEAM:-<unset>}
+ios.signing.style=$IOS_SIGNING_STYLE
+ios.export.method=$IOS_EXPORT_METHOD
+ios.internal.only=$IOS_INTERNAL_ONLY
+ios.archive.path=$IOS_ARCHIVE_PATH
+ios.export.path=$IOS_EXPORT_PATH
+app.version.name=$NDR_APP_VERSION_NAME
+app.version.code=$NDR_APP_VERSION_CODE
+build.git.sha=$NDR_BUILD_GIT_SHA
+build.timestamp.utc=$NDR_BUILD_TIMESTAMP_UTC
+asc.auth.key.configured=$([[ -n "${NDR_ASC_AUTH_KEY_PATH:-}" && -n "${NDR_ASC_AUTH_KEY_ID:-}" && -n "${NDR_ASC_AUTH_KEY_ISSUER_ID:-}" ]] && printf true || printf false)
+EOF
+}
+
+prepare_release_inputs() {
+  export NDR_IOS_RUST_PROFILE=release
+  export NDR_APP_VERSION="$NDR_APP_VERSION_NAME"
+  export NDR_BUILD_GIT_SHA
+  export NDR_BUILD_TIMESTAMP_UTC
+
+  "$ROOT/scripts/ios-build" ios-xcframework
+  "$ROOT/scripts/ios-build" ios-xcodeproj
+}
+
+archive_app() {
+  normalize_signing_style
+  configure_auth_args
+  require_automatic_signing
+  require_var IOS_DEVELOPMENT_TEAM
+  ensure_dir "$IOS_DIST_DIR"
+  prepare_release_inputs
+  rm -rf "$IOS_ARCHIVE_PATH"
+
+  xcodebuild \
+    -project "$IOS_PROJECT" \
+    -scheme "$IOS_SCHEME" \
+    -configuration Release \
+    -destination generic/platform=iOS \
+    -archivePath "$IOS_ARCHIVE_PATH" \
+    "${AUTH_ARGS[@]}" \
+    PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID" \
+    MARKETING_VERSION="$NDR_APP_VERSION_NAME" \
+    CURRENT_PROJECT_VERSION="$NDR_APP_VERSION_CODE" \
+    DEVELOPMENT_TEAM="$IOS_DEVELOPMENT_TEAM" \
+    CODE_SIGN_STYLE="$IOS_CODE_SIGN_STYLE" \
+    archive
+
+  write_manifest "$IOS_DIST_DIR/${IOS_ARCHIVE_BASENAME}.env" \
+    archive_path "$IOS_ARCHIVE_PATH" \
+    bundle_id "$IOS_BUNDLE_ID" \
+    app_version_name "$NDR_APP_VERSION_NAME" \
+    app_version_code "$NDR_APP_VERSION_CODE" \
+    build_git_sha "$NDR_BUILD_GIT_SHA" \
+    build_timestamp_utc "$NDR_BUILD_TIMESTAMP_UTC"
+}
+
+write_export_options() {
+  local destination="$1"
+  local output_path="$2"
+  local internal_testing_only_tag="false"
+
+  if bool_is_true "$IOS_INTERNAL_ONLY"; then
+    internal_testing_only_tag="true"
+  fi
+
+  cat > "$output_path" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>destination</key>
+  <string>${destination}</string>
+  <key>method</key>
+  <string>${IOS_EXPORT_METHOD}</string>
+  <key>manageAppVersionAndBuildNumber</key>
+  <false/>
+  <key>signingStyle</key>
+  <string>${IOS_SIGNING_STYLE}</string>
+  <key>stripSwiftSymbols</key>
+  <true/>
+  <key>teamID</key>
+  <string>${IOS_DEVELOPMENT_TEAM}</string>
+  <key>testFlightInternalTestingOnly</key>
+  <${internal_testing_only_tag}/>
+  <key>uploadSymbols</key>
+  <true/>
+</dict>
+</plist>
+EOF
+}
+
+export_archive() {
+  local export_options_plist
+  local ipa_path
+
+  normalize_signing_style
+  configure_auth_args
+  require_automatic_signing
+  require_var IOS_DEVELOPMENT_TEAM
+  if [[ ! -d "$IOS_ARCHIVE_PATH" ]]; then
+    echo "Archive not found at $IOS_ARCHIVE_PATH. Run ./scripts/ios-release archive first." >&2
+    exit 1
+  fi
+
+  export_options_plist="$(mktemp "${TMPDIR:-/tmp}/ndr-ios-export-options.XXXXXX.plist")"
+  trap 'rm -f "$export_options_plist"' EXIT
+  write_export_options export "$export_options_plist"
+
+  rm -rf "$IOS_EXPORT_PATH"
+  ensure_dir "$IOS_EXPORT_PATH"
+  xcodebuild \
+    -exportArchive \
+    -archivePath "$IOS_ARCHIVE_PATH" \
+    -exportPath "$IOS_EXPORT_PATH" \
+    -exportOptionsPlist "$export_options_plist" \
+    "${AUTH_ARGS[@]}"
+
+  ipa_path="$(find "$IOS_EXPORT_PATH" -maxdepth 1 -type f -name '*.ipa' | sort | head -n 1)"
+  if [[ -z "${ipa_path:-}" ]]; then
+    echo "iOS export did not produce an IPA in $IOS_EXPORT_PATH" >&2
+    exit 1
+  fi
+
+  write_manifest "$IOS_DIST_DIR/${IOS_ARCHIVE_BASENAME}.ipa.env" \
+    ipa_path "$ipa_path" \
+    archive_path "$IOS_ARCHIVE_PATH" \
+    bundle_id "$IOS_BUNDLE_ID" \
+    app_version_name "$NDR_APP_VERSION_NAME" \
+    app_version_code "$NDR_APP_VERSION_CODE" \
+    build_git_sha "$NDR_BUILD_GIT_SHA" \
+    build_timestamp_utc "$NDR_BUILD_TIMESTAMP_UTC"
+
+  printf '%s\n' "$ipa_path"
+}
+
+upload_archive() {
+  local export_options_plist
+
+  normalize_signing_style
+  configure_auth_args
+  require_automatic_signing
+  require_var IOS_DEVELOPMENT_TEAM
+  if [[ ! -d "$IOS_ARCHIVE_PATH" ]]; then
+    echo "Archive not found at $IOS_ARCHIVE_PATH. Run ./scripts/ios-release archive first." >&2
+    exit 1
+  fi
+
+  export_options_plist="$(mktemp "${TMPDIR:-/tmp}/ndr-ios-upload-options.XXXXXX.plist")"
+  trap 'rm -f "$export_options_plist"' EXIT
+  write_export_options upload "$export_options_plist"
+
+  rm -rf "$IOS_UPLOAD_LOG_PATH"
+  ensure_dir "$IOS_UPLOAD_LOG_PATH"
+  xcodebuild \
+    -exportArchive \
+    -archivePath "$IOS_ARCHIVE_PATH" \
+    -exportPath "$IOS_UPLOAD_LOG_PATH" \
+    -exportOptionsPlist "$export_options_plist" \
+    "${AUTH_ARGS[@]}"
+}
+
+case "${1:-}" in
+  print-config)
+    print_config
+    ;;
+  prepare)
+    prepare_release_inputs
+    ;;
+  archive)
+    archive_app
+    ;;
+  export)
+    export_archive
+    ;;
+  upload)
+    upload_archive
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

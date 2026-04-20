@@ -118,7 +118,7 @@ private enum AppPaths {
 
     static func dataDir(fileManager: FileManager, environment: [String: String]) -> URL {
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let suffix = environment["NDR_UI_TEST_RUN_ID"].flatMap { $0.isEmpty ? nil : $0 } ?? "ndr-demo"
+        let suffix = environment["NDR_UI_TEST_RUN_ID"].flatMap { $0.isEmpty ? nil : $0 } ?? "iris-chat"
         return base.appendingPathComponent(suffix, isDirectory: true)
     }
 }

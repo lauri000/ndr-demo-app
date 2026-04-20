@@ -14,6 +14,7 @@ fn main() {
         "NDR_DEFAULT_RELAYS",
         "NDR_RELAY_SET_ID",
         "NDR_TRUSTED_TEST_BUILD",
+        "SOURCE_DATE_EPOCH",
     ] {
         println!("cargo:rerun-if-env-changed={key}");
     }
@@ -32,7 +33,9 @@ fn main() {
     );
     emit(
         "NDR_BUILD_TIMESTAMP_UTC",
-        env::var("NDR_BUILD_TIMESTAMP_UTC").unwrap_or_else(|_| unix_timestamp_string()),
+        env::var("NDR_BUILD_TIMESTAMP_UTC")
+            .or_else(|_| env::var("SOURCE_DATE_EPOCH"))
+            .unwrap_or_else(|_| detect_git_timestamp()),
     );
     emit(
         "NDR_DEFAULT_RELAYS",
@@ -66,6 +69,22 @@ fn detect_git_sha() -> String {
         })
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn detect_git_timestamp() -> String {
+    Command::new("git")
+        .args(["log", "-1", "--format=%ct", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(unix_timestamp_string)
 }
 
 fn unix_timestamp_string() -> String {

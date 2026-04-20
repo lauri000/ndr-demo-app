@@ -4,7 +4,7 @@ default:
     @just --list
 
 info:
-    @echo "ndr-demo-app commands"
+    @echo "Iris Chat commands"
     @echo
     @echo "Run"
     @echo "  just run-android"
@@ -14,10 +14,14 @@ info:
     @echo "  just gen-kotlin"
     @echo "  just android-rust"
     @echo "  just android-assemble"
+    @echo "  just android-beta-apk"
+    @echo "  just android-release-bundle"
     @echo "  just ios-gen-swift"
     @echo "  just ios-rust"
     @echo "  just ios-xcframework"
     @echo "  just ios-xcodeproj"
+    @echo "  just ios-release-prepare"
+    @echo "  just ios-release-archive"
     @echo
     @echo "Checks"
     @echo "  just doctor-ios"
@@ -49,6 +53,18 @@ gen-kotlin:
 
 android-assemble:
     ./scripts/android-build android-assemble
+
+android-beta-apk:
+    ./scripts/android-release beta-apk
+
+android-release-bundle:
+    ./scripts/android-release release-bundle
+
+ios-release-prepare:
+    ./scripts/ios-release prepare
+
+ios-release-archive:
+    ./scripts/ios-release archive
 
 doctor-ios:
     ./tools/ios-runtime-doctor

@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct NdrDemoApp: App {
+struct IrisChatApp: App {
     @StateObject private var manager = AppManager()
 
     var body: some Scene {

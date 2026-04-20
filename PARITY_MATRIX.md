@@ -1,6 +1,6 @@
 # Parity Matrix
 
-Status tracking for the shared `ndr-demo-app` workspace.
+Status tracking for the shared Iris Chat workspace.
 
 Legend:
 

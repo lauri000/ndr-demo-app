@@ -2,7 +2,7 @@
 
 set -Eeuo pipefail
 
-DEFAULT_SIMULATORS=("NDR Demo iPhone" "NDR Demo iPhone 2")
+DEFAULT_SIMULATORS=("Iris Chat iPhone" "Iris Chat iPhone 2")
 LIST_ONLY=0
 NO_OPEN=0
 SIMULATORS=()
@@ -16,8 +16,8 @@ Options:
   --no-open  Do not open the Simulator app after booting
 
 Defaults:
-  NDR Demo iPhone
-  NDR Demo iPhone 2
+  Iris Chat iPhone
+  Iris Chat iPhone 2
 EOF
 }
 

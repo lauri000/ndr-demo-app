@@ -1,6 +1,6 @@
 import XCTest
 
-final class NdrDemoUITests: XCTestCase {
+final class IrisChatUITests: XCTestCase {
     private let validPeerNpub = "npub18w35g6gn47qwmryulxzvfucmujvrqqljjpapyl8x0rqaljh6f2usml77dj"
 
     func testCreateAccountAndOpenProfileSheet() {

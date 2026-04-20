@@ -1,4 +1,4 @@
-name: NdrDemo
+name: IrisChat
 options:
   bundleIdPrefix: social.innode.ndr.demo
   deploymentTarget:
@@ -8,11 +8,14 @@ options:
 settings:
   base:
     PRODUCT_BUNDLE_IDENTIFIER: social.innode.ndr.demo.ios
+    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: 1
+    VERSIONING_SYSTEM: apple-generic
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: 5.0
 
 targets:
-  NdrDemo:
+  IrisChat:
     type: application
     platform: iOS
     sources:
@@ -23,15 +26,16 @@ targets:
           - "*.modulemap"
     settings:
       base:
-        PRODUCT_NAME: NdrDemo
+        PRODUCT_NAME: IrisChat
         DEFINES_MODULE: YES
         INFOPLIST_FILE: Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: Iris Chat
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
     dependencies:
       - framework: Frameworks/NdrDemoCore.xcframework
         embed: false
 
-  NdrDemoTests:
+  IrisChatTests:
     type: bundle.unit-test
     platform: iOS
     settings:
@@ -39,15 +43,15 @@ targets:
         PRODUCT_NAME: "$(TARGET_NAME)"
         PRODUCT_MODULE_NAME: "$(TARGET_NAME)"
         GENERATE_INFOPLIST_FILE: YES
-        TEST_TARGET_NAME: NdrDemo
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/NdrDemo.app/NdrDemo"
+        TEST_TARGET_NAME: IrisChat
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/IrisChat.app/IrisChat"
         BUNDLE_LOADER: "$(TEST_HOST)"
     sources:
       - path: Tests
     dependencies:
-      - target: NdrDemo
+      - target: IrisChat
 
-  NdrDemoUITests:
+  IrisChatUITests:
     type: bundle.ui-testing
     platform: iOS
     settings:
@@ -58,4 +62,4 @@ targets:
     sources:
       - path: UITests
     dependencies:
-      - target: NdrDemo
+      - target: IrisChat

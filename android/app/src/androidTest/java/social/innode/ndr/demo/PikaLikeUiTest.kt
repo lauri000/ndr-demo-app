@@ -29,7 +29,7 @@ class PikaLikeUiTest {
     @Before
     fun resetAppState() {
         QrScannerTestOverrides.nextScannedValue = null
-        (composeRule.activity.application as NdrDemoApp)
+        (composeRule.activity.application as IrisChatApp)
             .container
             .appManager
             .resetForUiTestsBlocking()
@@ -82,7 +82,7 @@ class PikaLikeUiTest {
 
         composeRule.waitForText(SECONDARY_DEVICE_NPUB)
         val addedDeviceHex =
-            (composeRule.activity.application as NdrDemoApp)
+            (composeRule.activity.application as IrisChatApp)
                 .container
                 .appManager
                 .state
@@ -109,7 +109,7 @@ class PikaLikeUiTest {
 
         composeRule.waitForTag("deviceRosterOwnerNpub")
         val ownerNpub =
-            (composeRule.activity.application as NdrDemoApp)
+            (composeRule.activity.application as IrisChatApp)
                 .container
                 .appManager
                 .state
@@ -137,7 +137,7 @@ class PikaLikeUiTest {
         composeRule.onNodeWithTag("deviceRosterAddButton", useUnmergedTree = true).performClick()
         composeRule.waitUntil(20_000) {
             val roster =
-                (composeRule.activity.application as NdrDemoApp)
+                (composeRule.activity.application as IrisChatApp)
                     .container
                     .appManager
                     .state
@@ -317,7 +317,7 @@ class PikaLikeUiTest {
     private fun androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, *>.resetToWelcome() {
         runOnUiThread {
             val activity = activity
-            (activity.application as NdrDemoApp).container.appManager.logout()
+            (activity.application as IrisChatApp).container.appManager.logout()
         }
         waitForTag("generateKeyButton", timeoutMillis = 30_000)
     }

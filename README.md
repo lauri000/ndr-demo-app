@@ -1,6 +1,6 @@
-# ndr-demo-app
+# Iris Chat
 
-Shared mobile app workspace for Nostr Double Ratchet.
+Shared mobile app workspace for Iris Chat, built on Nostr Double Ratchet.
 
 Current shape:
 
@@ -16,6 +16,7 @@ Android and iOS.
 Tracking:
 
 - parity status: [PARITY_MATRIX.md](/Users/l/Projects/iris-fork/ndr-demo-app/PARITY_MATRIX.md)
+- release process: [RELEASE.md](/Users/l/Projects/iris-fork/ndr-demo-app/RELEASE.md)
 
 ## Get Started
 
@@ -42,7 +43,7 @@ Build the shareable beta APK:
 
 ```bash
 cd /Users/l/Projects/iris-fork/ndr-demo-app
-(cd android && ./gradlew :app:assembleBeta)
+./scripts/android-release beta-apk
 ```
 
 ## iOS
@@ -58,4 +59,13 @@ just ios-gen-swift
 just ios-xcframework
 just ios-xcodeproj
 just run-ios
+```
+
+Archive the iOS app for TestFlight/App Store distribution:
+
+```bash
+cd /Users/l/Projects/iris-fork/ndr-demo-app
+cp release.env.example release.env
+$EDITOR release.env
+./scripts/ios-release archive
 ```

@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import NdrDemo
+@testable import IrisChat
 
 private typealias JsonArray = [Any]
 private typealias JsonObject = [String: Any]
@@ -29,6 +29,9 @@ final class InteropHarnessTests: XCTestCase {
 
     func testHarnessAction() async throws {
         let env = ProcessInfo.processInfo.environment
+        guard env["NDR_IOS_HARNESS_ACTION"] != nil else {
+            throw XCTSkip("Interop harness runs only via scripts/run_ios_harness.py")
+        }
         let action = try requiredEnv("NDR_IOS_HARNESS_ACTION", env: env)
         let runID = env["NDR_IOS_HARNESS_RUN_ID"] ?? UUID().uuidString
         let service = env["NDR_IOS_HARNESS_SERVICE"] ?? "social.innode.ndr.demo.ios.harness.\(runID)"

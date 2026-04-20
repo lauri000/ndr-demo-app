@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "NDR Demo"
+rootProject.name = "Iris Chat"
 include(":app")
