@@ -8,6 +8,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 anyhow = "1"
+futures-util = "0.3"
 flume = "0.11"
 nostr = { version = "0.37", default-features = false, features = ["std", "nip44"] }
 nostr-sdk = { version = "0.37", default-features = false, features = ["nip44"] }
@@ -17,10 +18,9 @@ rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net"] }
+tokio-tungstenite = "0.24"
 uniffi = "0.31"
 url = "2"
 
 [dev-dependencies]
-futures-util = "0.3"
 tempfile = "3"
-tokio-tungstenite = "0.24"

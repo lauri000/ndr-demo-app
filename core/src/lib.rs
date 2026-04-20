@@ -1,5 +1,6 @@
 mod actions;
 mod core;
+pub mod local_relay;
 mod qr;
 mod state;
 mod updates;
@@ -84,7 +85,11 @@ impl FfiApp {
 
     pub fn shutdown(&self) {
         let (reply_tx, reply_rx) = flume::bounded(1);
-        if self.core_tx.send(CoreMsg::Shutdown(Some(reply_tx))).is_err() {
+        if self
+            .core_tx
+            .send(CoreMsg::Shutdown(Some(reply_tx)))
+            .is_err()
+        {
             return;
         }
         let _ = reply_rx.recv();

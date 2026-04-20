@@ -32,7 +32,10 @@ pub fn decode_device_approval_qr(raw: String) -> Option<DeviceApprovalQrPayload>
     }
 
     let parsed = Url::parse(trimmed).ok()?;
-    if !parsed.scheme().eq_ignore_ascii_case(DEVICE_APPROVAL_QR_SCHEME) {
+    if !parsed
+        .scheme()
+        .eq_ignore_ascii_case(DEVICE_APPROVAL_QR_SCHEME)
+    {
         return None;
     }
     if !parsed
@@ -90,7 +93,13 @@ mod tests {
         assert!(decode_device_approval_qr("".into()).is_none());
         assert!(decode_device_approval_qr("npub1plainvalue".into()).is_none());
         assert!(decode_device_approval_qr("https://example.com".into()).is_none());
-        assert!(decode_device_approval_qr("ndrdemo://device-link?owner=npub1owneronly".into()).is_none());
-        assert!(decode_device_approval_qr("ndrdemo://device-link?device=npub1deviceonly".into()).is_none());
+        assert!(
+            decode_device_approval_qr("ndrdemo://device-link?owner=npub1owneronly".into())
+                .is_none()
+        );
+        assert!(
+            decode_device_approval_qr("ndrdemo://device-link?device=npub1deviceonly".into())
+                .is_none()
+        );
     }
 }

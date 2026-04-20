@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT_DIR}/scripts/mobile_relay_common.sh"
 LOCAL_PROPERTIES="${ROOT_DIR}/android/local.properties"
 SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 
@@ -107,6 +108,8 @@ for serial in "${PRIMARY_SERIAL}" "${LINKED_SERIAL}" "${ADMIN_SERIAL}"; do
     exit 1
   fi
 done
+
+assert_local_relay_healthy
 
 run_test() {
   local serial="$1"

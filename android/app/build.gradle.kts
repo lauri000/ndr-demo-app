@@ -54,7 +54,7 @@ data class BuildRelayConfig(
 
 val debugRelayConfig =
     BuildRelayConfig(
-        relaySetId = "public-dev",
+        relaySetId = configValue("debug.relaySetId", "NDR_DEBUG_RELAY_SET_ID") ?: "public-dev",
         relaysCsv = configValue("debug.relays", "NDR_DEBUG_RELAYS") ?: publicRelayFallbackCsv,
         trustedTestBuild = false,
     )

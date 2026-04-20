@@ -3,6 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT_DIR}/scripts/mobile_relay_common.sh"
 LOCAL_PROPERTIES="${ROOT_DIR}/android/local.properties"
 SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 
@@ -111,6 +112,8 @@ extract_status() {
   local key="$1"
   sed -n "s/^INSTRUMENTATION_STATUS: ${key}=//p" | tail -n 1
 }
+
+assert_local_relay_healthy
 
 echo "Ensuring three emulator topology is running"
 SERIAL_A="$(ensure_avd_running "${DEFAULT_AVDS[0]}")"
