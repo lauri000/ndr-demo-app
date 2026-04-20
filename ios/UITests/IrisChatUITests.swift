@@ -6,8 +6,12 @@ final class IrisChatUITests: XCTestCase {
     func testCreateAccountAndOpenProfileSheet() {
         let app = launchCleanApp()
 
+        XCTAssertTrue(element(app, "welcomeCreateCard").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "welcomeLinkCard").waitForExistence(timeout: 10))
         createAccount(app)
 
+        XCTAssertTrue(element(app, "navigationTopBar").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "chatListHeroCard").waitForExistence(timeout: 10))
         XCTAssertTrue(element(app, "chatListProfileButton").waitForExistence(timeout: 15))
         element(app, "chatListProfileButton").tap()
 
@@ -20,16 +24,18 @@ final class IrisChatUITests: XCTestCase {
 
         createAccount(app)
 
-        app.buttons["chatListNewChatButton"].tap()
-        XCTAssertTrue(app.textFields["newChatPeerInput"].waitForExistence(timeout: 10))
-        app.textFields["newChatPeerInput"].tap()
-        app.textFields["newChatPeerInput"].typeText(validPeerNpub)
-        app.buttons["newChatStartButton"].tap()
+        element(app, "chatListNewChatButton").tap()
+        XCTAssertTrue(element(app, "newChatPrimaryCard").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "newChatPeerInput").waitForExistence(timeout: 10))
+        element(app, "newChatPeerInput").tap()
+        element(app, "newChatPeerInput").typeText(validPeerNpub)
+        element(app, "newChatStartButton").tap()
 
-        XCTAssertTrue(app.textFields["chatMessageInput"].waitForExistence(timeout: 10))
-        app.textFields["chatMessageInput"].tap()
-        app.textFields["chatMessageInput"].typeText("hello from ios ui test")
-        app.buttons["chatSendButton"].tap()
+        XCTAssertTrue(element(app, "chatComposerBar").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "chatMessageInput").waitForExistence(timeout: 10))
+        element(app, "chatMessageInput").tap()
+        element(app, "chatMessageInput").typeText("hello from ios ui test")
+        element(app, "chatSendButton").tap()
 
         XCTAssertTrue(app.staticTexts["hello from ios ui test"].waitForExistence(timeout: 15))
     }
@@ -39,17 +45,18 @@ final class IrisChatUITests: XCTestCase {
 
         createAccount(app)
 
-        app.buttons["chatListNewGroupButton"].tap()
-        XCTAssertTrue(app.textFields["newGroupNameInput"].waitForExistence(timeout: 10))
-        app.textFields["newGroupNameInput"].tap()
-        app.textFields["newGroupNameInput"].typeText("Trip crew")
-        app.textFields["newGroupMemberInput"].tap()
-        app.textFields["newGroupMemberInput"].typeText(validPeerNpub)
-        app.buttons["newGroupAddMemberButton"].tap()
-        app.buttons["newGroupCreateButton"].tap()
+        element(app, "chatListNewGroupButton").tap()
+        XCTAssertTrue(element(app, "newGroupPrimaryCard").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "newGroupNameInput").waitForExistence(timeout: 10))
+        element(app, "newGroupNameInput").tap()
+        element(app, "newGroupNameInput").typeText("Trip crew")
+        element(app, "newGroupMemberInput").tap()
+        element(app, "newGroupMemberInput").typeText(validPeerNpub)
+        element(app, "newGroupAddMemberButton").tap()
+        element(app, "newGroupCreateButton").tap()
 
-        XCTAssertTrue(app.textFields["chatMessageInput"].waitForExistence(timeout: 15))
-        app.buttons["chatGroupDetailsButton"].tap()
+        XCTAssertTrue(element(app, "chatMessageInput").waitForExistence(timeout: 15))
+        element(app, "chatGroupDetailsButton").tap()
 
         XCTAssertTrue(element(app, "groupDetailsScreen").waitForExistence(timeout: 10))
         XCTAssertTrue(element(app, "groupDetailsNameInput").waitForExistence(timeout: 5))
@@ -59,10 +66,11 @@ final class IrisChatUITests: XCTestCase {
     func testScanOwnerQrEntersAwaitingApprovalScreen() {
         let app = launchCleanApp(qrValue: validPeerNpub)
 
-        XCTAssertTrue(app.buttons["linkOwnerScanQrButton"].waitForExistence(timeout: 10))
-        app.buttons["linkOwnerScanQrButton"].tap()
-        XCTAssertTrue(app.buttons["linkExistingAccountButton"].waitForExistence(timeout: 10))
-        app.buttons["linkExistingAccountButton"].tap()
+        XCTAssertTrue(element(app, "welcomeLinkCard").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "linkOwnerScanQrButton").waitForExistence(timeout: 10))
+        element(app, "linkOwnerScanQrButton").tap()
+        XCTAssertTrue(element(app, "linkExistingAccountButton").waitForExistence(timeout: 10))
+        element(app, "linkExistingAccountButton").tap()
 
         XCTAssertTrue(element(app, "awaitingApprovalScreen").waitForExistence(timeout: 20))
         XCTAssertTrue(element(app, "awaitingApprovalDeviceQrCode").waitForExistence(timeout: 10))
@@ -82,12 +90,12 @@ final class IrisChatUITests: XCTestCase {
     }
 
     private func createAccount(_ app: XCUIApplication) {
-        let nameField = app.textFields["signupNameField"]
+        let nameField = element(app, "signupNameField")
         XCTAssertTrue(nameField.waitForExistence(timeout: 15))
         nameField.tap()
         nameField.typeText("ios tester")
-        app.buttons["generateKeyButton"].tap()
-        XCTAssertTrue(app.buttons["chatListNewChatButton"].waitForExistence(timeout: 20))
+        element(app, "generateKeyButton").tap()
+        XCTAssertTrue(element(app, "chatListNewChatButton").waitForExistence(timeout: 20))
     }
 
     private func element(_ app: XCUIApplication, _ identifier: String) -> XCUIElement {
