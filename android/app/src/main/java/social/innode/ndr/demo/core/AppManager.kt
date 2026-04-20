@@ -3,6 +3,7 @@ package social.innode.ndr.demo.core
 import android.content.Context
 import android.util.Base64
 import android.util.Log
+import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
@@ -14,7 +15,6 @@ import java.io.File
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,24 +34,62 @@ import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.AppReconciler
 import social.innode.ndr.demo.rust.AppState
 import social.innode.ndr.demo.rust.AppUpdate
-import social.innode.ndr.demo.rust.BusyState
 import social.innode.ndr.demo.rust.FfiApp
-import social.innode.ndr.demo.rust.Router
 import social.innode.ndr.demo.rust.Screen
+
+interface RustAppClient {
+    fun state(): AppState
+
+    fun dispatch(action: AppAction)
+
+    fun exportSupportBundleJson(): String
+
+    fun listenForUpdates(reconciler: AppReconciler)
+
+    fun shutdown()
+}
+
+private class LiveRustAppClient(
+    dataDir: String,
+    appVersion: String,
+) : RustAppClient {
+    private val ffi = FfiApp(dataDir = dataDir, keychainGroup = "", appVersion = appVersion)
+
+    override fun state(): AppState = ffi.state()
+
+    override fun dispatch(action: AppAction) {
+        ffi.dispatch(action)
+    }
+
+    override fun exportSupportBundleJson(): String = ffi.exportSupportBundleJson()
+
+    override fun listenForUpdates(reconciler: AppReconciler) {
+        ffi.listenForUpdates(reconciler)
+    }
+
+    override fun shutdown() {
+        ffi.shutdown()
+    }
+}
 
 class AppManager(
     context: Context,
     private val applicationScope: CoroutineScope,
     private val secureSecretStore: SecureSecretStore = AndroidKeystoreSecretStore(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-) : AppReconciler {
+    dataStoreName: String = DATASTORE_NAME,
+    dataStore: DataStore<Preferences>? = null,
+    private val rustFactory: ((dataDir: String, appVersion: String) -> RustAppClient)? = null,
+) {
     private val appContext = context.applicationContext
     private val dataStore =
-        PreferenceDataStoreFactory.create(
-            produceFile = { appContext.preferencesDataStoreFile(DATASTORE_NAME) },
-        )
+        dataStore
+            ?: PreferenceDataStoreFactory.create(
+                produceFile = { appContext.preferencesDataStoreFile(dataStoreName) },
+            )
 
     private var rust = createRustApp()
+    private var rustGeneration: Long = 0
 
     private var lastRevApplied: ULong = 0u
     private var restoreCheckComplete = false
@@ -64,11 +102,9 @@ class AppManager(
     val bootstrapState: StateFlow<AccountBootstrapState> = mutableBootstrapState.asStateFlow()
 
     init {
-        val initial = rust.state()
-        lastRevApplied = initial.rev
-        mutableState.value = initial
+        val initial = bindRust(rust)
         Log.d(TAG, "init rev=${initial.rev} defaultScreen=${initial.router.defaultScreen}")
-        rust.listenForUpdates(this)
+        publishState(initial)
         applicationScope.launch(ioDispatcher) {
             restoreSessionFromSecureStore()
         }
@@ -200,13 +236,12 @@ class AppManager(
 
     fun logout() {
         applicationScope.launch(ioDispatcher) {
+            // Logout is owned by Rust. The shell clears native secrets and then swaps in a fresh core
+            // instead of fabricating a shell-authored logged-out snapshot.
             rust.dispatch(AppAction.Logout)
             clearPersistedSecret()
             secureSecretStore.clear()
-            wipeAppStorage()
-            publishState(waitForLoggedOutSnapshot())
-            restoreCheckComplete = true
-            publishBootstrapNeedsLogin()
+            replaceRustCoreAfterReset()
         }
     }
 
@@ -228,15 +263,8 @@ class AppManager(
         runBlocking(ioDispatcher) {
             clearPersistedSecret()
             secureSecretStore.clear()
-            wipeAppStorage()
+            replaceRustCoreAfterReset()
         }
-        rust.shutdown()
-        rust = createRustApp()
-        rust.listenForUpdates(this)
-        val initial = rust.state()
-        lastRevApplied = initial.rev
-        restoreCheckComplete = true
-        publishState(initial)
     }
 
     fun buildSummary(): String = "${BuildConfig.VERSION_NAME} (${BuildConfig.BUILD_GIT_SHA})"
@@ -245,9 +273,10 @@ class AppManager(
 
     fun isTrustedTestBuild(): Boolean = BuildConfig.TRUSTED_TEST_BUILD
 
-    override fun reconcile(update: AppUpdate) {
+    private fun applyUpdate(update: AppUpdate) {
         when (update) {
             is AppUpdate.PersistAccountBundle -> {
+                // Secure persistence is a shell side effect and must be applied even if snapshot revs race.
                 applicationScope.launch(ioDispatcher) {
                     persistBundle(
                         StoredAccountBundle(
@@ -259,6 +288,7 @@ class AppManager(
                 }
             }
             is AppUpdate.FullState -> {
+                // Rust owns authoritative state. The shell only accepts the newest full snapshot.
                 if (update.v1.rev <= lastRevApplied) {
                     return
                 }
@@ -275,6 +305,7 @@ class AppManager(
     }
 
     private suspend fun restoreSessionFromSecureStore() {
+        // Native restore only rehydrates secure inputs. Rust rebuilds the authoritative app state.
         Log.d(TAG, "restoreSessionFromSecureStore start")
         val encrypted = loadPersistedSecret()
         if (encrypted == null) {
@@ -308,6 +339,16 @@ class AppManager(
             Log.d(TAG, "restoreSessionFromSecureStore dispatch direct restore")
             rust.dispatch(AppAction.RestoreSession(decrypted))
         }
+    }
+
+    private fun bindRust(client: RustAppClient): AppState {
+        rust = client
+        rustGeneration += 1
+        val generation = rustGeneration
+        val initial = client.state()
+        lastRevApplied = initial.rev
+        client.listenForUpdates(UpdateBridge(generation))
+        return initial
     }
 
     private suspend fun persistBundle(bundle: StoredAccountBundle) {
@@ -351,6 +392,15 @@ class AppManager(
         }
     }
 
+    private fun replaceRustCoreAfterReset() {
+        val previous = rust
+        previous.shutdown()
+        wipeAppStorage()
+        val initial = bindRust(createRustApp())
+        restoreCheckComplete = true
+        publishState(initial)
+    }
+
     private fun wipeAppStorage() {
         wipeDirectoryContents(appContext.filesDir)
         wipeDirectoryContents(appContext.noBackupFilesDir)
@@ -371,44 +421,6 @@ class AppManager(
         dir.listFiles()?.forEach { child ->
             runCatching { child.deleteRecursively() }
         }
-    }
-
-    private suspend fun waitForLoggedOutSnapshot(): AppState {
-        repeat(40) {
-            val snapshot = rust.state()
-            if (snapshot.account == null) {
-                return snapshot
-            }
-            delay(100)
-        }
-
-        return rust
-            .state()
-            .apply {
-                account = null
-                deviceRoster = null
-                router =
-                    Router(
-                        defaultScreen = Screen.Welcome,
-                        screenStack = emptyList(),
-                    )
-                busy =
-                    BusyState(
-                        creatingAccount = false,
-                        restoringSession = false,
-                        linkingDevice = false,
-                        creatingChat = false,
-                        creatingGroup = false,
-                        sendingMessage = false,
-                        updatingRoster = false,
-                        updatingGroup = false,
-                        syncingNetwork = false,
-                    )
-                chatList = emptyList()
-                currentChat = null
-                groupDetails = null
-                toast = null
-            }
     }
 
     private fun publishState(snapshot: AppState) {
@@ -455,10 +467,21 @@ class AppManager(
                 ?: "0.1.0"
     }
 
-    private fun createRustApp(): FfiApp =
-        FfiApp(
-            dataDir = appContext.filesDir.absolutePath,
-            keychainGroup = "",
-            appVersion = appVersion(appContext),
-        )
+    private fun createRustApp(): RustAppClient =
+        rustFactory?.invoke(appContext.filesDir.absolutePath, appVersion(appContext))
+            ?: LiveRustAppClient(
+                dataDir = appContext.filesDir.absolutePath,
+                appVersion = appVersion(appContext),
+            )
+
+    private inner class UpdateBridge(
+        private val generation: Long,
+    ) : AppReconciler {
+        override fun reconcile(update: AppUpdate) {
+            if (generation != rustGeneration) {
+                return
+            }
+            applyUpdate(update)
+        }
+    }
 }

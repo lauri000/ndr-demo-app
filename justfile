@@ -26,6 +26,8 @@ info:
     @echo "Checks"
     @echo "  just doctor-ios"
     @echo "  just qa"
+    @echo "  just qa-native-contract"
+    @echo "  just qa-interop"
 
 run-ios:
     ./tools/run-ios
@@ -71,3 +73,9 @@ doctor-ios:
 
 qa:
     ./scripts/test_fast.sh
+
+qa-native-contract:
+    ./scripts/test_native_contract.sh
+
+qa-interop:
+    ./scripts/test_interop_confidence.sh

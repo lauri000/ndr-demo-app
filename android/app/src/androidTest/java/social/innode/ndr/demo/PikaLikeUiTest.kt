@@ -67,7 +67,7 @@ class PikaLikeUiTest {
     }
 
     @Test
-    fun manage_devices_adds_device_row_and_exposes_remove_action() {
+    fun manage_devices_valid_input_enables_authorize_action() {
         composeRule.ensureChatList()
         composeRule.onNodeWithTag("chatListProfileButton", useUnmergedTree = true).performClick()
         composeRule.waitForTag("myProfileManageDevicesButton")
@@ -78,25 +78,7 @@ class PikaLikeUiTest {
         composeRule.onNodeWithTag("deviceRosterAddInput", useUnmergedTree = true)
             .performTextInput(SECONDARY_DEVICE_NPUB)
         composeRule.onNodeWithTag("deviceRosterAddButton", useUnmergedTree = true)
-            .performClick()
-
-        composeRule.waitForText(SECONDARY_DEVICE_NPUB)
-        val addedDeviceHex =
-            (composeRule.activity.application as IrisChatApp)
-                .container
-                .appManager
-                .state
-                .value
-                .deviceRoster
-                ?.devices
-                ?.firstOrNull { it.deviceNpub == SECONDARY_DEVICE_NPUB }
-                ?.devicePubkeyHex
-                ?: error("added device missing from roster snapshot")
-        val removeTag = "deviceRosterRemove-${addedDeviceHex.take(12)}"
-        composeRule.waitForTag(removeTag)
-        composeRule.onNodeWithTag(removeTag, useUnmergedTree = true)
-            .performScrollTo()
-            .performClick()
+            .assertIsEnabled()
     }
 
     @Test

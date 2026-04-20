@@ -72,6 +72,53 @@ private final class MockRustApp: RustAppClient {
     }
 }
 
+private func makeBusyState() -> BusyState {
+    BusyState(
+        creatingAccount: false,
+        restoringSession: false,
+        linkingDevice: false,
+        creatingChat: false,
+        creatingGroup: false,
+        sendingMessage: false,
+        updatingRoster: false,
+        updatingGroup: false,
+        syncingNetwork: false
+    )
+}
+
+private func makeAppState(
+    rev: UInt64 = 0,
+    router: Router = Router(defaultScreen: .welcome, screenStack: []),
+    toast: String? = nil
+) -> AppState {
+    AppState(
+        rev: rev,
+        router: router,
+        account: nil,
+        deviceRoster: nil,
+        busy: makeBusyState(),
+        chatList: [],
+        currentChat: nil,
+        groupDetails: nil,
+        toast: toast
+    )
+}
+
+@MainActor
+private func waitUntil(
+    timeoutNanoseconds: UInt64 = 1_000_000_000,
+    condition: @escaping () -> Bool
+) async -> Bool {
+    let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+    while DispatchTime.now().uptimeNanoseconds < deadline {
+        if condition() {
+            return true
+        }
+        await Task.yield()
+    }
+    return condition()
+}
+
 final class IrisChatTests: XCTestCase {
     func testDeviceApprovalQrRoundTrip() {
         let encoded = DeviceApprovalQr.encode(ownerInput: "npub-owner", deviceInput: "npub-device")
@@ -96,7 +143,7 @@ final class IrisChatTests: XCTestCase {
     }
 
     func testKeychainSecretStoreRoundTrip() {
-        let service = "social.innode.ndr.demo.tests.\(UUID().uuidString)"
+        let service = "social.innode.irischat.tests.\(UUID().uuidString)"
         let account = "stored-account-bundle"
         let store = KeychainSecretStore(service: service, account: account)
         let expected = StoredAccountBundle(
@@ -125,7 +172,7 @@ final class IrisChatTests: XCTestCase {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        _ = AppManager(
+        let manager = AppManager(
             rust: rust,
             secretStore: store,
             dataDir: tempDir,
@@ -144,6 +191,7 @@ final class IrisChatTests: XCTestCase {
         default:
             XCTFail("unexpected action \(first)")
         }
+        XCTAssertFalse(manager.bootstrapInFlight)
     }
 
     @MainActor
@@ -159,48 +207,8 @@ final class IrisChatTests: XCTestCase {
             environment: [:]
         )
 
-        let newer = AppState(
-            rev: 2,
-            router: Router(defaultScreen: .chatList, screenStack: []),
-            account: nil,
-            deviceRoster: nil,
-            busy: BusyState(
-                creatingAccount: false,
-                restoringSession: false,
-                linkingDevice: false,
-                creatingChat: false,
-                creatingGroup: false,
-                sendingMessage: false,
-                updatingRoster: false,
-                updatingGroup: false,
-                syncingNetwork: false
-            ),
-            chatList: [],
-            currentChat: nil,
-            groupDetails: nil,
-            toast: "synced"
-        )
-        let older = AppState(
-            rev: 1,
-            router: Router(defaultScreen: .welcome, screenStack: []),
-            account: nil,
-            deviceRoster: nil,
-            busy: BusyState(
-                creatingAccount: false,
-                restoringSession: false,
-                linkingDevice: false,
-                creatingChat: false,
-                creatingGroup: false,
-                sendingMessage: false,
-                updatingRoster: false,
-                updatingGroup: false,
-                syncingNetwork: false
-            ),
-            chatList: [],
-            currentChat: nil,
-            groupDetails: nil,
-            toast: nil
-        )
+        let newer = makeAppState(rev: 2, router: Router(defaultScreen: .chatList, screenStack: []), toast: "synced")
+        let older = makeAppState(rev: 1)
 
         rust.emit(.fullState(newer))
         await Task.yield()
@@ -210,5 +218,142 @@ final class IrisChatTests: XCTestCase {
         rust.emit(.fullState(older))
         await Task.yield()
         XCTAssertEqual(manager.state.rev, 2)
+    }
+
+    @MainActor
+    func testPersistAccountBundleSideEffectAppliesEvenWhenRevIsStale() async {
+        let rust = MockRustApp(state: makeAppState(rev: 5))
+        let store = InMemorySecretStore()
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let manager = AppManager(
+            rust: rust,
+            secretStore: store,
+            dataDir: tempDir,
+            environment: [:]
+        )
+
+        rust.emit(
+            .persistAccountBundle(
+                rev: 1,
+                ownerNsec: "nsec1owner",
+                ownerPubkeyHex: "owner-hex",
+                deviceNsec: "nsec1device"
+            )
+        )
+        let persisted = await waitUntil {
+            store.bundle != nil
+        }
+        XCTAssertTrue(persisted)
+        XCTAssertEqual(manager.state.rev, 5)
+
+        XCTAssertEqual(
+            store.bundle,
+            StoredAccountBundle(
+                ownerNsec: "nsec1owner",
+                ownerPubkeyHex: "owner-hex",
+                deviceNsec: "nsec1device"
+            )
+        )
+    }
+
+    @MainActor
+    func testLogoutClearsSecretStoreAndLocalDataDirectory() async {
+        let rust = MockRustApp(state: makeAppState(rev: 1))
+        let store = InMemorySecretStore(
+            bundle: StoredAccountBundle(
+                ownerNsec: "nsec1owner",
+                ownerPubkeyHex: "owner-hex",
+                deviceNsec: "nsec1device"
+            )
+        )
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let staleFile = tempDir.appendingPathComponent("stale.txt")
+        FileManager.default.createFile(atPath: staleFile.path, contents: Data("old".utf8))
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let manager = AppManager(
+            rust: rust,
+            secretStore: store,
+            dataDir: tempDir,
+            environment: [:]
+        )
+
+        await Task.yield()
+        manager.logout()
+
+        XCTAssertTrue(rust.dispatchedActions.contains(.logout))
+        XCTAssertNil(store.load())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staleFile.path))
+    }
+
+    @MainActor
+    func testNavigateBackDispatchesUpdateScreenStack() async {
+        let rust = MockRustApp(
+            state: makeAppState(
+                rev: 1,
+                router: Router(defaultScreen: .welcome, screenStack: [.chatList, .newChat])
+            )
+        )
+        let store = InMemorySecretStore()
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let manager = AppManager(
+            rust: rust,
+            secretStore: store,
+            dataDir: tempDir,
+            environment: [:]
+        )
+
+        await Task.yield()
+        manager.navigateBack()
+
+        guard let first = rust.dispatchedActions.first else {
+            return XCTFail("expected navigation action")
+        }
+        XCTAssertEqual(first, .updateScreenStack(stack: [.chatList]))
+    }
+
+    @MainActor
+    func testBootstrapSettlesWithoutStoredCredentials() async {
+        let rust = MockRustApp()
+        let store = InMemorySecretStore()
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let manager = AppManager(
+            rust: rust,
+            secretStore: store,
+            dataDir: tempDir,
+            environment: [:]
+        )
+
+        await Task.yield()
+        XCTAssertFalse(manager.bootstrapInFlight)
+        XCTAssertTrue(rust.dispatchedActions.isEmpty)
+    }
+
+    @MainActor
+    func testBootstrapSettlesAfterRestoringStoredCredentials() async {
+        let store = InMemorySecretStore(
+            bundle: StoredAccountBundle(
+                ownerNsec: "nsec1owner",
+                ownerPubkeyHex: "owner-hex",
+                deviceNsec: "nsec1device"
+            )
+        )
+        let rust = MockRustApp()
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let manager = AppManager(
+            rust: rust,
+            secretStore: store,
+            dataDir: tempDir,
+            environment: [:]
+        )
+
+        await Task.yield()
+        XCTAssertFalse(manager.bootstrapInFlight)
+        XCTAssertEqual(rust.dispatchedActions.count, 1)
     }
 }

@@ -1,4 +1,5 @@
 package social.innode.ndr.demo.ui.screens
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -214,7 +215,10 @@ fun DeviceRosterScreen(
             )
 
             LazyColumn(
-                modifier = Modifier.weight(1f),
+                modifier =
+                    Modifier
+                        .weight(1f)
+                        .testTag("deviceRosterList"),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 items(roster.devices, key = { it.devicePubkeyHex }) { device ->

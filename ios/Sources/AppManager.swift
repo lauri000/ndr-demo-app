@@ -20,7 +20,7 @@ final class KeychainSecretStore: AccountSecretStore {
     private let account: String
 
     init(
-        service: String = "social.innode.ndr.demo.ios",
+        service: String = "social.innode.irischat",
         account: String = "stored-account-bundle"
     ) {
         self.service = service
@@ -109,7 +109,7 @@ private enum AppPaths {
     }
 
     static func keychainService(environment: [String: String]) -> String {
-        let base = "social.innode.ndr.demo.ios"
+        let base = "social.innode.irischat"
         guard let runId = environment["NDR_UI_TEST_RUN_ID"], !runId.isEmpty else {
             return base
         }
@@ -241,6 +241,7 @@ final class AppManager: ObservableObject {
     }
 
     func logout() {
+        // Logout ownership stays in Rust. The shell clears native secrets and local files only.
         rust.dispatch(action: .logout)
         secretStore.clear()
         try? fileManager.removeItem(at: dataDir)
@@ -250,6 +251,7 @@ final class AppManager: ObservableObject {
     func apply(update: AppUpdate) {
         switch update {
         case .persistAccountBundle(_, let ownerNsec, let ownerPubkeyHex, let deviceNsec):
+            // Secure persistence is a shell side effect and must be applied even if snapshot revs race.
             secretStore.save(
                 StoredAccountBundle(
                     ownerNsec: ownerNsec,
@@ -258,6 +260,7 @@ final class AppManager: ObservableObject {
                 )
             )
         case .fullState(let nextState):
+            // Rust owns authoritative state. The shell only accepts the newest full snapshot.
             guard nextState.rev > lastRevApplied else {
                 return
             }
@@ -271,6 +274,7 @@ final class AppManager: ObservableObject {
     }
 
     private func restorePersistedSession() {
+        // Native restore only rehydrates secure inputs. Rust rebuilds the authoritative app state.
         defer {
             bootstrapInFlight = false
         }
