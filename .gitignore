@@ -6,6 +6,7 @@ android/local.properties
 build/
 android/app/build/
 core/target/
+core/uniffi-bindgen/target/
 ios/Bindings/
 ios/.build/
 ios/Frameworks/

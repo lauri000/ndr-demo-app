@@ -20,6 +20,10 @@ local_ios_relay_url() {
   printf 'ws://127.0.0.1:%s' "$(local_relay_port)"
 }
 
+local_relay_runner() {
+  printf '%s/scripts/local_nostr_relay.py' "${ROOT_DIR}"
+}
+
 websocket_healthcheck() {
   local host="$1"
   local port="$2"
@@ -49,7 +53,7 @@ assert_local_relay_healthy() {
   local port="${2:-$(local_relay_port)}"
   if ! websocket_healthcheck "${host}" "${port}"; then
     echo "Local relay is not accepting websocket connections on ${host}:${port}." >&2
-    echo "Start it with: python3 ${ROOT_DIR}/scripts/local_nostr_relay.py" >&2
+    echo "Start it with: $(local_relay_runner)" >&2
     return 1
   fi
 }
@@ -74,7 +78,7 @@ start_local_rust_relay() {
   local bind_addr="0.0.0.0:$(local_relay_port)"
   local pid
 
-  python3 "${ROOT_DIR}/scripts/local_nostr_relay.py" "${bind_addr}" >"${log_file}" 2>&1 &
+  "$(local_relay_runner)" "${bind_addr}" >"${log_file}" 2>&1 &
   pid=$!
   if ! wait_for_local_relay_healthy "$(local_relay_host)" "$(local_relay_port)" 20; then
     if kill -0 "${pid}" >/dev/null 2>&1; then
