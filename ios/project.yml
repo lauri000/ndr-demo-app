@@ -1,13 +1,13 @@
 name: IrisChat
 options:
-  bundleIdPrefix: social.innode.ndr.demo
+  bundleIdPrefix: social.innode.irischat
   deploymentTarget:
     iOS: "16.0"
   createIntermediateGroups: true
 
 settings:
   base:
-    PRODUCT_BUNDLE_IDENTIFIER: social.innode.ndr.demo.ios
+    PRODUCT_BUNDLE_IDENTIFIER: social.innode.irischat
     MARKETING_VERSION: 0.1.0
     CURRENT_PROJECT_VERSION: 1
     VERSIONING_SYSTEM: apple-generic

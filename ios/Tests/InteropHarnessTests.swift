@@ -34,7 +34,7 @@ final class InteropHarnessTests: XCTestCase {
         }
         let action = try requiredEnv("NDR_IOS_HARNESS_ACTION", env: env)
         let runID = env["NDR_IOS_HARNESS_RUN_ID"] ?? UUID().uuidString
-        let service = env["NDR_IOS_HARNESS_SERVICE"] ?? "social.innode.ndr.demo.ios.harness.\(runID)"
+        let service = env["NDR_IOS_HARNESS_SERVICE"] ?? "social.innode.irischat.harness.\(runID)"
         let account = "stored-account-bundle"
         let rootDir = harnessRootDir(env: env)
         let dataDir = rootDir.appendingPathComponent(runID, isDirectory: true)
