@@ -21,6 +21,7 @@ credentials, persist secure side effects, render `AppState`, and forward
 - [Architecture](ARCHITECTURE.md)
 - [Architecture review](ARCHITECTURE_REVIEW.md)
 - [Implementation plan](ARCHITECTURE_IMPLEMENTATION_PLAN.md)
+- [UI/UX flows](UI_UX_FLOWS.md)
 - [Parity matrix](PARITY_MATRIX.md)
 - [Release guide](RELEASE.md)
 - [Android beta release](BETA_RELEASE.md)

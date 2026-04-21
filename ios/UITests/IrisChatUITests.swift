@@ -2,12 +2,15 @@ import XCTest
 
 final class IrisChatUITests: XCTestCase {
     private let validPeerNpub = "npub18w35g6gn47qwmryulxzvfucmujvrqqljjpapyl8x0rqaljh6f2usml77dj"
+    private let validOwnerNsec = "nsec1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqstywftw"
 
     func testCreateAccountAndOpenProfileSheet() {
         let app = launchCleanApp()
 
-        XCTAssertTrue(element(app, "welcomeCreateCard").waitForExistence(timeout: 10))
-        XCTAssertTrue(element(app, "welcomeLinkCard").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "welcomeChooserCard").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "welcomeCreateAction").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "welcomeRestoreAction").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "welcomeAddDeviceAction").waitForExistence(timeout: 10))
         createAccount(app)
 
         XCTAssertTrue(element(app, "navigationTopBar").waitForExistence(timeout: 10))
@@ -63,10 +66,29 @@ final class IrisChatUITests: XCTestCase {
         XCTAssertTrue(element(app, "groupDetailsAddMembersButton").waitForExistence(timeout: 5))
     }
 
+    func testRestoreAccountOpensDedicatedScreenAndEntersChatList() {
+        let app = launchCleanApp()
+
+        XCTAssertTrue(element(app, "welcomeRestoreAction").waitForExistence(timeout: 10))
+        element(app, "welcomeRestoreAction").tap()
+
+        XCTAssertTrue(element(app, "restoreAccountScreen").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "importKeyField").waitForExistence(timeout: 10))
+        element(app, "importKeyField").tap()
+        element(app, "importKeyField").typeText(validOwnerNsec)
+        element(app, "importKeyButton").tap()
+
+        XCTAssertTrue(element(app, "chatListNewChatButton").waitForExistence(timeout: 20))
+    }
+
     func testScanOwnerQrEntersAwaitingApprovalScreen() {
         let app = launchCleanApp(qrValue: validPeerNpub)
 
-        XCTAssertTrue(element(app, "welcomeLinkCard").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "welcomeAddDeviceAction").waitForExistence(timeout: 10))
+        element(app, "welcomeAddDeviceAction").tap()
+
+        XCTAssertTrue(element(app, "addDeviceScreen").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "addDeviceQrPlaceholder").waitForExistence(timeout: 10))
         XCTAssertTrue(element(app, "linkOwnerScanQrButton").waitForExistence(timeout: 10))
         element(app, "linkOwnerScanQrButton").tap()
         XCTAssertTrue(element(app, "linkExistingAccountButton").waitForExistence(timeout: 10))
@@ -90,6 +112,10 @@ final class IrisChatUITests: XCTestCase {
     }
 
     private func createAccount(_ app: XCUIApplication) {
+        XCTAssertTrue(element(app, "welcomeCreateAction").waitForExistence(timeout: 15))
+        element(app, "welcomeCreateAction").tap()
+
+        XCTAssertTrue(element(app, "createAccountScreen").waitForExistence(timeout: 15))
         let nameField = element(app, "signupNameField")
         XCTAssertTrue(nameField.waitForExistence(timeout: 15))
         nameField.tap()

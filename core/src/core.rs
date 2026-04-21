@@ -1892,10 +1892,26 @@ impl AppCore {
 
     fn push_screen(&mut self, screen: Screen) {
         if self.state.account.is_none() {
+            match screen {
+                Screen::Welcome => {
+                    self.screen_stack.clear();
+                    self.active_chat_id = None;
+                }
+                Screen::CreateAccount | Screen::RestoreAccount | Screen::AddDevice => {
+                    self.screen_stack = vec![screen];
+                    self.active_chat_id = None;
+                }
+                _ => return,
+            }
+
+            self.rebuild_state();
+            self.persist_best_effort();
+            self.emit_state();
             return;
         }
 
         match screen {
+            Screen::CreateAccount | Screen::RestoreAccount | Screen::AddDevice => return,
             Screen::ChatList => {
                 self.screen_stack.clear();
                 self.active_chat_id = None;
@@ -1954,6 +1970,19 @@ impl AppCore {
 
     fn update_screen_stack(&mut self, stack: Vec<Screen>) {
         if self.state.account.is_none() {
+            self.screen_stack = stack
+                .into_iter()
+                .filter(|screen| {
+                    matches!(
+                        screen,
+                        Screen::CreateAccount | Screen::RestoreAccount | Screen::AddDevice
+                    )
+                })
+                .collect();
+            self.active_chat_id = None;
+            self.rebuild_state();
+            self.persist_best_effort();
+            self.emit_state();
             return;
         }
 
@@ -1961,6 +1990,9 @@ impl AppCore {
         for screen in stack {
             match screen {
                 Screen::Welcome
+                | Screen::CreateAccount
+                | Screen::RestoreAccount
+                | Screen::AddDevice
                 | Screen::ChatList
                 | Screen::AwaitingDeviceApproval
                 | Screen::DeviceRevoked => {}
@@ -6392,6 +6424,56 @@ mod tests {
                 .chat_id,
             chat_id
         );
+    }
+
+    #[test]
+    fn push_screen_allows_logged_out_onboarding_routes() {
+        let data_dir = TempDir::new().expect("temp dir");
+        let mut core = test_core(data_dir.path());
+
+        core.push_screen(Screen::CreateAccount);
+        assert!(matches!(
+            core.state.router.default_screen,
+            Screen::Welcome
+        ));
+        assert!(matches!(
+            core.state.router.screen_stack.as_slice(),
+            [Screen::CreateAccount]
+        ));
+
+        core.push_screen(Screen::RestoreAccount);
+        assert!(matches!(
+            core.state.router.screen_stack.as_slice(),
+            [Screen::RestoreAccount]
+        ));
+
+        core.push_screen(Screen::AddDevice);
+        assert!(matches!(
+            core.state.router.screen_stack.as_slice(),
+            [Screen::AddDevice]
+        ));
+    }
+
+    #[test]
+    fn update_screen_stack_logged_out_keeps_only_onboarding_routes() {
+        let data_dir = TempDir::new().expect("temp dir");
+        let mut core = test_core(data_dir.path());
+
+        core.update_screen_stack(vec![
+            Screen::CreateAccount,
+            Screen::NewChat,
+            Screen::RestoreAccount,
+            Screen::ChatList,
+            Screen::AddDevice,
+        ]);
+
+        assert!(matches!(core.state.router.default_screen, Screen::Welcome));
+        assert_eq!(core.state.router.screen_stack.len(), 3);
+        assert!(matches!(core.state.router.screen_stack[0], Screen::CreateAccount));
+        assert!(matches!(core.state.router.screen_stack[1], Screen::RestoreAccount));
+        assert!(matches!(core.state.router.screen_stack[2], Screen::AddDevice));
+        assert!(core.state.account.is_none());
+        assert!(core.state.current_chat.is_none());
     }
 
     #[test]

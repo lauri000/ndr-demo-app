@@ -35,7 +35,7 @@ class PikaLikeUiTest {
             .resetForUiTestsBlocking()
         composeRule.waitUntil(20_000) {
             composeRule
-                .onAllNodesWithTag("generateKeyButton", useUnmergedTree = true)
+                .onAllNodesWithTag("welcomeCreateAction", useUnmergedTree = true)
                 .fetchSemanticsNodes()
                 .isNotEmpty()
         }
@@ -181,6 +181,10 @@ class PikaLikeUiTest {
     @Test
     fun scan_owner_qr_enters_awaiting_approval_screen() {
         composeRule.resetToWelcome()
+        composeRule.onNodeWithTag("welcomeAddDeviceAction", useUnmergedTree = true).performClick()
+        composeRule.waitForTag("addDeviceScreen")
+        composeRule.onNodeWithTag("addDeviceQrPlaceholder", useUnmergedTree = true)
+            .assertIsDisplayed()
         composeRule.waitForTag("linkOwnerInput")
         composeRule.runOnUiThread {
             QrScannerTestOverrides.nextScannedValue = VALID_PEER_NPUB
@@ -193,6 +197,19 @@ class PikaLikeUiTest {
             .assertIsDisplayed()
         composeRule.onNodeWithTag("awaitingApprovalDeviceNpub", useUnmergedTree = true)
             .assertIsDisplayed()
+    }
+
+    @Test
+    fun restore_account_opens_chat_list() {
+        composeRule.resetToWelcome()
+        composeRule.onNodeWithTag("welcomeRestoreAction", useUnmergedTree = true).performClick()
+
+        composeRule.waitForTag("restoreAccountScreen")
+        composeRule.onNodeWithTag("importKeyField", useUnmergedTree = true)
+            .performTextInput(VALID_OWNER_NSEC)
+        composeRule.onNodeWithTag("importKeyButton", useUnmergedTree = true).performClick()
+
+        composeRule.waitForTag("chatListNewChatButton")
     }
 
     @Test
@@ -254,13 +271,15 @@ class PikaLikeUiTest {
     companion object {
         private const val VALID_PEER_NPUB =
             "npub18w35g6gn47qwmryulxzvfucmujvrqqljjpapyl8x0rqaljh6f2usml77dj"
+        private const val VALID_OWNER_NSEC =
+            "nsec1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqstywftw"
         private const val SECONDARY_DEVICE_NPUB =
             "npub1p34efzmkewwdsksmpp2r0tk7quke9jcfdz2zl7ezk8wnsj43uz2s8x5sp4"
     }
 
     private fun androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, *>.ensureChatList() {
         waitUntil(30_000) {
-            hasTag("generateKeyButton") ||
+            hasTag("welcomeCreateAction") ||
                 hasTag("chatListNewChatButton") ||
                 hasTag("newChatPeerInput") ||
                 hasTag("newGroupNameInput") ||
@@ -269,7 +288,9 @@ class PikaLikeUiTest {
                 hasTag("groupDetailsScreen")
         }
 
-        if (hasTag("generateKeyButton")) {
+        if (hasTag("welcomeCreateAction")) {
+            onNodeWithTag("welcomeCreateAction", useUnmergedTree = true).performClick()
+            waitForTag("createAccountScreen")
             onNodeWithTag("signupNameField", useUnmergedTree = true)
                 .performTextInput("android tester")
             onNodeWithTag("generateKeyButton", useUnmergedTree = true).performClick()
@@ -301,7 +322,7 @@ class PikaLikeUiTest {
             val activity = activity
             (activity.application as IrisChatApp).container.appManager.logout()
         }
-        waitForTag("generateKeyButton", timeoutMillis = 30_000)
+        waitForTag("welcomeCreateAction", timeoutMillis = 30_000)
     }
 
     private fun androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, *>.hasTag(tag: String): Boolean =

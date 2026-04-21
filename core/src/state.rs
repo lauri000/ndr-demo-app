@@ -1,6 +1,9 @@
 #[derive(uniffi::Enum, Clone, Debug)]
 pub enum Screen {
     Welcome,
+    CreateAccount,
+    RestoreAccount,
+    AddDevice,
     ChatList,
     NewChat,
     NewGroup,

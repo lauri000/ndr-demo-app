@@ -14,30 +14,37 @@ import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.Screen
 import social.innode.ndr.demo.ui.screens.ChatListScreen
 import social.innode.ndr.demo.ui.screens.ChatScreen
+import social.innode.ndr.demo.ui.screens.CreateAccountScreen
 import social.innode.ndr.demo.ui.screens.DeviceRevokedScreen
 import social.innode.ndr.demo.ui.screens.DeviceRosterScreen
 import social.innode.ndr.demo.ui.screens.GroupDetailsScreen
 import social.innode.ndr.demo.ui.screens.NewChatScreen
 import social.innode.ndr.demo.ui.screens.NewGroupScreen
+import social.innode.ndr.demo.ui.screens.RestoreAccountScreen
 import social.innode.ndr.demo.ui.screens.SplashScreen
 import social.innode.ndr.demo.ui.screens.SplashViewModel
 import social.innode.ndr.demo.ui.screens.AwaitingDeviceApprovalScreen
+import social.innode.ndr.demo.ui.screens.AddDeviceScreen
 import social.innode.ndr.demo.ui.screens.WelcomeScreen
-import social.innode.ndr.demo.ui.screens.WelcomeViewModel
 
 @Composable
 fun NdrApp(container: AppContainer) {
     val appManager = container.appManager
     val splashViewModel = remember { SplashViewModel(appManager) }
-    val welcomeViewModel = remember { WelcomeViewModel(appManager) }
     val bootstrapState by splashViewModel.bootstrapState.collectAsStateWithLifecycle()
     val appState by appManager.state.collectAsStateWithLifecycle()
-    val welcomeUiState by welcomeViewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     LaunchedEffect(appState.toast) {
         val message = appState.toast ?: return@LaunchedEffect
         Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+    }
+
+    val router = appState.router
+    val activeScreen = router.screenStack.lastOrNull() ?: router.defaultScreen
+
+    BackHandler(enabled = bootstrapState != AccountBootstrapState.Loading && router.screenStack.isNotEmpty()) {
+        appManager.dispatch(AppAction.UpdateScreenStack(router.screenStack.dropLast(1)))
     }
 
     when (bootstrapState) {
@@ -50,36 +57,31 @@ fun NdrApp(container: AppContainer) {
         }
 
         AccountBootstrapState.NeedsLogin -> {
-            WelcomeScreen(
-                uiState = welcomeUiState,
-                onNameValueChanged = welcomeViewModel::onNameValueChanged,
-                onImportValueChanged = welcomeViewModel::onImportValueChanged,
-                onLinkOwnerValueChanged = welcomeViewModel::onLinkOwnerValueChanged,
-                onGenerateClick = welcomeViewModel::generate,
-                onImportClick = welcomeViewModel::import,
-                onLinkExistingAccountClick = welcomeViewModel::linkExistingAccount,
-                onLoggedIn = {},
-            )
+            when (activeScreen) {
+                Screen.Welcome -> WelcomeScreen(appManager = appManager)
+                Screen.CreateAccount -> CreateAccountScreen(appManager = appManager, appState = appState)
+                Screen.RestoreAccount -> RestoreAccountScreen(appManager = appManager, appState = appState)
+                Screen.AddDevice -> AddDeviceScreen(appManager = appManager, appState = appState, awaitingApproval = false)
+                else -> WelcomeScreen(appManager = appManager)
+            }
         }
 
         is AccountBootstrapState.LoggedIn -> {
-            val router = appState.router
-            BackHandler(enabled = router.screenStack.isNotEmpty()) {
-                appManager.dispatch(AppAction.UpdateScreenStack(router.screenStack.dropLast(1)))
-            }
-
-            when (val screen = router.screenStack.lastOrNull() ?: router.defaultScreen) {
+            when (val screen = activeScreen) {
                 Screen.Welcome -> {
-                    WelcomeScreen(
-                        uiState = welcomeUiState,
-                        onNameValueChanged = welcomeViewModel::onNameValueChanged,
-                        onImportValueChanged = welcomeViewModel::onImportValueChanged,
-                        onLinkOwnerValueChanged = welcomeViewModel::onLinkOwnerValueChanged,
-                        onGenerateClick = welcomeViewModel::generate,
-                        onImportClick = welcomeViewModel::import,
-                        onLinkExistingAccountClick = welcomeViewModel::linkExistingAccount,
-                        onLoggedIn = {},
-                    )
+                    WelcomeScreen(appManager = appManager)
+                }
+
+                Screen.CreateAccount -> {
+                    CreateAccountScreen(appManager = appManager, appState = appState)
+                }
+
+                Screen.RestoreAccount -> {
+                    RestoreAccountScreen(appManager = appManager, appState = appState)
+                }
+
+                Screen.AddDevice -> {
+                    AddDeviceScreen(appManager = appManager, appState = appState, awaitingApproval = false)
                 }
 
                 Screen.ChatList -> {
