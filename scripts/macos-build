@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CORE_DIR="$ROOT/core"
+IOS_BINDINGS_DIR="$ROOT/ios/Bindings"
+MACOS_DIR="$ROOT/macos"
+MACOS_FRAMEWORKS_DIR="$MACOS_DIR/Frameworks"
+MACOS_BUILD_DIR="$MACOS_DIR/.build"
+PROFILE="${NDR_MACOS_RUST_PROFILE:-debug}"
+TARGETS="${NDR_MACOS_RUST_TARGETS:-aarch64-apple-darwin x86_64-apple-darwin}"
+
+usage() {
+  cat <<'EOF'
+usage: ./scripts/macos-build <macos-gen-swift|macos-rust|macos-xcframework|macos-xcodeproj|macos-build>
+EOF
+}
+
+host_dynamic_lib() {
+  local ext
+  case "$(uname -s)" in
+    Darwin) ext="dylib" ;;
+    Linux) ext="so" ;;
+    *) ext="dylib" ;;
+  esac
+  printf '%s/target/%s/libndr_demo_core.%s\n' "$CORE_DIR" "$PROFILE" "$ext"
+}
+
+target_static_lib() {
+  local target="$1"
+  printf '%s/target/%s/%s/libndr_demo_core.a\n' "$CORE_DIR" "$target" "$PROFILE"
+}
+
+build_host() {
+  (
+    cd "$CORE_DIR"
+    if [[ "$PROFILE" == "release" ]]; then
+      cargo build --release
+    else
+      cargo build
+    fi
+  )
+}
+
+run_macos_gen_swift() {
+  local lib_path
+  build_host
+  lib_path="$(host_dynamic_lib)"
+  rm -rf "$IOS_BINDINGS_DIR"
+  mkdir -p "$IOS_BINDINGS_DIR"
+  (
+    cd "$CORE_DIR"
+    cargo run -q --manifest-path "$CORE_DIR/uniffi-bindgen/Cargo.toml" -- generate \
+      --library "$lib_path" \
+      --language swift \
+      --out-dir "$IOS_BINDINGS_DIR" \
+      --config "$CORE_DIR/uniffi.toml"
+  )
+}
+
+run_macos_rust() {
+  local target
+  local dev_dir
+  local toolchain_bin
+  local cc_bin
+  local cxx_bin
+  local ar_bin
+  local ranlib_bin
+  local sdkroot
+  local min_version="14.0"
+  local arch_target
+  local target_upper
+
+  dev_dir="$(xcode-select -p)"
+  toolchain_bin="$dev_dir/Toolchains/XcodeDefault.xctoolchain/usr/bin"
+  cc_bin="$toolchain_bin/clang"
+  cxx_bin="$toolchain_bin/clang++"
+  ar_bin="$toolchain_bin/ar"
+  ranlib_bin="$toolchain_bin/ranlib"
+  sdkroot="$(xcrun --sdk macosx --show-sdk-path)"
+
+  (
+    cd "$CORE_DIR"
+    for target in $TARGETS; do
+      case "$target" in
+        aarch64-apple-darwin)
+          arch_target="arm64-apple-macos${min_version}"
+          ;;
+        x86_64-apple-darwin)
+          arch_target="x86_64-apple-macos${min_version}"
+          ;;
+        *)
+          echo "Unsupported macOS target: $target" >&2
+          exit 2
+          ;;
+      esac
+      if [[ "$PROFILE" == "release" ]]; then
+        env \
+          SDKROOT="$sdkroot" \
+          MACOSX_DEPLOYMENT_TARGET="$min_version" \
+          CC="$cc_bin" \
+          CXX="$cxx_bin" \
+          AR="$ar_bin" \
+          RANLIB="$ranlib_bin" \
+          CFLAGS_aarch64_apple_darwin="-target arm64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
+          CFLAGS_x86_64_apple_darwin="-target x86_64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
+          CXXFLAGS_aarch64_apple_darwin="-target arm64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
+          CXXFLAGS_x86_64_apple_darwin="-target x86_64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$cc_bin" \
+          CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="$cc_bin" \
+          RUSTFLAGS="-C linker=$cc_bin -C link-arg=-target -C link-arg=$arch_target -C link-arg=-mmacosx-version-min=${min_version}" \
+          cargo build --release --target "$target"
+      else
+        env \
+          SDKROOT="$sdkroot" \
+          MACOSX_DEPLOYMENT_TARGET="$min_version" \
+          CC="$cc_bin" \
+          CXX="$cxx_bin" \
+          AR="$ar_bin" \
+          RANLIB="$ranlib_bin" \
+          CFLAGS_aarch64_apple_darwin="-target arm64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
+          CFLAGS_x86_64_apple_darwin="-target x86_64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
+          CXXFLAGS_aarch64_apple_darwin="-target arm64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
+          CXXFLAGS_x86_64_apple_darwin="-target x86_64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$cc_bin" \
+          CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="$cc_bin" \
+          RUSTFLAGS="-C linker=$cc_bin -C link-arg=-target -C link-arg=$arch_target -C link-arg=-mmacosx-version-min=${min_version}" \
+          cargo build --target "$target"
+      fi
+    done
+  )
+}
+
+run_macos_xcframework() {
+  local headers_dir="$MACOS_BUILD_DIR/headers"
+  local universal_lib="$MACOS_BUILD_DIR/libndr_demo_core_macos.a"
+  local output="$MACOS_FRAMEWORKS_DIR/NdrDemoCore.xcframework"
+  local header_path
+  local modulemap_path
+
+  run_macos_gen_swift
+  run_macos_rust
+
+  header_path="$(find "$IOS_BINDINGS_DIR" -maxdepth 1 -name '*.h' | head -n 1)"
+  modulemap_path="$(find "$IOS_BINDINGS_DIR" -maxdepth 1 -name '*.modulemap' | head -n 1)"
+  if [[ -z "${header_path:-}" || -z "${modulemap_path:-}" ]]; then
+    echo "Missing generated Swift headers/modulemap in $IOS_BINDINGS_DIR" >&2
+    exit 1
+  fi
+
+  rm -rf "$headers_dir" "$universal_lib" "$output"
+  mkdir -p "$headers_dir" "$MACOS_FRAMEWORKS_DIR" "$MACOS_BUILD_DIR"
+  cp "$header_path" "$headers_dir/"
+  cp "$modulemap_path" "$headers_dir/module.modulemap"
+
+  lipo -create \
+    "$(target_static_lib aarch64-apple-darwin)" \
+    "$(target_static_lib x86_64-apple-darwin)" \
+    -output "$universal_lib"
+
+  xcodebuild -create-xcframework \
+    -library "$universal_lib" \
+    -headers "$headers_dir" \
+    -output "$output"
+}
+
+run_macos_xcodeproj() {
+  (
+    cd "$MACOS_DIR"
+    xcodegen generate --spec project.yml
+  )
+}
+
+run_macos_build() {
+  run_macos_xcframework
+  run_macos_xcodeproj
+  xcodebuild \
+    -project "$MACOS_DIR/IrisChatMac.xcodeproj" \
+    -scheme IrisChatMac \
+    -destination 'platform=macOS' \
+    build
+}
+
+case "${1:-}" in
+  macos-gen-swift) run_macos_gen_swift ;;
+  macos-rust) run_macos_rust ;;
+  macos-xcframework) run_macos_xcframework ;;
+  macos-xcodeproj) run_macos_xcodeproj ;;
+  macos-build) run_macos_build ;;
+  -h|--help|help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

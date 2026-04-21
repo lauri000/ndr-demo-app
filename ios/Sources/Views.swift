@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 struct RootView: View {
     @ObservedObject var manager: AppManager
@@ -217,95 +216,108 @@ struct WelcomeScreen: View {
                     .foregroundStyle(palette.muted)
             }
 
-            IrisSectionCard {
-                Color.clear
-                    .frame(height: 0)
-                    .accessibilityIdentifier("welcomeCreateCard")
+            IrisAdaptiveColumns {
+                IrisSectionCard {
+                    Color.clear
+                        .frame(height: 0)
+                        .accessibilityIdentifier("welcomeCreateCard")
 
-                CardHeader(
-                    title: "Create account",
-                    subtitle: "Generate a new owner key and jump straight into chats."
-                )
-
-                TextField("Display name", text: $displayName)
-                    .textFieldStyle(.plain)
-                    .irisInputField()
-                    .accessibilityIdentifier("signupNameField")
-
-                Button(manager.state.busy.creatingAccount ? "Creating…" : "Generate new key") {
-                    manager.createAccount(name: displayName)
-                }
-                .buttonStyle(IrisPrimaryButtonStyle())
-                .disabled(
-                    displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                    manager.state.busy.creatingAccount
-                )
-                .accessibilityIdentifier("generateKeyButton")
-            }
-
-            if manager.trustedTestBuildEnabled() {
-                IrisSectionCard(accent: true) {
                     CardHeader(
-                        title: "Trusted test build",
-                        subtitle: "This beta uses a controlled relay set and is not meant for sensitive conversations."
+                        title: "Create account",
+                        subtitle: "Generate a new owner key and jump straight into chats."
                     )
 
-                    Text(manager.buildSummaryText())
-                        .font(.system(.footnote, design: .monospaced))
-                        .foregroundStyle(palette.muted)
+                    TextField("Display name", text: $displayName)
+                        .textFieldStyle(.plain)
+                        .irisInputField()
+                        .accessibilityIdentifier("signupNameField")
+
+                    Button(manager.state.busy.creatingAccount ? "Creating…" : "Generate new key") {
+                        manager.createAccount(name: displayName)
+                    }
+                    .buttonStyle(IrisPrimaryButtonStyle())
+                    .disabled(
+                        displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                        manager.state.busy.creatingAccount
+                    )
+                    .accessibilityIdentifier("generateKeyButton")
+                }
+            } trailing: {
+                IrisSectionCard {
+                    CardHeader(
+                        title: "Restore owner",
+                        subtitle: "Bring an existing owner key onto this device."
+                    )
+
+                    TextField("Owner nsec", text: $restoreInput)
+                        .irisIdentifierInputModifiers()
+                        .textFieldStyle(.plain)
+                        .irisInputField()
+                        .accessibilityIdentifier("importKeyField")
+
+                    Button(manager.state.busy.restoringSession ? "Restoring…" : "Import existing key") {
+                        manager.restoreSession(ownerNsec: restoreInput)
+                    }
+                    .buttonStyle(IrisSecondaryButtonStyle())
+                    .disabled(
+                        restoreInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                        manager.state.busy.restoringSession
+                    )
+                    .accessibilityIdentifier("importKeyButton")
                 }
             }
 
-            IrisSectionCard {
-                CardHeader(
-                    title: "Restore owner",
-                    subtitle: "Bring an existing owner key onto this device."
-                )
+            IrisAdaptiveColumns {
+                IrisSectionCard {
+                    Color.clear
+                        .frame(height: 0)
+                        .accessibilityIdentifier("welcomeLinkCard")
 
-                TextField("Owner nsec", text: $restoreInput)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .textFieldStyle(.plain)
-                    .irisInputField()
-                    .accessibilityIdentifier("importKeyField")
+                    CardHeader(
+                        title: "Link device",
+                        subtitle: "Scan the owner QR from the primary device, then wait for approval."
+                    )
 
-                Button(manager.state.busy.restoringSession ? "Restoring…" : "Import existing key") {
-                    manager.restoreSession(ownerNsec: restoreInput)
+                    TextField("Owner npub or hex", text: $ownerInput)
+                        .irisIdentifierInputModifiers()
+                        .textFieldStyle(.plain)
+                        .irisInputField()
+                        .accessibilityIdentifier("linkOwnerInput")
+
+                    if !ownerInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !validOwnerInput {
+                        Text("Scanned or pasted owner key is not valid.")
+                            .font(.system(.footnote, design: .rounded))
+                            .foregroundStyle(.red)
+                    }
+
+                    VStack(spacing: 10) {
+                        scanOwnerButton
+                        linkOwnerButton
+                    }
                 }
-                .buttonStyle(IrisSecondaryButtonStyle())
-                .disabled(
-                    restoreInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                    manager.state.busy.restoringSession
-                )
-                .accessibilityIdentifier("importKeyButton")
-            }
+            } trailing: {
+                if manager.trustedTestBuildEnabled() {
+                    IrisSectionCard(accent: true) {
+                        CardHeader(
+                            title: "Trusted test build",
+                            subtitle: "This beta uses a controlled relay set and is not meant for sensitive conversations."
+                        )
 
-            IrisSectionCard {
-                Color.clear
-                    .frame(height: 0)
-                    .accessibilityIdentifier("welcomeLinkCard")
+                        Text(manager.buildSummaryText())
+                            .font(.system(.footnote, design: .monospaced))
+                            .foregroundStyle(palette.muted)
+                    }
+                } else {
+                    IrisSectionCard {
+                        CardHeader(
+                            title: "How this works",
+                            subtitle: "The native shell renders Rust-owned routing and state, then forwards your actions back to the shared core."
+                        )
 
-                CardHeader(
-                    title: "Link device",
-                    subtitle: "Scan the owner QR from the primary device, then wait for approval."
-                )
-
-                TextField("Owner npub or hex", text: $ownerInput)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .textFieldStyle(.plain)
-                    .irisInputField()
-                    .accessibilityIdentifier("linkOwnerInput")
-
-                if !ownerInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !validOwnerInput {
-                    Text("Scanned or pasted owner key is not valid.")
-                        .font(.system(.footnote, design: .rounded))
-                        .foregroundStyle(.red)
-                }
-
-                VStack(spacing: 10) {
-                    scanOwnerButton
-                    linkOwnerButton
+                        Text("Desktop uses the same Iris styling, but the layout is widened and squared off to feel like a real messaging app window.")
+                            .font(.system(.body, design: .rounded))
+                            .foregroundStyle(palette.muted)
+                    }
                 }
             }
         }
@@ -318,9 +330,13 @@ struct WelcomeScreen: View {
     }
 
     private var scanOwnerButton: some View {
-        Button("Scan owner QR") { showingScanner = true }
-            .buttonStyle(IrisSecondaryButtonStyle())
-            .accessibilityIdentifier("linkOwnerScanQrButton")
+        Group {
+            if irisSupportsQrScanning {
+                Button("Scan owner QR") { showingScanner = true }
+                    .buttonStyle(IrisSecondaryButtonStyle())
+                    .accessibilityIdentifier("linkOwnerScanQrButton")
+            }
+        }
     }
 
     private var linkOwnerButton: some View {
@@ -339,36 +355,16 @@ struct ChatListScreen: View {
 
     var body: some View {
         IrisScrollScreen {
-            IrisSectionCard(accent: true) {
-                Color.clear
-                    .frame(height: 0)
-                    .accessibilityIdentifier("chatListHeroCard")
-
-                CardHeader(
-                    title: "Conversations",
-                    subtitle: "Direct chats and groups live together here. Start something new or jump back into an active thread."
-                )
-
-                HStack(spacing: 10) {
-                    newChatButton
-                    newGroupButton
+            if IrisLayout.usesDesktopChrome, let account = manager.state.account {
+                IrisAdaptiveColumns {
+                    chatListHeroCard
+                } trailing: {
+                    accountCard(account)
                 }
-            }
-
-            if let account = manager.state.account {
-                IrisSectionCard {
-                    HStack(spacing: 14) {
-                        IrisAvatar(label: account.displayName.isEmpty ? account.npub : account.displayName, emphasize: true)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(account.displayName.isEmpty ? "Your account" : account.displayName)
-                                .font(.system(.headline, design: .rounded, weight: .semibold))
-                                .foregroundStyle(palette.textPrimary)
-                            Text(account.npub)
-                                .font(.system(.footnote, design: .monospaced))
-                                .foregroundStyle(palette.muted)
-                                .lineLimit(2)
-                        }
-                    }
+            } else {
+                chatListHeroCard
+                if let account = manager.state.account {
+                    accountCard(account)
                 }
             }
 
@@ -425,6 +421,41 @@ struct ChatListScreen: View {
         .buttonStyle(IrisSecondaryButtonStyle())
         .accessibilityIdentifier("chatListNewGroupButton")
     }
+
+    private var chatListHeroCard: some View {
+        IrisSectionCard(accent: true) {
+            Color.clear
+                .frame(height: 0)
+                .accessibilityIdentifier("chatListHeroCard")
+
+            CardHeader(
+                title: "Conversations",
+                subtitle: "Direct chats and groups live together here. Start something new or jump back into an active thread."
+            )
+
+            HStack(spacing: 10) {
+                newChatButton
+                newGroupButton
+            }
+        }
+    }
+
+    private func accountCard(_ account: AccountSnapshot) -> some View {
+        IrisSectionCard {
+            HStack(spacing: 14) {
+                IrisAvatar(label: account.displayName.isEmpty ? account.npub : account.displayName, emphasize: true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(account.displayName.isEmpty ? "Your account" : account.displayName)
+                        .font(.system(.headline, design: .rounded, weight: .semibold))
+                        .foregroundStyle(palette.textPrimary)
+                    Text(account.npub)
+                        .font(.system(.footnote, design: .monospaced))
+                        .foregroundStyle(palette.muted)
+                        .lineLimit(2)
+                }
+            }
+        }
+    }
 }
 
 struct NewChatScreen: View {
@@ -443,49 +474,50 @@ struct NewChatScreen: View {
 
     var body: some View {
         IrisScrollScreen {
-            IrisSectionCard(accent: true) {
-                Color.clear
-                    .frame(height: 0)
-                    .accessibilityIdentifier("newChatPrimaryCard")
+            IrisAdaptiveColumns {
+                IrisSectionCard(accent: true) {
+                    Color.clear
+                        .frame(height: 0)
+                        .accessibilityIdentifier("newChatPrimaryCard")
 
-                CardHeader(
-                    title: "Direct chat",
-                    subtitle: "Paste an npub, a hex key, or scan a QR code to open a one-to-one conversation."
-                )
+                    CardHeader(
+                        title: "Direct chat",
+                        subtitle: "Paste an npub, a hex key, or scan a QR code to open a one-to-one conversation."
+                    )
 
-                TextField("npub, hex, or nostr:…", text: $peerInput)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .textFieldStyle(.plain)
-                    .irisInputField()
-                    .accessibilityIdentifier("newChatPeerInput")
+                    TextField("npub, hex, or nostr:…", text: $peerInput)
+                        .irisIdentifierInputModifiers()
+                        .textFieldStyle(.plain)
+                        .irisInputField()
+                        .accessibilityIdentifier("newChatPeerInput")
 
-                if !peerInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !validPeerInput {
-                    Text("Not a valid nostr public key.")
-                        .font(.system(.footnote, design: .rounded))
-                        .foregroundStyle(.red)
+                    if !peerInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !validPeerInput {
+                        Text("Not a valid nostr public key.")
+                            .font(.system(.footnote, design: .rounded))
+                            .foregroundStyle(.red)
+                    }
+
+                    HStack(spacing: 10) {
+                        pasteButton
+                        scanButton
+                    }
+
+                    Button(manager.state.busy.creatingChat ? "Creating…" : "Open chat") {
+                        manager.dispatch(.createChat(peerInput: normalizedPeerInput))
+                    }
+                    .buttonStyle(IrisPrimaryButtonStyle())
+                    .disabled(!validPeerInput || manager.state.busy.creatingChat)
+                    .accessibilityIdentifier("newChatStartButton")
                 }
-
-                HStack(spacing: 10) {
-                    pasteButton
-                    scanButton
+            } trailing: {
+                IrisSectionCard {
+                    Text("Tip")
+                        .font(.system(.headline, design: .rounded, weight: .semibold))
+                        .foregroundStyle(palette.textPrimary)
+                    Text("You can paste `nostr:` links directly. The shell normalizes them before dispatching to Rust.")
+                        .font(.system(.body, design: .rounded))
+                        .foregroundStyle(palette.muted)
                 }
-
-                Button(manager.state.busy.creatingChat ? "Creating…" : "Open chat") {
-                    manager.dispatch(.createChat(peerInput: normalizedPeerInput))
-                }
-                .buttonStyle(IrisPrimaryButtonStyle())
-                .disabled(!validPeerInput || manager.state.busy.creatingChat)
-                .accessibilityIdentifier("newChatStartButton")
-            }
-
-            IrisSectionCard {
-                Text("Tip")
-                    .font(.system(.headline, design: .rounded, weight: .semibold))
-                    .foregroundStyle(palette.textPrimary)
-                Text("You can paste `nostr:` links directly. The shell normalizes them before dispatching to Rust.")
-                    .font(.system(.body, design: .rounded))
-                    .foregroundStyle(palette.muted)
             }
         }
         .sheet(isPresented: $showingScanner) {
@@ -498,16 +530,20 @@ struct NewChatScreen: View {
 
     private var pasteButton: some View {
         Button("Paste") {
-            peerInput = normalizePeerInput(input: UIPasteboard.general.string ?? "")
+            peerInput = normalizePeerInput(input: PlatformClipboard.string() ?? "")
         }
         .buttonStyle(IrisSecondaryButtonStyle())
         .accessibilityIdentifier("newChatPasteButton")
     }
 
     private var scanButton: some View {
-        Button("Scan QR") { showingScanner = true }
-            .buttonStyle(IrisSecondaryButtonStyle())
-            .accessibilityIdentifier("newChatScanQrButton")
+        Group {
+            if irisSupportsQrScanning {
+                Button("Scan QR") { showingScanner = true }
+                    .buttonStyle(IrisSecondaryButtonStyle())
+                    .accessibilityIdentifier("newChatScanQrButton")
+            }
+        }
     }
 }
 
@@ -563,50 +599,51 @@ struct NewGroupScreen: View {
 
     var body: some View {
         IrisScrollScreen {
-            IrisSectionCard(accent: true) {
-                Color.clear
-                    .frame(height: 0)
-                    .accessibilityIdentifier("newGroupPrimaryCard")
+            IrisAdaptiveColumns {
+                IrisSectionCard(accent: true) {
+                    Color.clear
+                        .frame(height: 0)
+                        .accessibilityIdentifier("newGroupPrimaryCard")
 
-                CardHeader(
-                    title: "Create group",
-                    subtitle: "Choose a name, add people you already know, then manage the group from the thread."
-                )
+                    CardHeader(
+                        title: "Create group",
+                        subtitle: "Choose a name, add people you already know, then manage the group from the thread."
+                    )
 
-                TextField("Weekend plans", text: $name)
-                    .textFieldStyle(.plain)
-                    .irisInputField()
-                    .accessibilityIdentifier("newGroupNameInput")
-            }
-
-            IrisSectionCard {
-                CardHeader(
-                    title: "Add members",
-                    subtitle: "Paste or scan people directly, or pick from existing direct chats."
-                )
-
-                TextField("npub, hex, or nostr:…", text: $memberInput)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .textFieldStyle(.plain)
-                    .irisInputField()
-                    .accessibilityIdentifier("newGroupMemberInput")
-
-                VStack(spacing: 10) {
-                    pasteMemberButton
-                    scanMemberButton
-                    addMemberButton
+                    TextField("Weekend plans", text: $name)
+                        .textFieldStyle(.plain)
+                        .irisInputField()
+                        .accessibilityIdentifier("newGroupNameInput")
                 }
+            } trailing: {
+                IrisSectionCard {
+                    CardHeader(
+                        title: "Add members",
+                        subtitle: "Paste or scan people directly, or pick from existing direct chats."
+                    )
 
-                if !selectedOwners.isEmpty {
-                    FlowWrap(spacing: 8, lineSpacing: 8) {
-                        ForEach(selectedOwners.sorted(), id: \.self) { owner in
-                            let presentation = ownerPresentation(for: owner)
-                            SelectedMemberChip(
-                                title: presentation.primary,
-                                subtitle: presentation.secondary,
-                                onRemove: { selectedOwners.remove(owner) }
-                            )
+                    TextField("npub, hex, or nostr:…", text: $memberInput)
+                        .irisIdentifierInputModifiers()
+                        .textFieldStyle(.plain)
+                        .irisInputField()
+                        .accessibilityIdentifier("newGroupMemberInput")
+
+                    VStack(spacing: 10) {
+                        pasteMemberButton
+                        scanMemberButton
+                        addMemberButton
+                    }
+
+                    if !selectedOwners.isEmpty {
+                        FlowWrap(spacing: 8, lineSpacing: 8) {
+                            ForEach(selectedOwners.sorted(), id: \.self) { owner in
+                                let presentation = ownerPresentation(for: owner)
+                                SelectedMemberChip(
+                                    title: presentation.primary,
+                                    subtitle: presentation.secondary,
+                                    onRemove: { selectedOwners.remove(owner) }
+                                )
+                            }
                         }
                     }
                 }
@@ -676,16 +713,20 @@ struct NewGroupScreen: View {
 
     private var pasteMemberButton: some View {
         Button("Paste") {
-            memberInput = normalizePeerInput(input: UIPasteboard.general.string ?? "")
+            memberInput = normalizePeerInput(input: PlatformClipboard.string() ?? "")
         }
         .buttonStyle(IrisSecondaryButtonStyle())
         .accessibilityIdentifier("newGroupPasteButton")
     }
 
     private var scanMemberButton: some View {
-        Button("Scan QR") { showingScanner = true }
-            .buttonStyle(IrisSecondaryButtonStyle())
-            .accessibilityIdentifier("newGroupScanQrButton")
+        Group {
+            if irisSupportsQrScanning {
+                Button("Scan QR") { showingScanner = true }
+                    .buttonStyle(IrisSecondaryButtonStyle())
+                    .accessibilityIdentifier("newGroupScanQrButton")
+            }
+        }
     }
 
     private var addMemberButton: some View {
@@ -727,131 +768,153 @@ struct ChatScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let chat {
-                ScrollViewReader { proxy in
-                    ZStack(alignment: .bottomTrailing) {
-                        ScrollView {
-                            LazyVStack(spacing: 0) {
-                                ForEach(Array(chat.messages.enumerated()), id: \.element.id) { index, message in
-                                    let previous = index > 0 ? chat.messages[index - 1] : nil
-                                    let next = index + 1 < chat.messages.count ? chat.messages[index + 1] : nil
-                                    let showDayChip = previous == nil || !irisSameTimelineDay(previous!.createdAtSecs, message.createdAtSecs)
-                                    let isFirstInCluster = previous == nil || previous!.isOutgoing != message.isOutgoing
-                                    let isLastInCluster = next == nil || next!.isOutgoing != message.isOutgoing
+            Group {
+                if let chat {
+                    VStack(spacing: 0) {
+                        ScrollViewReader { proxy in
+                            ZStack(alignment: .bottomTrailing) {
+                                ScrollView {
+                                    LazyVStack(spacing: 0) {
+                                        ForEach(Array(chat.messages.enumerated()), id: \.element.id) { index, message in
+                                            let previous = index > 0 ? chat.messages[index - 1] : nil
+                                            let next = index + 1 < chat.messages.count ? chat.messages[index + 1] : nil
+                                            let showDayChip = previous == nil || !irisSameTimelineDay(previous!.createdAtSecs, message.createdAtSecs)
+                                            let isFirstInCluster = previous == nil || previous!.isOutgoing != message.isOutgoing
+                                            let isLastInCluster = next == nil || next!.isOutgoing != message.isOutgoing
 
-                                    ChatMessageRow(
-                                        message: message,
-                                        chatKind: chat.kind,
-                                        showDayChip: showDayChip,
-                                        isFirstInCluster: isFirstInCluster,
-                                        isLastInCluster: isLastInCluster
+                                            ChatMessageRow(
+                                                message: message,
+                                                chatKind: chat.kind,
+                                                showDayChip: showDayChip,
+                                                isFirstInCluster: isFirstInCluster,
+                                                isLastInCluster: isLastInCluster
+                                            )
+                                            .id(message.id)
+                                        }
+
+                                        Color.clear
+                                            .frame(height: 1)
+                                            .id(ChatTimelineAnchor.bottom)
+                                            .background(
+                                                GeometryReader { geometry in
+                                                    Color.clear.preference(
+                                                        key: ChatTimelineBottomMaxYPreferenceKey.self,
+                                                        value: geometry.frame(in: .named(ChatTimelineCoordinateSpace.name)).maxY
+                                                    )
+                                                }
+                                            )
+                                            .accessibilityHidden(true)
+                                    }
+                                    .padding(.horizontal, IrisLayout.usesDesktopChrome ? 24 : 16)
+                                    .padding(.vertical, 12)
+                                    .accessibilityIdentifier("chatTimeline")
+                                }
+                                .coordinateSpace(name: ChatTimelineCoordinateSpace.name)
+                                .overlay {
+                                    GeometryReader { geometry in
+                                        Color.clear.preference(
+                                            key: ChatTimelineViewportMaxYPreferenceKey.self,
+                                            value: geometry.frame(in: .named(ChatTimelineCoordinateSpace.name)).maxY
+                                        )
+                                    }
+                                }
+                                .irisInteractiveKeyboardDismiss()
+                                .onChange(of: chatId) { _ in
+                                    initialScrollPending = true
+                                    isNearBottom = true
+                                }
+                                .onPreferenceChange(ChatTimelineViewportMaxYPreferenceKey.self) { value in
+                                    timelineViewportMaxY = value
+                                    isNearBottom = chatTimelineIsNearBottom(
+                                        viewportMaxY: value,
+                                        bottomMaxY: timelineBottomMaxY
                                     )
-                                    .id(message.id)
+                                }
+                                .onPreferenceChange(ChatTimelineBottomMaxYPreferenceKey.self) { value in
+                                    timelineBottomMaxY = value
+                                    isNearBottom = chatTimelineIsNearBottom(
+                                        viewportMaxY: timelineViewportMaxY,
+                                        bottomMaxY: value
+                                    )
+                                }
+                                .task(id: chat.messages.last?.id) {
+                                    guard !chat.messages.isEmpty else {
+                                        initialScrollPending = true
+                                        return
+                                    }
+                                    guard initialScrollPending || isNearBottom else {
+                                        return
+                                    }
+                                    scrollToBottom(proxy: proxy, animated: !initialScrollPending)
+                                    initialScrollPending = false
                                 }
 
-                                Color.clear
-                                    .frame(height: 1)
-                                    .id(ChatTimelineAnchor.bottom)
-                                    .background(
-                                        GeometryReader { geometry in
-                                            Color.clear.preference(
-                                                key: ChatTimelineBottomMaxYPreferenceKey.self,
-                                                value: geometry.frame(in: .named(ChatTimelineCoordinateSpace.name)).maxY
+                                if !isNearBottom && !chat.messages.isEmpty {
+                                    Button {
+                                        scrollToBottom(proxy: proxy, animated: true)
+                                    } label: {
+                                        Image(systemName: "arrow.down")
+                                            .font(.system(size: 18, weight: .bold))
+                                            .foregroundStyle(palette.onAccent)
+                                            .frame(width: 48, height: 48)
+                                            .background(
+                                                Circle()
+                                                    .fill(palette.accent)
+                                                    .overlay(
+                                                        Circle()
+                                                            .stroke(palette.border.opacity(0.25), lineWidth: 1)
+                                                    )
                                             )
-                                        }
-                                    )
-                                    .accessibilityHidden(true)
+                                    }
+                                    .padding(.trailing, 18)
+                                    .padding(.bottom, 18)
+                                    .buttonStyle(.plain)
+                                    .shadow(color: .black.opacity(0.16), radius: 16, y: 10)
+                                    .accessibilityIdentifier("chatJumpToBottom")
+                                }
                             }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 12)
-                            .accessibilityIdentifier("chatTimeline")
-                        }
-                        .coordinateSpace(name: ChatTimelineCoordinateSpace.name)
-                        .overlay {
-                            GeometryReader { geometry in
-                                Color.clear.preference(
-                                    key: ChatTimelineViewportMaxYPreferenceKey.self,
-                                    value: geometry.frame(in: .named(ChatTimelineCoordinateSpace.name)).maxY
-                                )
-                            }
-                        }
-                        .scrollDismissesKeyboard(.interactively)
-                        .onChange(of: chatId) { _ in
-                            initialScrollPending = true
-                            isNearBottom = true
-                        }
-                        .onPreferenceChange(ChatTimelineViewportMaxYPreferenceKey.self) { value in
-                            timelineViewportMaxY = value
-                            isNearBottom = chatTimelineIsNearBottom(
-                                viewportMaxY: value,
-                                bottomMaxY: timelineBottomMaxY
-                            )
-                        }
-                        .onPreferenceChange(ChatTimelineBottomMaxYPreferenceKey.self) { value in
-                            timelineBottomMaxY = value
-                            isNearBottom = chatTimelineIsNearBottom(
-                                viewportMaxY: timelineViewportMaxY,
-                                bottomMaxY: value
-                            )
-                        }
-                        .task(id: chat.messages.last?.id) {
-                            guard !chat.messages.isEmpty else {
-                                initialScrollPending = true
-                                return
-                            }
-                            guard initialScrollPending || isNearBottom else {
-                                return
-                            }
-                            scrollToBottom(proxy: proxy, animated: !initialScrollPending)
-                            initialScrollPending = false
                         }
 
-                        if !isNearBottom && !chat.messages.isEmpty {
-                            Button {
-                                scrollToBottom(proxy: proxy, animated: true)
-                            } label: {
-                                Image(systemName: "arrow.down")
-                                    .font(.system(size: 18, weight: .bold))
-                                    .foregroundStyle(palette.onAccent)
-                                    .frame(width: 48, height: 48)
-                                    .background(
-                                        Circle()
-                                            .fill(palette.accent)
-                                            .overlay(
-                                                Circle()
-                                                    .stroke(palette.border.opacity(0.25), lineWidth: 1)
-                                            )
-                                    )
-                            }
-                            .padding(.trailing, 18)
-                            .padding(.bottom, 18)
-                            .buttonStyle(.plain)
-                            .shadow(color: .black.opacity(0.16), radius: 16, y: 10)
-                            .accessibilityIdentifier("chatJumpToBottom")
+                        IrisComposerBar(
+                            draft: $draft,
+                            placeholder: "Message",
+                            isSending: manager.state.busy.sendingMessage
+                        ) {
+                            let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !text.isEmpty else { return }
+                            draft = ""
+                            manager.dispatch(.sendMessage(chatId: chatId, text: text))
                         }
                     }
+                } else {
+                    VStack(spacing: 0) {
+                        Spacer()
+                        IrisSectionCard {
+                            Text("Loading chat…")
+                                .font(.system(.headline, design: .rounded, weight: .semibold))
+                                .foregroundStyle(palette.textPrimary)
+                        }
+                        .padding(.horizontal, 16)
+                        Spacer()
+                    }
                 }
-            } else {
-                Spacer()
-                IrisSectionCard {
-                    Text("Loading chat…")
-                        .font(.system(.headline, design: .rounded, weight: .semibold))
-                        .foregroundStyle(palette.textPrimary)
+            }
+            .frame(maxWidth: IrisLayout.chatMaxWidth)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(
+                Group {
+                    if IrisLayout.usesDesktopChrome {
+                        RoundedRectangle(cornerRadius: IrisLayout.sectionCornerRadius, style: .continuous)
+                            .fill(palette.panel.opacity(0.82))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: IrisLayout.sectionCornerRadius, style: .continuous)
+                                    .stroke(palette.border, lineWidth: 1)
+                            )
+                    }
                 }
-                .padding(.horizontal, 16)
-                Spacer()
-            }
-
-            IrisComposerBar(
-                draft: $draft,
-                placeholder: "Message",
-                isSending: manager.state.busy.sendingMessage
-            ) {
-                let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { return }
-                draft = ""
-                manager.dispatch(.sendMessage(chatId: chatId, text: text))
-            }
+            )
+            .padding(.horizontal, IrisLayout.usesDesktopChrome ? 18 : 0)
+            .padding(.bottom, IrisLayout.usesDesktopChrome ? 18 : 0)
         }
     }
 
@@ -995,16 +1058,17 @@ struct GroupDetailsScreen: View {
                         )
 
                         TextField("Member npub, hex, or nostr:…", text: $memberInput)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
+                            .irisIdentifierInputModifiers()
                             .textFieldStyle(.plain)
                             .irisInputField()
                             .accessibilityIdentifier("groupDetailsAddMemberInput")
 
                         VStack(spacing: 10) {
-                            Button("Scan member QR") { showingScanner = true }
-                                .buttonStyle(IrisSecondaryButtonStyle())
-                                .accessibilityIdentifier("groupDetailsScanQrButton")
+                            if irisSupportsQrScanning {
+                                Button("Scan member QR") { showingScanner = true }
+                                    .buttonStyle(IrisSecondaryButtonStyle())
+                                    .accessibilityIdentifier("groupDetailsScanQrButton")
+                            }
 
                             Button(manager.state.busy.updatingGroup ? "Adding…" : "Add members") {
                                 manager.dispatch(.addGroupMembers(groupId: groupId, memberInputs: [normalizedMemberInput]))
@@ -1064,8 +1128,7 @@ struct DeviceRosterScreen: View {
                     )
 
                     TextField("Device npub, hex, or approval code", text: $deviceInput)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                        .irisIdentifierInputModifiers()
                         .textFieldStyle(.plain)
                         .irisInputField()
                         .accessibilityIdentifier("deviceRosterAddInput")
@@ -1077,9 +1140,11 @@ struct DeviceRosterScreen: View {
                     }
 
                     VStack(spacing: 10) {
-                        Button("Scan QR") { showingScanner = true }
-                            .buttonStyle(IrisSecondaryButtonStyle())
-                            .accessibilityIdentifier("deviceRosterScanButton")
+                        if irisSupportsQrScanning {
+                            Button("Scan QR") { showingScanner = true }
+                                .buttonStyle(IrisSecondaryButtonStyle())
+                                .accessibilityIdentifier("deviceRosterScanButton")
+                        }
                         Button(manager.state.busy.updatingRoster ? "Authorizing…" : "Authorize") {
                             let normalized = resolvedInput?.deviceInput ?? ""
                             manager.dispatch(.addAuthorizedDevice(deviceInput: normalized))
@@ -1361,9 +1426,9 @@ struct ProfileSheet: View {
                 }
             }
             .navigationTitle("Profile")
-            .navigationBarTitleDisplayMode(.inline)
+            .irisInlineTitleDisplayMode()
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: irisToolbarTrailingPlacement) {
                     Button("Done") { dismiss() }
                 }
             }
@@ -1406,9 +1471,12 @@ private struct ToastView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(
-                Capsule(style: .continuous)
+                RoundedRectangle(cornerRadius: IrisLayout.pillCornerRadius, style: .continuous)
                     .fill(palette.panel)
-                    .overlay(Capsule(style: .continuous).stroke(palette.border, lineWidth: 1))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: IrisLayout.pillCornerRadius, style: .continuous)
+                            .stroke(palette.border, lineWidth: 1)
+                    )
             )
     }
 }
@@ -1520,9 +1588,12 @@ private struct SelectedMemberChip: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
         .background(
-            Capsule(style: .continuous)
+            RoundedRectangle(cornerRadius: IrisLayout.pillCornerRadius, style: .continuous)
                 .fill(palette.panel)
-                .overlay(Capsule(style: .continuous).stroke(palette.border, lineWidth: 1))
+                .overlay(
+                    RoundedRectangle(cornerRadius: IrisLayout.pillCornerRadius, style: .continuous)
+                        .stroke(palette.border, lineWidth: 1)
+                )
         )
     }
 }
@@ -1612,6 +1683,7 @@ private struct SharePayload: Identifiable {
     let text: String
 }
 
+#if canImport(UIKit)
 private struct ShareSheet: UIViewControllerRepresentable {
     let text: String
 
@@ -1621,3 +1693,52 @@ private struct ShareSheet: UIViewControllerRepresentable {
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
+#else
+private struct ShareSheet: View {
+    let text: String
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Share support bundle")
+                .font(.system(.title3, design: .rounded, weight: .bold))
+
+            Text("Use the system share panel or copy the payload to the clipboard.")
+                .font(.system(.body, design: .rounded))
+                .foregroundStyle(.secondary)
+
+            ScrollView {
+                Text(text)
+                    .font(.system(.footnote, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(minHeight: 180, maxHeight: 280)
+            .padding(12)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            HStack(spacing: 12) {
+                ShareLink(item: text) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(IrisPrimaryButtonStyle())
+
+                Button("Copy") {
+                    PlatformClipboard.setString(text)
+                }
+                .buttonStyle(IrisSecondaryButtonStyle())
+
+                Spacer()
+
+                Button("Close") {
+                    dismiss()
+                }
+                .buttonStyle(IrisSecondaryButtonStyle())
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 460)
+    }
+}
+#endif

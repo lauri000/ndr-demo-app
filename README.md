@@ -12,6 +12,7 @@ credentials, persist secure side effects, render `AppState`, and forward
 - `core/`: shared Rust app core and UniFFI boundary
 - `android/`: Android shell, Gradle project, and Compose UI
 - `ios/`: iOS shell, SwiftUI UI, XcodeGen spec, and tests
+- `macos/`: macOS shell, SwiftUI UI, and XcodeGen spec reusing the Apple shell layer
 - `scripts/`: build, test, release, emulator, simulator, and harness entrypoints
 - `tools/`: higher-signal local run/doctor wrappers
 
@@ -32,6 +33,7 @@ cd /path/to/ndr-demo-app
 just info
 just run-android
 just run-ios
+just run-macos
 ```
 
 ## Daily Test Lanes
@@ -101,6 +103,22 @@ cp release.env.example release.env
 $EDITOR release.env
 ./scripts/ios-release print-config
 ./scripts/ios-release archive
+```
+
+## macOS
+
+The first native desktop shell is a macOS SwiftUI target generated from
+`macos/project.yml`. It reuses the shared Apple shell layer in `ios/Sources/`
+and links the Rust core through `macos/Frameworks/NdrDemoCore.xcframework`.
+
+Common local flows:
+
+```bash
+cd /path/to/ndr-demo-app
+just macos-gen-swift
+just macos-xcframework
+just macos-xcodeproj
+just run-macos
 ```
 
 ## Interop Harnesses

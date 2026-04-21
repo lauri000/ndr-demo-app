@@ -1,5 +1,36 @@
 import SwiftUI
-import UIKit
+
+enum IrisLayout {
+    #if canImport(AppKit)
+    static let usesDesktopChrome = true
+    static let chromeMaxWidth: CGFloat = 1240
+    static let scrollMaxWidth: CGFloat = 1100
+    static let chatMaxWidth: CGFloat = 1240
+    static let topBarCornerRadius: CGFloat = 18
+    static let sectionCornerRadius: CGFloat = 22
+    static let inputCornerRadius: CGFloat = 14
+    static let buttonCornerRadius: CGFloat = 16
+    static let compactButtonCornerRadius: CGFloat = 14
+    static let pillCornerRadius: CGFloat = 14
+    static let contentHorizontalPadding: CGFloat = 22
+    static let contentTopPadding: CGFloat = 10
+    static let contentBottomPadding: CGFloat = 32
+    #else
+    static let usesDesktopChrome = false
+    static let chromeMaxWidth: CGFloat? = nil
+    static let scrollMaxWidth: CGFloat? = nil
+    static let chatMaxWidth: CGFloat? = nil
+    static let topBarCornerRadius: CGFloat = 24
+    static let sectionCornerRadius: CGFloat = 26
+    static let inputCornerRadius: CGFloat = 18
+    static let buttonCornerRadius: CGFloat = 999
+    static let compactButtonCornerRadius: CGFloat = 999
+    static let pillCornerRadius: CGFloat = 999
+    static let contentHorizontalPadding: CGFloat = 16
+    static let contentTopPadding: CGFloat = 8
+    static let contentBottomPadding: CGFloat = 28
+    #endif
+}
 
 struct IrisPalette {
     let background: Color
@@ -139,17 +170,19 @@ struct IrisTopBar: View {
             trailing
                 .frame(minWidth: 44, alignment: .trailing)
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, IrisLayout.usesDesktopChrome ? 18 : 16)
         .padding(.vertical, 12)
         .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
+            RoundedRectangle(cornerRadius: IrisLayout.topBarCornerRadius, style: .continuous)
                 .fill(palette.toolbar)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    RoundedRectangle(cornerRadius: IrisLayout.topBarCornerRadius, style: .continuous)
                         .stroke(palette.border, lineWidth: 1)
                 )
         )
-        .padding(.horizontal, 12)
+        .frame(maxWidth: IrisLayout.chromeMaxWidth)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, IrisLayout.usesDesktopChrome ? 18 : 12)
         .padding(.top, 8)
         .padding(.bottom, 10)
     }
@@ -173,12 +206,17 @@ struct IrisSectionCard<Content: View>: View {
         VStack(alignment: .leading, spacing: 14, content: content)
             .padding(18)
             .background(
-                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                RoundedRectangle(cornerRadius: IrisLayout.sectionCornerRadius, style: .continuous)
                     .fill(accent ? palette.panelAlt : palette.panel)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        RoundedRectangle(cornerRadius: IrisLayout.sectionCornerRadius, style: .continuous)
                             .stroke(accent ? palette.accent.opacity(0.24) : palette.border, lineWidth: 1)
                     )
+            )
+            .shadow(
+                color: Color.black.opacity(IrisLayout.usesDesktopChrome ? 0.04 : 0),
+                radius: IrisLayout.usesDesktopChrome ? 22 : 0,
+                y: IrisLayout.usesDesktopChrome ? 12 : 0
             )
     }
 }
@@ -193,12 +231,50 @@ struct IrisScrollScreen<Content: View>: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16, content: content)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 28)
+                .frame(maxWidth: IrisLayout.scrollMaxWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, IrisLayout.contentHorizontalPadding)
+                .padding(.top, IrisLayout.contentTopPadding)
+                .padding(.bottom, IrisLayout.contentBottomPadding)
         }
         .scrollIndicators(.hidden)
+    }
+}
+
+struct IrisAdaptiveColumns<Leading: View, Trailing: View>: View {
+    let alignment: VerticalAlignment
+    let spacing: CGFloat
+    let leading: () -> Leading
+    let trailing: () -> Trailing
+
+    init(
+        alignment: VerticalAlignment = .top,
+        spacing: CGFloat = 16,
+        @ViewBuilder leading: @escaping () -> Leading,
+        @ViewBuilder trailing: @escaping () -> Trailing
+    ) {
+        self.alignment = alignment
+        self.spacing = spacing
+        self.leading = leading
+        self.trailing = trailing
+    }
+
+    var body: some View {
+        Group {
+            if IrisLayout.usesDesktopChrome {
+                HStack(alignment: alignment, spacing: spacing) {
+                    leading()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    trailing()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: spacing) {
+                    leading()
+                    trailing()
+                }
+            }
+        }
     }
 }
 
@@ -245,8 +321,18 @@ struct IrisPrimaryButtonStyle: ButtonStyle {
             .padding(.vertical, compact ? 10 : 14)
             .frame(maxWidth: compact ? nil : .infinity)
             .background(
-                Capsule(style: .continuous)
-                    .fill(palette.accent.opacity(configuration.isPressed ? 0.86 : 1))
+                Group {
+                    if IrisLayout.usesDesktopChrome {
+                        RoundedRectangle(
+                            cornerRadius: compact ? IrisLayout.compactButtonCornerRadius : IrisLayout.buttonCornerRadius,
+                            style: .continuous
+                        )
+                        .fill(palette.accent.opacity(configuration.isPressed ? 0.86 : 1))
+                    } else {
+                        Capsule(style: .continuous)
+                            .fill(palette.accent.opacity(configuration.isPressed ? 0.86 : 1))
+                    }
+                }
             )
             .scaleEffect(configuration.isPressed ? 0.985 : 1)
             .animation(.easeOut(duration: 0.14), value: configuration.isPressed)
@@ -269,12 +355,29 @@ struct IrisSecondaryButtonStyle: ButtonStyle {
             .padding(.vertical, compact ? 10 : 14)
             .frame(maxWidth: compact ? nil : .infinity)
             .background(
-                Capsule(style: .continuous)
-                    .fill(palette.panel)
-                    .overlay(
-                        Capsule(style: .continuous)
+                Group {
+                    if IrisLayout.usesDesktopChrome {
+                        RoundedRectangle(
+                            cornerRadius: compact ? IrisLayout.compactButtonCornerRadius : IrisLayout.buttonCornerRadius,
+                            style: .continuous
+                        )
+                        .fill(palette.panel)
+                        .overlay(
+                            RoundedRectangle(
+                                cornerRadius: compact ? IrisLayout.compactButtonCornerRadius : IrisLayout.buttonCornerRadius,
+                                style: .continuous
+                            )
                             .stroke(palette.border, lineWidth: 1)
-                    )
+                        )
+                    } else {
+                        Capsule(style: .continuous)
+                            .fill(palette.panel)
+                            .overlay(
+                                Capsule(style: .continuous)
+                                    .stroke(palette.border, lineWidth: 1)
+                            )
+                    }
+                }
             )
             .opacity(configuration.isPressed ? 0.9 : 1)
     }
@@ -289,10 +392,10 @@ struct IrisInputFieldModifier: ViewModifier {
             .padding(.horizontal, 14)
             .padding(.vertical, 13)
             .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: IrisLayout.inputCornerRadius, style: .continuous)
                     .fill(palette.background)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        RoundedRectangle(cornerRadius: IrisLayout.inputCornerRadius, style: .continuous)
                             .stroke(palette.border, lineWidth: 1)
                     )
             )
@@ -323,7 +426,7 @@ struct IrisInfoPill: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(
-                Capsule(style: .continuous)
+                RoundedRectangle(cornerRadius: IrisLayout.pillCornerRadius, style: .continuous)
                     .fill((tint ?? palette.panelAlt).opacity(0.14))
             )
     }
@@ -401,9 +504,12 @@ struct IrisDayChip: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
             .background(
-                Capsule(style: .continuous)
+                RoundedRectangle(cornerRadius: IrisLayout.pillCornerRadius, style: .continuous)
                     .fill(palette.panel)
-                    .overlay(Capsule(style: .continuous).stroke(palette.border, lineWidth: 1))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: IrisLayout.pillCornerRadius, style: .continuous)
+                            .stroke(palette.border, lineWidth: 1)
+                    )
             )
     }
 }
@@ -423,21 +529,20 @@ struct IrisComposerBar: View {
                 .accessibilityIdentifier("chatComposerBar")
 
             TextField(placeholder, text: $draft)
-                .textInputAutocapitalization(.sentences)
-                .autocorrectionDisabled(false)
+                .irisDraftInputModifiers()
                 .irisInputField()
                 .accessibilityIdentifier("chatMessageInput")
 
             Button(action: onSend) {
                 Image(systemName: isSending ? "ellipsis.circle.fill" : "paperplane.fill")
                     .font(.system(size: 18, weight: .bold))
-                    .frame(width: 46, height: 46)
+                    .frame(width: IrisLayout.usesDesktopChrome ? 52 : 46, height: 46)
             }
             .buttonStyle(IrisPrimaryCircleButtonStyle())
             .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
             .accessibilityIdentifier("chatSendButton")
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, IrisLayout.contentHorizontalPadding)
         .padding(.top, 14)
         .padding(.bottom, 12)
         .background(
@@ -447,6 +552,8 @@ struct IrisComposerBar: View {
                     Divider().overlay(palette.border)
                 }
         )
+        .frame(maxWidth: IrisLayout.chatMaxWidth)
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -457,9 +564,17 @@ private struct IrisPrimaryCircleButtonStyle: ButtonStyle {
         configuration.label
             .foregroundStyle(palette.onAccent)
             .background(
-                Circle()
-                    .fill(palette.accent.opacity(configuration.isPressed ? 0.86 : 1))
-                    .frame(width: 46, height: 46)
+                Group {
+                    if IrisLayout.usesDesktopChrome {
+                        RoundedRectangle(cornerRadius: IrisLayout.buttonCornerRadius, style: .continuous)
+                            .fill(palette.accent.opacity(configuration.isPressed ? 0.86 : 1))
+                            .frame(width: 52, height: 46)
+                    } else {
+                        Circle()
+                            .fill(palette.accent.opacity(configuration.isPressed ? 0.86 : 1))
+                            .frame(width: 46, height: 46)
+                    }
+                }
             )
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(.easeOut(duration: 0.14), value: configuration.isPressed)

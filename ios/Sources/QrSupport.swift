@@ -1,6 +1,8 @@
-import AVFoundation
 import CoreImage.CIFilterBuiltins
 import SwiftUI
+#if canImport(UIKit)
+import AVFoundation
+#endif
 
 enum DeviceApprovalQr {
     static func encode(ownerInput: String, deviceInput: String) -> String {
@@ -75,7 +77,7 @@ struct QrCodeImage: View {
 
     var body: some View {
         if let image = qrImage(text: text) {
-            Image(uiImage: image)
+            Image(platformImage: image)
                 .interpolation(.none)
                 .resizable()
                 .scaledToFit()
@@ -85,7 +87,7 @@ struct QrCodeImage: View {
         }
     }
 
-    private func qrImage(text: String) -> UIImage? {
+    private func qrImage(text: String) -> PlatformImage? {
         let filter = CIFilter.qrCodeGenerator()
         filter.setValue(Data(text.utf8), forKey: "inputMessage")
         filter.correctionLevel = "M"
@@ -97,10 +99,17 @@ struct QrCodeImage: View {
         guard let cgImage = context.createCGImage(transformed, from: transformed.extent) else {
             return nil
         }
+        #if canImport(UIKit)
         return UIImage(cgImage: cgImage)
+        #elseif canImport(AppKit)
+        return NSImage(cgImage: cgImage, size: transformed.extent.size)
+        #else
+        return nil
+        #endif
     }
 }
 
+#if canImport(UIKit)
 struct QrScannerSheet: UIViewControllerRepresentable {
     let onCode: (String) -> Void
 
@@ -181,3 +190,43 @@ final class ScannerViewController: UIViewController, AVCaptureMetadataOutputObje
         onCode?(value)
     }
 }
+#else
+struct QrScannerSheet: View {
+    let onCode: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var pastedCode = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("QR scanning is not wired for macOS yet.")
+                .font(.system(.title3, design: .rounded, weight: .bold))
+            Text("Paste the owner, member, or device code instead.")
+                .font(.system(.body, design: .rounded))
+                .foregroundStyle(.secondary)
+
+            TextField("Paste code", text: $pastedCode)
+                .textFieldStyle(.roundedBorder)
+
+            HStack(spacing: 10) {
+                Button("Paste from clipboard") {
+                    pastedCode = normalizePeerInput(input: PlatformClipboard.string() ?? "")
+                }
+
+                Button("Use code") {
+                    onCode(pastedCode)
+                    dismiss()
+                }
+                .disabled(pastedCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                Spacer()
+
+                Button("Close") {
+                    dismiss()
+                }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 420)
+    }
+}
+#endif

@@ -1,7 +1,6 @@
 import Foundation
 import Security
 import SwiftUI
-import UIKit
 
 struct StoredAccountBundle: Codable, Equatable {
     let ownerNsec: String?
@@ -216,7 +215,7 @@ final class AppManager: ObservableObject {
     }
 
     func copyToClipboard(_ value: String) {
-        UIPasteboard.general.string = value
+        PlatformClipboard.setString(value)
         showToast("Copied")
     }
 

@@ -1,0 +1,38 @@
+name: IrisChatMac
+options:
+  bundleIdPrefix: social.innode.irischat
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: social.innode.irischat.macos
+    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: 1
+    VERSIONING_SYSTEM: apple-generic
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: 5.0
+
+targets:
+  IrisChatMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: ../ios/Sources
+        excludes:
+          - IrisChatApp.swift
+      - path: ../ios/Bindings
+        excludes:
+          - "*.h"
+          - "*.modulemap"
+      - path: Sources
+    settings:
+      base:
+        PRODUCT_NAME: IrisChatMac
+        DEFINES_MODULE: YES
+        INFOPLIST_FILE: Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: Iris Chat
+    dependencies:
+      - framework: Frameworks/NdrDemoCore.xcframework
+        embed: false

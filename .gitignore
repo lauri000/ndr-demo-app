@@ -11,6 +11,9 @@ ios/Bindings/
 ios/.build/
 ios/Frameworks/
 ios/*.xcodeproj/
+macos/.build/
+macos/Frameworks/
+macos/*.xcodeproj/
 dist/
 release.env
 *.iml
