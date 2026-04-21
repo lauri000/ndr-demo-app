@@ -25,6 +25,7 @@ private final class MockRustApp: RustAppClient {
     var currentState: AppState
     var dispatchedActions: [AppAction] = []
     var supportBundleJson = "{\"ok\":true}"
+    var onDispatch: ((AppAction) -> Void)?
     private var reconciler: AppReconciler?
 
     init(state: AppState = AppState(
@@ -57,6 +58,7 @@ private final class MockRustApp: RustAppClient {
 
     func dispatch(action: AppAction) {
         dispatchedActions.append(action)
+        onDispatch?(action)
     }
 
     func exportSupportBundleJson() -> String {
@@ -260,6 +262,11 @@ final class IrisChatTests: XCTestCase {
     @MainActor
     func testLogoutClearsSecretStoreAndLocalDataDirectory() async {
         let rust = MockRustApp(state: makeAppState(rev: 1))
+        rust.onDispatch = { action in
+            if action == .logout {
+                rust.currentState = makeAppState(rev: 2)
+            }
+        }
         let store = InMemorySecretStore(
             bundle: StoredAccountBundle(
                 ownerNsec: "nsec1owner",
@@ -286,6 +293,8 @@ final class IrisChatTests: XCTestCase {
         XCTAssertNil(store.load())
         XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: staleFile.path))
+        XCTAssertEqual(manager.state.router.defaultScreen, .welcome)
+        XCTAssertEqual(manager.state.rev, 2)
     }
 
     @MainActor

@@ -1,17 +1,27 @@
 package social.innode.ndr.demo.ui.screens
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.LockPerson
+import androidx.compose.material.icons.rounded.PhoneIphone
+import androidx.compose.material.icons.rounded.SettingsSuggest
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -29,6 +39,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import social.innode.ndr.demo.BuildConfig
 import social.innode.ndr.demo.core.AppManager
@@ -48,16 +60,84 @@ fun WelcomeScreen(
     appManager: AppManager,
 ) {
     OnboardingColumn {
-        IrisSectionCard(modifier = Modifier.testTag("welcomeChooserCard")) {
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val wideLayout = maxWidth >= 720.dp
+            if (wideLayout) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    WelcomeHeroCard(
+                        appManager = appManager,
+                        modifier =
+                            Modifier
+                                .weight(1.3f)
+                                .testTag("welcomeChooserCard"),
+                    )
+                    WelcomeSupportCard(
+                        modifier =
+                            Modifier
+                                .weight(1f)
+                                .testTag("welcomeSecondaryCard"),
+                    )
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    WelcomeHeroCard(
+                        appManager = appManager,
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .testTag("welcomeChooserCard"),
+                    )
+                    WelcomeSupportCard(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .testTag("welcomeSecondaryCard"),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WelcomeHeroCard(
+    appManager: AppManager,
+    modifier: Modifier = Modifier,
+) {
+    val palette = IrisTheme.palette
+    IrisSectionCard(modifier = modifier) {
+        Box(
+            modifier =
+                Modifier
+                    .background(
+                        color = palette.accent.copy(alpha = 0.14f),
+                        shape = RoundedCornerShape(18.dp),
+                    )
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+        ) {
             Text(
-                text = "Iris Chat",
-                style = MaterialTheme.typography.headlineMedium,
+                text = "Private messaging",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface,
             )
-            Text(
-                text = "Private messaging with a Rust-owned app model. Start fresh, restore an owner account, or add this device to an existing account.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = IrisTheme.palette.muted,
-            )
+        }
+
+        Text(
+            text = "Iris Chat",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            text = "Start fresh, restore your owner account, or add this device to an existing account.",
+            style = MaterialTheme.typography.bodyLarge,
+            color = palette.muted,
+        )
+
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             IrisPrimaryButton(
                 text = "Create account",
                 onClick = { appManager.pushScreen(Screen.CreateAccount) },
@@ -83,29 +163,114 @@ fun WelcomeScreen(
                         .testTag("welcomeAddDeviceAction"),
             )
         }
+    }
+}
 
-        IrisSectionCard(modifier = Modifier.testTag("welcomeSecondaryCard")) {
-            Text(
-                text = if (BuildConfig.TRUSTED_TEST_BUILD) "Trusted test build" else "How this works",
-                style = MaterialTheme.typography.titleMedium,
+@Composable
+private fun WelcomeSupportCard(
+    modifier: Modifier = Modifier,
+) {
+    val palette = IrisTheme.palette
+    val title = if (BuildConfig.TRUSTED_TEST_BUILD) "Trusted test build" else "How this works"
+    val subtitle =
+        if (BuildConfig.TRUSTED_TEST_BUILD) {
+            "This beta uses a controlled relay set and should not be used for sensitive conversations."
+        } else {
+            "The native shell renders Rust-owned routing and state, then forwards your actions back to the shared core."
+        }
+
+    IrisSectionCard(modifier = modifier) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.bodyMedium,
+            color = palette.muted,
+        )
+
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            WelcomeSupportRow(
+                icon = {
+                    Icon(
+                        imageVector = Icons.Rounded.LockPerson,
+                        contentDescription = null,
+                        tint = palette.accent,
+                    )
+                },
+                title = "Rust-owned flow",
+                subtitle = "Onboarding, routing, and account state all come from the shared core."
             )
-            Text(
-                text =
-                    if (BuildConfig.TRUSTED_TEST_BUILD) {
-                        "This beta uses a controlled relay set and should not be used for sensitive conversations."
-                    } else {
-                        "The native shell renders Rust-owned routing and state, then forwards your actions back to the shared core."
-                    },
-                style = MaterialTheme.typography.bodyMedium,
-                color = IrisTheme.palette.muted,
+            WelcomeSupportRow(
+                icon = {
+                    Icon(
+                        imageVector = Icons.Rounded.PhoneIphone,
+                        contentDescription = null,
+                        tint = palette.accent,
+                    )
+                },
+                title = "Native shell",
+                subtitle = "Android keeps platform-native controls while matching the same Iris hierarchy as iPhone and Mac."
             )
             if (BuildConfig.TRUSTED_TEST_BUILD) {
-                Text(
-                    text = "Build ${BuildConfig.VERSION_NAME} (${BuildConfig.BUILD_GIT_SHA})",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = IrisTheme.palette.muted,
+                WelcomeSupportRow(
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Rounded.SettingsSuggest,
+                            contentDescription = null,
+                            tint = palette.accent,
+                        )
+                    },
+                    title = "Current build",
+                    subtitle = "Build ${BuildConfig.VERSION_NAME} (${BuildConfig.BUILD_GIT_SHA})"
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun WelcomeSupportRow(
+    icon: @Composable RowScope.() -> Unit,
+    title: String,
+    subtitle: String,
+) {
+    val palette = IrisTheme.palette
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Box(
+            modifier =
+                Modifier
+                    .size(40.dp)
+                    .background(
+                        color = palette.panelAlt,
+                        shape = RoundedCornerShape(14.dp),
+                    ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Row(content = icon)
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.muted,
+            )
         }
     }
 }

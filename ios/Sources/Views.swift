@@ -28,10 +28,30 @@ struct RootView: View {
                     LoadingOverlay()
                 }
             }
+            .onChange(of: manager.activeScreen) { newScreen in
+                if !matchesChatList(newScreen) {
+                    showingProfile = false
+                }
+            }
+            .onChange(of: manager.state.account?.npub) { npub in
+                if npub == nil {
+                    showingProfile = false
+                }
+            }
             .sheet(isPresented: $showingProfile) {
-                ProfileSheet(manager: manager)
+                ProfileSheet(
+                    manager: manager,
+                    closeSheet: { showingProfile = false }
+                )
             }
         }
+    }
+
+    private func matchesChatList(_ screen: Screen) -> Bool {
+        if case .chatList = screen {
+            return true
+        }
+        return false
     }
 
     @ViewBuilder
@@ -1452,6 +1472,7 @@ struct ProfileSheet: View {
     @ObservedObject var manager: AppManager
     @Environment(\.dismiss) private var dismiss
     @State private var shareText: String?
+    let closeSheet: () -> Void
 
     var body: some View {
         NavigationStack {
@@ -1476,7 +1497,7 @@ struct ProfileSheet: View {
                             }
 
                             Button {
-                                dismiss()
+                                close()
                                 manager.dispatch(.pushScreen(screen: .deviceRoster))
                             } label: {
                                 Label("Manage devices", systemImage: "laptopcomputer.and.iphone")
@@ -1534,7 +1555,7 @@ struct ProfileSheet: View {
                         .accessibilityIdentifier("myProfileCopySupportBundleButton")
 
                         Button("Reset app state", role: .destructive) {
-                            dismiss()
+                            close()
                             manager.resetAppState()
                         }
                         .buttonStyle(IrisSecondaryButtonStyle())
@@ -1542,8 +1563,8 @@ struct ProfileSheet: View {
                     }
 
                     Button("Logout", role: .destructive) {
+                        close()
                         manager.logout()
-                        dismiss()
                     }
                     .buttonStyle(IrisPrimaryButtonStyle())
                     .accessibilityIdentifier("myProfileLogoutButton")
@@ -1553,7 +1574,7 @@ struct ProfileSheet: View {
             .irisInlineTitleDisplayMode()
             .toolbar {
                 ToolbarItem(placement: irisToolbarTrailingPlacement) {
-                    Button("Done") { dismiss() }
+                    Button("Done") { close() }
                 }
             }
         }
@@ -1564,6 +1585,11 @@ struct ProfileSheet: View {
         )) { payload in
             ShareSheet(text: payload.text)
         }
+    }
+
+    private func close() {
+        closeSheet()
+        dismiss()
     }
 }
 

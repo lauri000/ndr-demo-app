@@ -245,6 +245,7 @@ final class AppManager: ObservableObject {
         secretStore.clear()
         try? fileManager.removeItem(at: dataDir)
         try? fileManager.createDirectory(at: dataDir, withIntermediateDirectories: true)
+        apply(update: .fullState(rust.state()))
     }
 
     func apply(update: AppUpdate) {
