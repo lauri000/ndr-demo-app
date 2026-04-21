@@ -843,6 +843,7 @@ impl AppCore {
 
     fn logout(&mut self) {
         self.push_debug_log("session.logout", "clearing runtime state");
+        let previous_rev = self.state.rev;
         if let Some(logged_in) = self.logged_in.take() {
             let client = logged_in.client.clone();
             self.runtime.spawn(async move {
@@ -864,6 +865,7 @@ impl AppCore {
         self.protocol_subscription_runtime = ProtocolSubscriptionRuntime::default();
         self.next_message_id = 1;
         self.state = AppState::empty();
+        self.state.rev = previous_rev;
         self.clear_persistence_best_effort();
         self.emit_state();
     }
@@ -6474,6 +6476,30 @@ mod tests {
         assert!(matches!(core.state.router.screen_stack[2], Screen::AddDevice));
         assert!(core.state.account.is_none());
         assert!(core.state.current_chat.is_none());
+    }
+
+    #[test]
+    fn logout_keeps_state_revision_monotonic() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::local_only();
+        let data_dir = TempDir::new().expect("temp dir");
+        let mut core = test_core(data_dir.path());
+        start_primary_test_session(&mut core, 70, false, false).expect("start session");
+
+        let rev_before_logout = core.state.rev;
+        assert!(rev_before_logout > 0);
+        assert!(core.state.account.is_some());
+
+        core.logout();
+
+        assert!(core.state.rev > rev_before_logout);
+        assert!(matches!(core.state.router.default_screen, Screen::Welcome));
+        assert!(core.state.router.screen_stack.is_empty());
+        assert!(core.state.account.is_none());
+        assert!(core.state.chat_list.is_empty());
+        assert!(core.active_chat_id.is_none());
     }
 
     #[test]

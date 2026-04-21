@@ -81,6 +81,23 @@ final class IrisChatUITests: XCTestCase {
         XCTAssertTrue(element(app, "chatListNewChatButton").waitForExistence(timeout: 20))
     }
 
+    func testLogoutReturnsToWelcomeChooser() {
+        let app = launchCleanApp()
+
+        createAccount(app)
+
+        XCTAssertTrue(element(app, "chatListProfileButton").waitForExistence(timeout: 15))
+        element(app, "chatListProfileButton").tap()
+
+        XCTAssertTrue(element(app, "myProfileSheet").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "myProfileLogoutButton").waitForExistence(timeout: 10))
+        element(app, "myProfileLogoutButton").tap()
+
+        XCTAssertTrue(element(app, "welcomeChooserCard").waitForExistence(timeout: 20))
+        XCTAssertTrue(element(app, "welcomeCreateAction").waitForExistence(timeout: 10))
+        XCTAssertFalse(element(app, "chatListHeroCard").exists)
+    }
+
     func testScanOwnerQrEntersAwaitingApprovalScreen() {
         let app = launchCleanApp(qrValue: validPeerNpub)
 
