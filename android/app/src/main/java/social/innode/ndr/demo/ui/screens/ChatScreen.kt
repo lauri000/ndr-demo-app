@@ -33,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,6 +42,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import social.innode.ndr.demo.core.AppManager
 import social.innode.ndr.demo.rust.AppAction
@@ -67,17 +69,54 @@ fun ChatScreen(
     var draft by remember(chatId) { mutableStateOf("") }
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
+    var shouldFollowLatest by remember(chatId) { mutableStateOf(true) }
+    var initialScrollPending by remember(chatId) { mutableStateOf(true) }
     val showJumpToBottom by remember(chat?.messages?.size, listState) {
         derivedStateOf {
             val total = chat?.messages?.size ?: 0
-            total > 4 && listState.firstVisibleItemIndex < total - 4
+            if (total == 0) {
+                false
+            } else {
+                val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+                lastVisible < total - 1
+            }
         }
+    }
+
+    LaunchedEffect(chatId) {
+        shouldFollowLatest = true
+        initialScrollPending = true
+    }
+
+    LaunchedEffect(listState, chat?.messages?.size) {
+        snapshotFlow {
+            val total = chat?.messages?.size ?: 0
+            if (total == 0) {
+                true
+            } else {
+                val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+                lastVisible >= total - 2
+            }
+        }
+            .distinctUntilChanged()
+            .collect { isNearBottom ->
+                shouldFollowLatest = isNearBottom
+            }
     }
 
     LaunchedEffect(chatId, chat?.messages?.size) {
         val total = chat?.messages?.size ?: 0
-        if (total > 0) {
-            listState.scrollToItem(total - 1)
+        if (total == 0) {
+            initialScrollPending = true
+            return@LaunchedEffect
+        }
+        if (initialScrollPending || shouldFollowLatest) {
+            if (initialScrollPending) {
+                listState.scrollToItem(total - 1)
+            } else {
+                listState.animateScrollToItem(total - 1)
+            }
+            initialScrollPending = false
         }
     }
 

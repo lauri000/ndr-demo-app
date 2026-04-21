@@ -158,6 +158,37 @@ struct NavigationShell<Content: View>: View {
     }
 }
 
+private struct OwnerPresentation {
+    let primary: String
+    let secondary: String?
+}
+
+private func trimmedText(_ value: String?) -> String? {
+    guard let value else { return nil }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+private func primaryDisplayName(displayName: String, fallback: String) -> String {
+    trimmedText(displayName) ?? fallback
+}
+
+private func secondaryDisplayName(_ secondary: String?, primary: String) -> String? {
+    guard let secondary = trimmedText(secondary) else {
+        return nil
+    }
+    return secondary.caseInsensitiveCompare(primary) == .orderedSame ? nil : secondary
+}
+
+private func sameOwner(_ owner: String, hex: String?, npub: String?) -> Bool {
+    let rawOwner = owner.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let normalizedOwner = normalizePeerInput(input: owner).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let candidates = [hex, npub]
+        .compactMap(trimmedText)
+        .map { $0.lowercased() }
+    return candidates.contains(rawOwner) || candidates.contains(normalizedOwner)
+}
+
 struct WelcomeScreen: View {
     @Environment(\.irisPalette) private var palette
     @ObservedObject var manager: AppManager
@@ -509,6 +540,27 @@ struct NewGroupScreen: View {
         !manager.state.busy.creatingGroup
     }
 
+    private func ownerPresentation(for owner: String) -> OwnerPresentation {
+        if let chat = existingDirectChats.first(where: { sameOwner(owner, hex: $0.chatId, npub: $0.subtitle) }) {
+            let primary = primaryDisplayName(displayName: chat.displayName, fallback: normalizePeerInput(input: owner))
+            return OwnerPresentation(
+                primary: primary,
+                secondary: secondaryDisplayName(chat.subtitle, primary: primary)
+            )
+        }
+
+        if let account = manager.state.account, sameOwner(owner, hex: account.publicKeyHex, npub: account.npub) {
+            let primary = primaryDisplayName(displayName: account.displayName, fallback: account.npub)
+            return OwnerPresentation(
+                primary: primary,
+                secondary: secondaryDisplayName(account.npub, primary: primary)
+            )
+        }
+
+        let normalized = normalizePeerInput(input: owner)
+        return OwnerPresentation(primary: normalized, secondary: nil)
+    }
+
     var body: some View {
         IrisScrollScreen {
             IrisSectionCard(accent: true) {
@@ -549,8 +601,10 @@ struct NewGroupScreen: View {
                 if !selectedOwners.isEmpty {
                     FlowWrap(spacing: 8, lineSpacing: 8) {
                         ForEach(selectedOwners.sorted(), id: \.self) { owner in
+                            let presentation = ownerPresentation(for: owner)
                             SelectedMemberChip(
-                                owner: owner,
+                                title: presentation.primary,
+                                subtitle: presentation.secondary,
                                 onRemove: { selectedOwners.remove(owner) }
                             )
                         }
@@ -579,7 +633,7 @@ struct NewGroupScreen: View {
                                     Text(chat.displayName)
                                         .font(.system(.headline, design: .rounded, weight: .semibold))
                                         .foregroundStyle(palette.textPrimary)
-                                    if let subtitle = chat.subtitle {
+                                    if let subtitle = secondaryDisplayName(chat.subtitle, primary: chat.displayName) {
                                         Text(subtitle)
                                             .font(.system(.footnote, design: .rounded))
                                             .foregroundStyle(palette.muted)
@@ -662,6 +716,10 @@ struct ChatScreen: View {
     let chatId: String
 
     @State private var draft = ""
+    @State private var isNearBottom = true
+    @State private var timelineViewportMaxY: CGFloat = 0
+    @State private var timelineBottomMaxY: CGFloat = .greatestFiniteMagnitude
+    @State private var initialScrollPending = true
 
     private var chat: CurrentChatSnapshot? {
         manager.state.currentChat?.chatId == chatId ? manager.state.currentChat : nil
@@ -671,35 +729,106 @@ struct ChatScreen: View {
         VStack(spacing: 0) {
             if let chat {
                 ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(chat.messages.enumerated()), id: \.element.id) { index, message in
-                                let previous = index > 0 ? chat.messages[index - 1] : nil
-                                let next = index + 1 < chat.messages.count ? chat.messages[index + 1] : nil
-                                let showDayChip = previous == nil || !irisSameTimelineDay(previous!.createdAtSecs, message.createdAtSecs)
-                                let isFirstInCluster = previous == nil || previous!.isOutgoing != message.isOutgoing
-                                let isLastInCluster = next == nil || next!.isOutgoing != message.isOutgoing
+                    ZStack(alignment: .bottomTrailing) {
+                        ScrollView {
+                            LazyVStack(spacing: 0) {
+                                ForEach(Array(chat.messages.enumerated()), id: \.element.id) { index, message in
+                                    let previous = index > 0 ? chat.messages[index - 1] : nil
+                                    let next = index + 1 < chat.messages.count ? chat.messages[index + 1] : nil
+                                    let showDayChip = previous == nil || !irisSameTimelineDay(previous!.createdAtSecs, message.createdAtSecs)
+                                    let isFirstInCluster = previous == nil || previous!.isOutgoing != message.isOutgoing
+                                    let isLastInCluster = next == nil || next!.isOutgoing != message.isOutgoing
 
-                                ChatMessageRow(
-                                    message: message,
-                                    chatKind: chat.kind,
-                                    showDayChip: showDayChip,
-                                    isFirstInCluster: isFirstInCluster,
-                                    isLastInCluster: isLastInCluster
+                                    ChatMessageRow(
+                                        message: message,
+                                        chatKind: chat.kind,
+                                        showDayChip: showDayChip,
+                                        isFirstInCluster: isFirstInCluster,
+                                        isLastInCluster: isLastInCluster
+                                    )
+                                    .id(message.id)
+                                }
+
+                                Color.clear
+                                    .frame(height: 1)
+                                    .id(ChatTimelineAnchor.bottom)
+                                    .background(
+                                        GeometryReader { geometry in
+                                            Color.clear.preference(
+                                                key: ChatTimelineBottomMaxYPreferenceKey.self,
+                                                value: geometry.frame(in: .named(ChatTimelineCoordinateSpace.name)).maxY
+                                            )
+                                        }
+                                    )
+                                    .accessibilityHidden(true)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                            .accessibilityIdentifier("chatTimeline")
+                        }
+                        .coordinateSpace(name: ChatTimelineCoordinateSpace.name)
+                        .overlay {
+                            GeometryReader { geometry in
+                                Color.clear.preference(
+                                    key: ChatTimelineViewportMaxYPreferenceKey.self,
+                                    value: geometry.frame(in: .named(ChatTimelineCoordinateSpace.name)).maxY
                                 )
-                                .id(message.id)
                             }
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                        .accessibilityIdentifier("chatTimeline")
-                    }
-                    .scrollDismissesKeyboard(.interactively)
-                    .onAppear {
-                        scrollToBottom(proxy: proxy, messages: chat.messages)
-                    }
-                    .onChange(of: chat.messages.count) { _ in
-                        scrollToBottom(proxy: proxy, messages: chat.messages)
+                        .scrollDismissesKeyboard(.interactively)
+                        .onChange(of: chatId) { _ in
+                            initialScrollPending = true
+                            isNearBottom = true
+                        }
+                        .onPreferenceChange(ChatTimelineViewportMaxYPreferenceKey.self) { value in
+                            timelineViewportMaxY = value
+                            isNearBottom = chatTimelineIsNearBottom(
+                                viewportMaxY: value,
+                                bottomMaxY: timelineBottomMaxY
+                            )
+                        }
+                        .onPreferenceChange(ChatTimelineBottomMaxYPreferenceKey.self) { value in
+                            timelineBottomMaxY = value
+                            isNearBottom = chatTimelineIsNearBottom(
+                                viewportMaxY: timelineViewportMaxY,
+                                bottomMaxY: value
+                            )
+                        }
+                        .task(id: chat.messages.last?.id) {
+                            guard !chat.messages.isEmpty else {
+                                initialScrollPending = true
+                                return
+                            }
+                            guard initialScrollPending || isNearBottom else {
+                                return
+                            }
+                            scrollToBottom(proxy: proxy, animated: !initialScrollPending)
+                            initialScrollPending = false
+                        }
+
+                        if !isNearBottom && !chat.messages.isEmpty {
+                            Button {
+                                scrollToBottom(proxy: proxy, animated: true)
+                            } label: {
+                                Image(systemName: "arrow.down")
+                                    .font(.system(size: 18, weight: .bold))
+                                    .foregroundStyle(palette.onAccent)
+                                    .frame(width: 48, height: 48)
+                                    .background(
+                                        Circle()
+                                            .fill(palette.accent)
+                                            .overlay(
+                                                Circle()
+                                                    .stroke(palette.border.opacity(0.25), lineWidth: 1)
+                                            )
+                                    )
+                            }
+                            .padding(.trailing, 18)
+                            .padding(.bottom, 18)
+                            .buttonStyle(.plain)
+                            .shadow(color: .black.opacity(0.16), radius: 16, y: 10)
+                            .accessibilityIdentifier("chatJumpToBottom")
+                        }
                     }
                 }
             } else {
@@ -726,16 +855,48 @@ struct ChatScreen: View {
         }
     }
 
-    private func scrollToBottom(proxy: ScrollViewProxy, messages: [ChatMessageSnapshot]) {
-        guard let last = messages.last else {
-            return
-        }
+    private func scrollToBottom(proxy: ScrollViewProxy, animated: Bool) {
         DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo(last.id, anchor: .bottom)
+            if animated {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(ChatTimelineAnchor.bottom, anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo(ChatTimelineAnchor.bottom, anchor: .bottom)
             }
         }
     }
+}
+
+private enum ChatTimelineCoordinateSpace {
+    static let name = "chatTimelineCoordinateSpace"
+}
+
+private enum ChatTimelineAnchor {
+    static let bottom = "chatTimelineBottom"
+}
+
+private struct ChatTimelineViewportMaxYPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct ChatTimelineBottomMaxYPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = .greatestFiniteMagnitude
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private func chatTimelineIsNearBottom(viewportMaxY: CGFloat, bottomMaxY: CGFloat) -> Bool {
+    guard viewportMaxY > 0, bottomMaxY.isFinite else {
+        return true
+    }
+    return bottomMaxY <= viewportMaxY + 24
 }
 
 struct GroupDetailsScreen: View {
@@ -790,17 +951,20 @@ struct GroupDetailsScreen: View {
                     )
 
                     ForEach(Array(details.members.enumerated()), id: \.element.ownerPubkeyHex) { index, member in
+                        let primary = primaryDisplayName(displayName: member.displayName, fallback: member.npub)
                         HStack(alignment: .top, spacing: 12) {
-                            IrisAvatar(label: member.displayName, size: 38, emphasize: member.isLocalOwner)
+                            IrisAvatar(label: primary, size: 38, emphasize: member.isLocalOwner)
 
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(member.displayName)
+                                Text(primary)
                                     .font(.system(.headline, design: .rounded, weight: .semibold))
                                     .foregroundStyle(palette.textPrimary)
-                                Text(member.npub)
-                                    .font(.system(.footnote, design: .monospaced))
-                                    .foregroundStyle(palette.muted)
-                                    .lineLimit(2)
+                                if let secondary = secondaryDisplayName(member.npub, primary: primary) {
+                                    Text(secondary)
+                                        .font(.system(.footnote, design: .monospaced))
+                                        .foregroundStyle(palette.muted)
+                                        .lineLimit(2)
+                                }
                                 if member.isLocalOwner {
                                     IrisInfoPill("You")
                                 }
@@ -1328,14 +1492,23 @@ private struct MonoValue: View {
 
 private struct SelectedMemberChip: View {
     @Environment(\.irisPalette) private var palette
-    let owner: String
+    let title: String
+    let subtitle: String?
     let onRemove: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
-            Text(owner)
-                .font(.system(.caption, design: .monospaced, weight: .medium))
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(.caption, design: .rounded, weight: .semibold))
+                    .lineLimit(1)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(.caption2, design: .monospaced, weight: .medium))
+                        .foregroundStyle(palette.muted)
+                        .lineLimit(1)
+                }
+            }
             Button(action: onRemove) {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .bold))
