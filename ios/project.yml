@@ -19,6 +19,7 @@ targets:
     type: application
     platform: iOS
     sources:
+      - path: Assets.xcassets
       - path: Sources
       - path: Bindings
         excludes:
