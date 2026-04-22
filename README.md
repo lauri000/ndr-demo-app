@@ -29,7 +29,7 @@ credentials, persist secure side effects, render `AppState`, and forward
 ## Get Started
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 ./scripts/mobile_bootstrap_macos.sh
 just info
 just run-android
@@ -62,7 +62,7 @@ core. Use `just qa-interop` as the heavier confidence lane.
 Build and install the debug app:
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 just android-assemble
 ./scripts/emulator_smoke.sh --clear emulator-5554 emulator-5556 emulator-5558
 ```
@@ -70,7 +70,7 @@ just android-assemble
 Build release artifacts:
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 ./scripts/android-release print-config
 ./scripts/android-release beta-apk
 ./scripts/android-release beta-bundle
@@ -88,7 +88,7 @@ through generated Swift bindings plus `ios/Frameworks/NdrDemoCore.xcframework`.
 Common local flows:
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 just ios-gen-swift
 just ios-xcframework
 just ios-xcodeproj
@@ -99,7 +99,7 @@ just run-ios
 Prepare and archive a release build:
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 cp release.env.example release.env
 $EDITOR release.env
 ./scripts/ios-release print-config
@@ -115,7 +115,7 @@ and links the Rust core through `macos/Frameworks/NdrDemoCore.xcframework`.
 Common local flows:
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 just macos-gen-swift
 just macos-xcframework
 just macos-xcodeproj

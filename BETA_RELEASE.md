@@ -64,14 +64,14 @@ The support bundle intentionally excludes:
 Fast local gate:
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 just qa
 ```
 
 Blocking native-shell gate before cutting a beta:
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 just qa-native-contract
 ./scripts/test_beta_local.sh
 ```
@@ -79,7 +79,7 @@ just qa-native-contract
 Heavier confidence lane before widening the tester group:
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 just qa-interop
 ./scripts/local_relay_scenario_soak.sh --iterations 100
 ./scripts/group_chat_matrix_smoke.sh
@@ -97,14 +97,14 @@ just qa-interop
 Print the resolved release inputs:
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 ./scripts/android-release print-config
 ```
 
 Build the beta APK:
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 ./scripts/android-release beta-apk
 ```
 
@@ -116,7 +116,7 @@ Output:
 Build the Play-ready beta bundle:
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 ./scripts/android-release beta-bundle
 ```
 

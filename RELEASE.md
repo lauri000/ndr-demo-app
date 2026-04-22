@@ -51,14 +51,14 @@ set them explicitly or provide `SOURCE_DATE_EPOCH`.
 Minimum blocking gate before cutting a release artifact:
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 just qa-native-contract
 ```
 
 Heavier confidence lane before widening rollout:
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 just qa-interop
 ```
 
@@ -159,7 +159,7 @@ with explicit release values instead of rewriting plist files in place.
 3. Inspect the resolved config:
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 ./scripts/android-release print-config
 ```
 
@@ -184,7 +184,7 @@ cd /path/to/ndr-demo-app
 5. Inspect the resolved config:
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 ./scripts/ios-release print-config
 ```
 

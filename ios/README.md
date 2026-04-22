@@ -28,7 +28,7 @@ Do not edit the generated Xcode project manually. Regenerate it from
 Common commands:
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 ./scripts/ios-build ios-gen-swift
 ./scripts/ios-build ios-xcframework
 ./scripts/ios-build ios-xcodeproj
@@ -40,7 +40,7 @@ cd /path/to/ndr-demo-app
 Release orchestration happens through `../scripts/ios-release`:
 
 ```bash
-cd /path/to/ndr-demo-app
+cd /path/to/iris-chat-rs-cross-platform
 ./scripts/ios-release print-config
 ./scripts/ios-release archive
 ./scripts/ios-release export
