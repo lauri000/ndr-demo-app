@@ -132,7 +132,7 @@ private fun WelcomeHeroCard(
             fontWeight = FontWeight.Bold,
         )
         Text(
-            text = "Start fresh, restore your owner account, or add this device to an existing account.",
+            text = "Create an account, restore it from a secret, or add this device to one you already use.",
             style = MaterialTheme.typography.bodyLarge,
             color = palette.muted,
         )
@@ -176,7 +176,7 @@ private fun WelcomeSupportCard(
         if (BuildConfig.TRUSTED_TEST_BUILD) {
             "This beta uses a controlled relay set and should not be used for sensitive conversations."
         } else {
-            "The native shell renders Rust-owned routing and state, then forwards your actions back to the shared core."
+            "Private chats on Nostr Double Ratchet, with simple account setup across devices."
         }
 
     IrisSectionCard(modifier = modifier) {
@@ -200,8 +200,8 @@ private fun WelcomeSupportCard(
                         tint = palette.accent,
                     )
                 },
-                title = "Rust-owned flow",
-                subtitle = "Onboarding, routing, and account state all come from the shared core."
+                title = "Private by default",
+                subtitle = "Direct and group chats use Nostr Double Ratchet."
             )
             WelcomeSupportRow(
                 icon = {
@@ -211,8 +211,8 @@ private fun WelcomeSupportCard(
                         tint = palette.accent,
                     )
                 },
-                title = "Native shell",
-                subtitle = "Android keeps platform-native controls while matching the same Iris hierarchy as iPhone and Mac."
+                title = "Move between devices",
+                subtitle = "Create an account, restore it from a secret, or add another device later."
             )
             if (BuildConfig.TRUSTED_TEST_BUILD) {
                 WelcomeSupportRow(

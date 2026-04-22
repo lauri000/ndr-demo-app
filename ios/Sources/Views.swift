@@ -232,7 +232,7 @@ struct WelcomeScreen: View {
                     Text("Iris Chat")
                         .font(.system(.largeTitle, design: .rounded, weight: .bold))
                         .foregroundStyle(palette.textPrimary)
-                    Text("Private messaging with a Rust-owned app model. Start fresh, restore an owner account, or add this device to an existing account.")
+                    Text("Create an account, restore it from a secret, or add this device to one you already use.")
                         .font(.system(.body, design: .rounded))
                         .foregroundStyle(palette.muted)
 
@@ -264,7 +264,7 @@ struct WelcomeScreen: View {
                         title: manager.trustedTestBuildEnabled() ? "Trusted test build" : "How this works",
                         subtitle: manager.trustedTestBuildEnabled()
                             ? "This beta uses a controlled relay set and should not be used for sensitive conversations."
-                            : "The native shell renders Rust-owned routing and state, then forwards your actions back to the shared core."
+                            : "Private chats on Nostr Double Ratchet."
                     )
 
                     if manager.trustedTestBuildEnabled() {
@@ -272,7 +272,7 @@ struct WelcomeScreen: View {
                             .font(.system(.footnote, design: .monospaced))
                             .foregroundStyle(palette.muted)
                     } else {
-                        Text("Desktop uses the same Iris styling, but widened into a more rectangular messaging layout.")
+                        Text("Create an account, restore it from a secret, or add another device later.")
                             .font(.system(.body, design: .rounded))
                             .foregroundStyle(palette.muted)
                     }
