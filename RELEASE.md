@@ -106,8 +106,8 @@ Primary commands:
 - `./scripts/android-release release-bundle`
 
 Artifacts are copied into `dist/android/` with a stable
-`IrisChat-<channel>-<version>+<build>-<sha>` naming scheme and a matching `.env`
-manifest.
+`IrisChat-<channel>-<version>+<build>-<sha>` naming scheme, plus a rolling
+`IrisChat-<channel>-latest.*` alias and matching `.env` manifests.
 
 ## iOS Organization
 

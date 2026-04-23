@@ -47,6 +47,7 @@ const CATCH_UP_LOOKBACK_SECS: u64 = 30;
 const UNKNOWN_GROUP_RECOVERY_LOOKBACK_SECS: u64 = 24 * 60 * 60;
 const DEVICE_INVITE_DISCOVERY_LOOKBACK_SECS: u64 = 30 * 24 * 60 * 60;
 const DEVICE_INVITE_DISCOVERY_LIMIT: usize = 256;
+const DEVICE_INVITE_DISCOVERY_POLL_SECS: u64 = 5;
 const RELAY_CONNECT_TIMEOUT_SECS: u64 = 5;
 const RESUBSCRIBE_CATCH_UP_DELAY_SECS: u64 = 5;
 const PROTOCOL_SUBSCRIPTION_ID: &str = "ndr-protocol";
@@ -55,6 +56,7 @@ const APP_GROUP_MESSAGE_PAYLOAD_VERSION: u8 = 1;
 const GROUP_CHAT_PREFIX: &str = "group:";
 const DEBUG_SNAPSHOT_FILENAME: &str = "ndr_demo_runtime_debug.json";
 const MAX_DEBUG_LOG_ENTRIES: usize = 128;
+const PERSISTED_STATE_VERSION: u32 = 11;
 
 pub struct AppCore {
     update_tx: Sender<AppUpdate>,
@@ -75,6 +77,7 @@ pub struct AppCore {
     recent_handshake_peers: BTreeMap<String, RecentHandshakePeer>,
     seen_event_ids: HashSet<String>,
     seen_event_order: VecDeque<String>,
+    device_invite_poll_token: u64,
     protocol_subscription_runtime: ProtocolSubscriptionRuntime,
     debug_log: VecDeque<DebugLogEntry>,
     debug_event_counters: DebugEventCounters,
@@ -535,6 +538,7 @@ impl AppCore {
             recent_handshake_peers: BTreeMap::new(),
             seen_event_ids: HashSet::new(),
             seen_event_order: VecDeque::new(),
+            device_invite_poll_token: 0,
             protocol_subscription_runtime: ProtocolSubscriptionRuntime::default(),
             debug_log: VecDeque::new(),
             debug_event_counters: DebugEventCounters::default(),
@@ -561,6 +565,7 @@ impl AppCore {
 
     fn shutdown(&mut self) {
         self.push_debug_log("app.shutdown", "stopping core");
+        self.device_invite_poll_token = self.device_invite_poll_token.saturating_add(1);
         if let Some(existing) = self.logged_in.take() {
             self.runtime.block_on(async {
                 existing.client.unsubscribe_all().await;
@@ -632,6 +637,15 @@ impl AppCore {
                 if self.is_device_roster_open() {
                     self.fetch_pending_device_invites_for_local_owner();
                 }
+            }
+            InternalEvent::PollPendingDeviceInvites { token } => {
+                if token != self.device_invite_poll_token || !self.can_poll_pending_device_invites() {
+                    return;
+                }
+                self.fetch_pending_device_invites_for_local_owner();
+                self.schedule_pending_device_invite_poll(Duration::from_secs(
+                    DEVICE_INVITE_DISCOVERY_POLL_SECS,
+                ));
             }
             InternalEvent::FetchCatchUpEvents(events) => {
                 for event in events {
@@ -844,6 +858,7 @@ impl AppCore {
     fn logout(&mut self) {
         self.push_debug_log("session.logout", "clearing runtime state");
         let previous_rev = self.state.rev;
+        self.device_invite_poll_token = self.device_invite_poll_token.saturating_add(1);
         if let Some(logged_in) = self.logged_in.take() {
             let client = logged_in.client.clone();
             self.runtime.spawn(async move {
@@ -2568,7 +2583,16 @@ impl AppCore {
         let now = unix_now();
 
         let persisted = if allow_restore {
-            self.load_persisted().ok().flatten()
+            match self.load_persisted() {
+                Ok(persisted) => persisted,
+                Err(error) => {
+                    self.push_debug_log(
+                        "session.restore_state",
+                        format!("ignored_invalid_persistence={error}"),
+                    );
+                    None
+                }
+            }
         } else {
             None
         };
@@ -2735,6 +2759,9 @@ impl AppCore {
             group_manager,
             authorization_state,
         });
+        self.schedule_pending_device_invite_poll(Duration::from_secs(
+            DEVICE_INVITE_DISCOVERY_POLL_SECS,
+        ));
         self.schedule_session_connect();
 
         self.emit_account_bundle_update(owner_keys.as_ref(), &device_keys);
@@ -3356,6 +3383,21 @@ impl AppCore {
             sleep(after).await;
             let _ = tx.send(CoreMsg::Internal(Box::new(
                 InternalEvent::FetchTrackedPeerCatchUp,
+            )));
+        });
+    }
+
+    fn schedule_pending_device_invite_poll(&mut self, after: Duration) {
+        if !self.can_poll_pending_device_invites() {
+            return;
+        }
+        self.device_invite_poll_token = self.device_invite_poll_token.saturating_add(1);
+        let token = self.device_invite_poll_token;
+        let tx = self.core_sender.clone();
+        self.runtime.spawn(async move {
+            sleep(after).await;
+            let _ = tx.send(CoreMsg::Internal(Box::new(
+                InternalEvent::PollPendingDeviceInvites { token },
             )));
         });
     }
@@ -4420,7 +4462,13 @@ impl AppCore {
             return Ok(None);
         }
         let bytes = fs::read(path)?;
-        Ok(Some(serde_json::from_slice(&bytes)?))
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if value.get("version").and_then(serde_json::Value::as_u64)
+            != Some(PERSISTED_STATE_VERSION as u64)
+        {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::from_value(value)?))
     }
 
     fn persist_best_effort(&self) {
@@ -4429,7 +4477,7 @@ impl AppCore {
         };
 
         let persisted = PersistedState {
-            version: 10,
+            version: PERSISTED_STATE_VERSION,
             active_chat_id: self.active_chat_id.clone(),
             next_message_id: self.next_message_id,
             session_manager: Some(logged_in.session_manager.snapshot()),
@@ -4928,6 +4976,13 @@ impl AppCore {
             invite_response_recipient,
             message_authors,
         })
+    }
+
+    fn can_poll_pending_device_invites(&self) -> bool {
+        self.logged_in
+            .as_ref()
+            .map(|logged_in| logged_in.owner_keys.is_some())
+            .unwrap_or(false)
     }
 
     fn known_roster_owner_hexes(&self) -> HashSet<String> {
@@ -6333,7 +6388,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_peer_hex_persistence_migrates_to_chat_ids() {
+    fn old_or_unversioned_persistence_is_ignored_after_schema_cut() {
         let _guard = relay_test_lock()
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
@@ -6342,19 +6397,20 @@ mod tests {
         let peer_npub = npub_for_fill(32);
         let peer_hex = parse_peer_input(&peer_npub).expect("peer hex").0;
 
-        let legacy = json!({
-            "version": 1,
-            "active_peer_hex": peer_hex,
+        let old_version = json!({
+            "version": PERSISTED_STATE_VERSION - 1,
+            "active_chat_id": peer_hex,
             "next_message_id": 2,
             "session_manager": null,
             "threads": [{
-                "peer_hex": peer_hex,
+                "chat_id": peer_hex,
                 "unread_count": 1,
+                "updated_at_secs": 7,
                 "messages": [{
                     "id": "1",
-                    "peer_input": peer_hex,
+                    "chat_id": peer_hex,
                     "author": peer_npub,
-                    "body": "legacy",
+                    "body": "old version",
                     "is_outgoing": false,
                     "created_at_secs": 7,
                     "delivery": "Received"
@@ -6363,24 +6419,74 @@ mod tests {
         });
         fs::write(
             data_dir.path().join("ndr_demo_core_state.json"),
-            serde_json::to_vec(&legacy).expect("legacy json"),
+            serde_json::to_vec(&old_version).expect("old version json"),
         )
-        .expect("write legacy persistence");
+        .expect("write old version persistence");
 
         let mut core = test_core(data_dir.path());
-        start_primary_test_session(&mut core, 31, true, false).expect("restore legacy state");
+        start_primary_test_session(&mut core, 31, true, false)
+            .expect("ignore old version state");
+        assert!(core.active_chat_id.is_none());
+        assert!(core.state.chat_list.is_empty());
 
-        assert_eq!(core.active_chat_id.as_deref(), Some(peer_hex.as_str()));
-        assert_eq!(core.state.chat_list[0].chat_id, peer_hex);
-        assert_eq!(
-            core.state
-                .current_chat
-                .as_ref()
-                .expect("current chat")
-                .messages[0]
-                .chat_id,
-            core.state.chat_list[0].chat_id
-        );
+        let unversioned = json!({
+            "active_chat_id": peer_hex,
+            "next_message_id": 2,
+            "session_manager": null,
+            "threads": []
+        });
+        fs::write(
+            data_dir.path().join("ndr_demo_core_state.json"),
+            serde_json::to_vec(&unversioned).expect("unversioned json"),
+        )
+        .expect("write unversioned persistence");
+
+        let mut core = test_core(data_dir.path());
+        start_primary_test_session(&mut core, 31, true, false)
+            .expect("ignore unversioned state");
+        assert!(core.active_chat_id.is_none());
+        assert!(core.state.chat_list.is_empty());
+    }
+
+    #[test]
+    fn malformed_current_persistence_is_ignored_without_crash() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::local_only();
+        let data_dir = TempDir::new().expect("temp dir");
+        let owner_hex = pubkey_hex_for_fill(33);
+        let malformed = json!({
+            "version": PERSISTED_STATE_VERSION,
+            "active_chat_id": "group:bad-group",
+            "next_message_id": 2,
+            "session_manager": null,
+            "group_manager": {
+                "local_owner_pubkey": owner_hex,
+                "groups": [{
+                    "group_id": "bad-group",
+                    "name": "BadGroup",
+                    "created_by": owner_hex,
+                    "members": [owner_hex],
+                    "admins": [owner_hex],
+                    "revision": 1,
+                    "created_at": 1_900_000_000u64,
+                    "updated_at": 1_900_000_000u64
+                }]
+            },
+            "threads": []
+        });
+        fs::write(
+            data_dir.path().join("ndr_demo_core_state.json"),
+            serde_json::to_vec(&malformed).expect("malformed json"),
+        )
+        .expect("write malformed persistence");
+
+        let mut core = test_core(data_dir.path());
+        start_primary_test_session(&mut core, 33, true, true)
+            .expect("ignore malformed current state");
+        assert!(core.active_chat_id.is_none());
+        assert!(core.state.chat_list.is_empty());
     }
 
     #[test]
@@ -8369,6 +8475,65 @@ mod tests {
         wait_for_state(
             &primary,
             "primary observed pending linked device via live relay invite",
+            |state| {
+                state
+                    .device_roster
+                    .as_ref()
+                    .map(|roster| {
+                        roster.devices.iter().any(|device| {
+                            device.device_pubkey_hex == linked_account.device_public_key_hex
+                                && !device.is_authorized
+                        })
+                    })
+                    .unwrap_or(false)
+            },
+        );
+    }
+
+    #[test]
+    fn primary_discovers_pending_linked_device_without_opening_device_roster() {
+        let _guard = relay_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _env = RelayEnvGuard::local_only();
+        let _relay = TestRelay::start();
+        let primary_dir = TempDir::new().expect("primary dir");
+        let linked_dir = TempDir::new().expect("linked dir");
+
+        let primary = app_with_dir(primary_dir.path(), 217);
+        let primary_account =
+            wait_for_state(&primary, "primary account", |state| state.account.is_some())
+                .account
+                .expect("primary account");
+
+        let linked = FfiApp::new(
+            linked_dir.path().to_string_lossy().into_owned(),
+            String::new(),
+            "test".to_string(),
+        );
+        linked.dispatch(AppAction::StartLinkedDevice {
+            owner_input: primary_account.npub.clone(),
+        });
+
+        let linked_account = wait_for_state(&linked, "linked awaiting approval", |state| {
+            state
+                .account
+                .as_ref()
+                .map(|account| {
+                    matches!(
+                        account.authorization_state,
+                        DeviceAuthorizationState::AwaitingApproval
+                    )
+                })
+                .unwrap_or(false)
+        })
+        .account
+        .expect("linked account");
+
+        wait_for_state_timeout(
+            &primary,
+            "primary discovered pending linked device without opening device roster",
+            15,
             |state| {
                 state
                     .device_roster

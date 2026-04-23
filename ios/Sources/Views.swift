@@ -1330,7 +1330,7 @@ struct DeviceRosterScreen: View {
                         }
                         Button(manager.state.busy.updatingRoster ? "Authorizing…" : "Authorize") {
                             let normalized = resolvedInput?.deviceInput ?? ""
-                            manager.dispatch(.addAuthorizedDevice(deviceInput: normalized))
+                            manager.addAuthorizedDevice(deviceInput: normalized)
                             deviceInput = ""
                         }
                         .buttonStyle(IrisPrimaryButtonStyle())
@@ -1423,7 +1423,7 @@ private struct DeviceRosterRow: View {
 
     private var approveButton: some View {
         Button(manager.state.busy.updatingRoster ? "Approving…" : "Approve") {
-            manager.dispatch(.addAuthorizedDevice(deviceInput: device.devicePubkeyHex))
+            manager.addAuthorizedDevice(deviceInput: device.devicePubkeyHex)
         }
         .buttonStyle(IrisPrimaryButtonStyle())
         .disabled(manager.state.busy.updatingRoster)
@@ -1432,7 +1432,7 @@ private struct DeviceRosterRow: View {
 
     private var removeButton: some View {
         Button("Remove device", role: .destructive) {
-            manager.dispatch(.removeAuthorizedDevice(devicePubkeyHex: device.devicePubkeyHex))
+            manager.removeAuthorizedDevice(devicePubkeyHex: device.devicePubkeyHex)
         }
         .buttonStyle(IrisSecondaryButtonStyle())
         .disabled(manager.state.busy.updatingRoster)

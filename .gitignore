@@ -16,5 +16,7 @@ macos/Frameworks/
 macos/*.xcodeproj/
 dist/
 release.env
+.env.zapstore.local
+.zapstore/
 *.iml
 .DS_Store

@@ -28,10 +28,10 @@ if [[ ! -f "${HARNESS}" ]]; then
   exit 1
 fi
 
-RUNNER="social.innode.ndr.demo.test/androidx.test.runner.AndroidJUnitRunner"
+RUNNER="social.innode.irischat.test/androidx.test.runner.AndroidJUnitRunner"
 CLASS="social.innode.ndr.demo.RealRelayHarnessTest"
-PACKAGE_NAME="social.innode.ndr.demo"
-TEST_PACKAGE_NAME="social.innode.ndr.demo.test"
+PACKAGE_NAME="social.innode.irischat"
+TEST_PACKAGE_NAME="social.innode.irischat.test"
 AM_USER="${AM_USER:-0}"
 
 PRIMARY_SERIAL="${PRIMARY_SERIAL:-emulator-5554}"

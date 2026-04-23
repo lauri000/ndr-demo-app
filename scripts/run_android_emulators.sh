@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCAL_PROPERTIES="${ROOT_DIR}/android/local.properties"
 SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 DEFAULT_AVDS=("Medium_Phone_API_36.1" "Pixel_9a" "Pixel_Fold")
+DNS_SERVERS="${NDR_ANDROID_DNS_SERVERS:-8.8.8.8,1.1.1.1}"
 
 if [[ -z "${SDK_DIR}" && -f "${LOCAL_PROPERTIES}" ]]; then
   SDK_DIR="$(sed -n 's/^sdk\.dir=//p' "${LOCAL_PROPERTIES}" | tail -n 1)"
@@ -42,6 +43,11 @@ Options:
   --headless   Launch emulators without a window
   --wipe-data  Wipe data when launching missing emulators
   --list       Print configured AVD names and exit
+
+Environment:
+  NDR_ANDROID_DNS_SERVERS  Comma-separated DNS servers passed to the emulator.
+                           Defaults to 8.8.8.8,1.1.1.1. Set to off to use
+                           the emulator's inherited resolver configuration.
 
 Defaults:
   Medium_Phone_API_36.1
@@ -101,6 +107,9 @@ find_serial_for_avd() {
 launch_visible_avd() {
   local avd_name="$1"
   local cmd="\"${EMULATOR}\" -avd \"${avd_name}\" -gpu swiftshader_indirect"
+  if [[ -n "${DNS_SERVERS}" && "${DNS_SERVERS}" != "off" ]]; then
+    cmd="${cmd} -dns-server \"${DNS_SERVERS}\""
+  fi
   if [[ ${WIPE_DATA} -eq 1 ]]; then
     cmd="${cmd} -wipe-data"
   fi
@@ -114,6 +123,9 @@ launch_headless_avd() {
   local avd_name="$1"
   local log_file="/tmp/${avd_name//[^A-Za-z0-9_.-]/_}.log"
   local args=("${EMULATOR}" -avd "${avd_name}" -no-window -no-audio -gpu swiftshader_indirect)
+  if [[ -n "${DNS_SERVERS}" && "${DNS_SERVERS}" != "off" ]]; then
+    args+=(-dns-server "${DNS_SERVERS}")
+  fi
   if [[ ${WIPE_DATA} -eq 1 ]]; then
     args+=(-wipe-data)
   fi

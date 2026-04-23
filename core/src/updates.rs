@@ -29,6 +29,9 @@ pub(crate) enum InternalEvent {
     RelayEvent(Event),
     RetryPendingOutbound,
     FetchTrackedPeerCatchUp,
+    PollPendingDeviceInvites {
+        token: u64,
+    },
     FetchCatchUpEvents(Vec<Event>),
     FetchPendingDeviceInvites(Vec<Event>),
     DebugLog {

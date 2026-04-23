@@ -4,6 +4,7 @@ This document describes the current Rust architecture after the hard cut away fr
 `owner == device` convenience model.
 
 For a user-facing integration guide, start with [./TUTORIAL.md](./TUTORIAL.md).
+For a compact evidence index behind the group-design comparisons, see [./SOURCES.md](./SOURCES.md).
 
 ## Hard-Cut Summary
 
@@ -162,6 +163,9 @@ Current v1 group rules:
 - group control is revision-based
 - admins are enforced in the core crate
 - v1 uses pairwise fanout, not a separate group ratchet or epoch key
+- `GroupSnapshot::protocol` selects the group semantics, currently `pairwise_fanout_v1`
+- `wire_format_version` is the inner group payload schema version carried inside pairwise payload
+  bytes
 
 ## How To Use It
 

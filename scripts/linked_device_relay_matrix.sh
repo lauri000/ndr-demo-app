@@ -19,8 +19,8 @@ fi
 ADB="${SDK_DIR}/platform-tools/adb"
 EMULATOR="${SDK_DIR}/emulator/emulator"
 HARNESS="${ROOT_DIR}/scripts/run_harness.py"
-RUNNER="social.innode.ndr.demo.test/androidx.test.runner.AndroidJUnitRunner"
-PACKAGE_NAME="social.innode.ndr.demo"
+RUNNER="social.innode.irischat.test/androidx.test.runner.AndroidJUnitRunner"
+PACKAGE_NAME="social.innode.irischat"
 DEFAULT_AVDS=("Pixel_9a" "Medium_Phone_API_36.1" "Pixel_Fold")
 
 if [[ ! -x "${ADB}" ]]; then

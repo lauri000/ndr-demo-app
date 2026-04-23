@@ -365,4 +365,42 @@ final class IrisChatTests: XCTestCase {
         XCTAssertFalse(manager.bootstrapInFlight)
         XCTAssertEqual(rust.dispatchedActions.count, 1)
     }
+
+    @MainActor
+    func testAddAuthorizedDeviceTrimsInputBeforeDispatch() async {
+        let rust = MockRustApp()
+        let store = InMemorySecretStore()
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let manager = AppManager(
+            rust: rust,
+            secretStore: store,
+            dataDir: tempDir,
+            environment: [:]
+        )
+
+        await Task.yield()
+        manager.addAuthorizedDevice(deviceInput: "  device-hex  ")
+
+        XCTAssertEqual(rust.dispatchedActions.last, .addAuthorizedDevice(deviceInput: "device-hex"))
+    }
+
+    @MainActor
+    func testRemoveAuthorizedDeviceTrimsInputBeforeDispatch() async {
+        let rust = MockRustApp()
+        let store = InMemorySecretStore()
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let manager = AppManager(
+            rust: rust,
+            secretStore: store,
+            dataDir: tempDir,
+            environment: [:]
+        )
+
+        await Task.yield()
+        manager.removeAuthorizedDevice(devicePubkeyHex: "  device-hex  ")
+
+        XCTAssertEqual(rust.dispatchedActions.last, .removeAuthorizedDevice(devicePubkeyHex: "device-hex"))
+    }
 }

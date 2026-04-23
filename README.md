@@ -25,6 +25,7 @@ credentials, persist secure side effects, render `AppState`, and forward
 - [Parity matrix](PARITY_MATRIX.md)
 - [Release guide](RELEASE.md)
 - [Android beta release](BETA_RELEASE.md)
+- [Zapstore release](docs/release-zapstore.md)
 
 ## Get Started
 
@@ -66,6 +67,11 @@ cd /path/to/iris-chat-rs-cross-platform
 just android-assemble
 ./scripts/emulator_smoke.sh --clear emulator-5554 emulator-5556 emulator-5558
 ```
+
+The Android emulator launcher passes explicit DNS servers by default because
+relay publishing depends on `wss://` hostname resolution. Override the default
+with `NDR_ANDROID_DNS_SERVERS=1.1.1.1,8.8.8.8 just run-android`, or set
+`NDR_ANDROID_DNS_SERVERS=off` to use the emulator's inherited resolver setup.
 
 Build release artifacts:
 

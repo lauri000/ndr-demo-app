@@ -42,6 +42,8 @@ Core data types:
   pure domain logic.
 - `GroupManager` owns group semantics above `SessionManager` and uses pairwise fanout for v1 group
   control and group messages.
+- `GroupSnapshot::protocol` selects the group semantics, currently `pairwise_fanout_v1`.
+- `wire_format_version` is the inner group payload schema version inside pairwise message bytes.
 - `RosterEditor` is the supported helper for building and editing full roster snapshots outside
   `SessionManager`.
 
@@ -125,3 +127,5 @@ cargo test -p nostr-double-ratchet --manifest-path rust/Cargo.toml
 See [./TUTORIAL.md](./TUTORIAL.md) for the user-facing integration guide.
 See [./ARCHITECTURE.md](./ARCHITECTURE.md) for the current owner/device architecture, invite
 semantics, and recommended integration flow.
+See [./SOURCES.md](./SOURCES.md) for the compact source index behind the current group-architecture
+comparisons and tradeoff discussion.

@@ -214,6 +214,22 @@ final class AppManager: ObservableObject {
         rust.dispatch(action: .startLinkedDevice(ownerInput: normalized))
     }
 
+    func addAuthorizedDevice(deviceInput: String) {
+        let trimmed = deviceInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return
+        }
+        rust.dispatch(action: .addAuthorizedDevice(deviceInput: trimmed))
+    }
+
+    func removeAuthorizedDevice(devicePubkeyHex: String) {
+        let trimmed = devicePubkeyHex.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return
+        }
+        rust.dispatch(action: .removeAuthorizedDevice(devicePubkeyHex: trimmed))
+    }
+
     func copyToClipboard(_ value: String) {
         PlatformClipboard.setString(value)
         showToast("Copied")

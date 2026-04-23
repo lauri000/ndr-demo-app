@@ -21,7 +21,8 @@ if [[ ! -x "${ADB}" ]]; then
   exit 1
 fi
 
-PACKAGE_NAME="social.innode.ndr.demo"
+PACKAGE_NAME="social.innode.irischat"
+MAIN_ACTIVITY="social.innode.ndr.demo.MainActivity"
 APK_PATH="${ROOT_DIR}/android/app/build/outputs/apk/debug/app-debug.apk"
 DEFAULT_DEVICES=("emulator-5554" "emulator-5556")
 
@@ -89,7 +90,7 @@ for device in "${DEVICES[@]}"; do
   fi
 
   echo "Launching ${PACKAGE_NAME} on ${device}"
-  "${ADB}" -s "${device}" shell am start -n "${PACKAGE_NAME}/.MainActivity" >/dev/null
+  "${ADB}" -s "${device}" shell am start -n "${PACKAGE_NAME}/${MAIN_ACTIVITY}" >/dev/null
 done
 
 echo "Smoke setup complete for: ${DEVICES[*]}"

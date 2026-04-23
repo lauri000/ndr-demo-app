@@ -47,15 +47,28 @@ copy_artifact() {
   local basename
   local destination
   local manifest
+  local latest_destination
+  local latest_manifest
 
   ensure_dir "$ANDROID_DIST_DIR"
   basename="$(release_slug "$channel")"
   destination="$ANDROID_DIST_DIR/${basename}.${extension}"
   manifest="$ANDROID_DIST_DIR/${basename}.env"
+  latest_destination="$ANDROID_DIST_DIR/IrisChat-${channel}-latest.${extension}"
+  latest_manifest="$ANDROID_DIST_DIR/IrisChat-${channel}-latest.env"
 
   cp "$source_path" "$destination"
+  cp "$source_path" "$latest_destination"
   write_manifest "$manifest" \
     artifact_path "$destination" \
+    artifact_source "$source_path" \
+    build_channel "$channel" \
+    app_version_name "$NDR_APP_VERSION_NAME" \
+    app_version_code "$NDR_APP_VERSION_CODE" \
+    build_git_sha "$NDR_BUILD_GIT_SHA" \
+    build_timestamp_utc "$NDR_BUILD_TIMESTAMP_UTC"
+  write_manifest "$latest_manifest" \
+    artifact_path "$latest_destination" \
     artifact_source "$source_path" \
     build_channel "$channel" \
     app_version_name "$NDR_APP_VERSION_NAME" \

@@ -1,0 +1,17 @@
+repository: https://github.com/lauri000/iris-chat-rs
+release_source: ./dist/android/IrisChat-release-latest.apk
+identifier: social.innode.irischat
+name: Iris Chat
+summary: Alpha release of Iris Chat, a secure Nostr messenger built on Nostr Double Ratchet.
+description: Alpha release of Iris Chat, a secure Nostr messenger built on Nostr Double Ratchet.
+homepage: https://github.com/lauri000/iris-chat-rs
+license: MIT
+icon: ./android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+tags:
+  - nostr
+  - messaging
+  - chat
+metadata_sources:
+  - github
+release_notes: ./RELEASE.md
+pubkey: npub1dmhju6xrn8y09malwrvrrs4krrt6sj7l6gtnf2q7d47nmqtldpgqgctgtm

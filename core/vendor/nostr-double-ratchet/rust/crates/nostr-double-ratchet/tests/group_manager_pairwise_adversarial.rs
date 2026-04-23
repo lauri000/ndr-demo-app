@@ -1,6 +1,8 @@
 mod support;
 
-use nostr_double_ratchet::{DomainError, Error, GroupIncomingEvent, GroupManager, Result};
+use nostr_double_ratchet::{
+    DomainError, Error, GroupIncomingEvent, GroupManager, GroupProtocol, Result,
+};
 use support::{context, manager_device, roster_for, session_manager};
 
 fn create_remote_owned_group(
@@ -9,10 +11,11 @@ fn create_remote_owned_group(
 ) -> Result<(GroupManager, String)> {
     let mut groups = GroupManager::new(local_owner);
     let payload = serde_json::to_vec(&serde_json::json!({
-        "version": 1,
+        "wire_format_version": 1,
         "payload": {
             "kind": "create_group",
             "group_id": "group-1",
+            "protocol": "pairwise_fanout_v1",
             "base_revision": 0,
             "new_revision": 1,
             "name": "Remote",
@@ -26,9 +29,84 @@ fn create_remote_owned_group(
     let event = groups.handle_incoming(remote_owner, &payload)?;
     assert!(matches!(
         event,
-        Some(GroupIncomingEvent::MetadataUpdated(_))
+        Some(GroupIncomingEvent::MetadataUpdated(snapshot)) if snapshot.protocol == GroupProtocol::PairwiseFanoutV1
     ));
     Ok((groups, "group-1".to_string()))
+}
+
+#[test]
+fn legacy_create_wire_is_ignored() -> Result<()> {
+    let alice = manager_device(29, 231);
+    let bob = manager_device(30, 241);
+    let mut groups = GroupManager::new(alice.owner_pubkey);
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "version": 1,
+        "payload": {
+            "kind": "create_group",
+            "group_id": "legacy-group",
+            "base_revision": 0,
+            "new_revision": 1,
+            "name": "Legacy",
+            "created_by": bob.owner_pubkey,
+            "members": [bob.owner_pubkey, alice.owner_pubkey],
+            "admins": [bob.owner_pubkey],
+            "created_at": 1_900_001_000u64,
+            "updated_at": 1_900_001_000u64
+        }
+    }))?;
+
+    let event = groups.handle_incoming(bob.owner_pubkey, &payload)?;
+    assert!(event.is_none());
+    assert!(groups.group("legacy-group").is_none());
+    Ok(())
+}
+
+#[test]
+fn missing_wire_version_or_protocol_is_ignored() -> Result<()> {
+    let alice = manager_device(31, 251);
+    let bob = manager_device(32, 252);
+    let mut groups = GroupManager::new(alice.owner_pubkey);
+
+    let missing_wire_version = serde_json::to_vec(&serde_json::json!({
+        "payload": {
+            "kind": "create_group",
+            "group_id": "missing-wire-version",
+            "protocol": "pairwise_fanout_v1",
+            "base_revision": 0,
+            "new_revision": 1,
+            "name": "MissingWireVersion",
+            "created_by": bob.owner_pubkey,
+            "members": [bob.owner_pubkey, alice.owner_pubkey],
+            "admins": [bob.owner_pubkey],
+            "created_at": 1_900_001_000u64,
+            "updated_at": 1_900_001_000u64
+        }
+    }))?;
+    assert!(groups
+        .handle_incoming(bob.owner_pubkey, &missing_wire_version)?
+        .is_none());
+    assert!(groups.group("missing-wire-version").is_none());
+
+    let missing_protocol = serde_json::to_vec(&serde_json::json!({
+        "wire_format_version": 1,
+        "payload": {
+            "kind": "create_group",
+            "group_id": "missing-protocol",
+            "base_revision": 0,
+            "new_revision": 1,
+            "name": "MissingProtocol",
+            "created_by": bob.owner_pubkey,
+            "members": [bob.owner_pubkey, alice.owner_pubkey],
+            "admins": [bob.owner_pubkey],
+            "created_at": 1_900_001_000u64,
+            "updated_at": 1_900_001_000u64
+        }
+    }))?;
+    assert!(groups
+        .handle_incoming(bob.owner_pubkey, &missing_protocol)?
+        .is_none());
+    assert!(groups.group("missing-protocol").is_none());
+    Ok(())
 }
 
 #[test]
@@ -148,7 +226,7 @@ fn incoming_control_from_non_admin_and_wrong_revision_message_are_rejected() -> 
     let (mut groups, group_id) = create_remote_owned_group(alice.owner_pubkey, bob.owner_pubkey)?;
 
     let unauthorized_rename = serde_json::to_vec(&serde_json::json!({
-        "version": 1,
+        "wire_format_version": 1,
         "payload": {
             "kind": "rename_group",
             "group_id": group_id,
@@ -165,7 +243,7 @@ fn incoming_control_from_non_admin_and_wrong_revision_message_are_rejected() -> 
     ));
 
     let wrong_revision_message = serde_json::to_vec(&serde_json::json!({
-        "version": 1,
+        "wire_format_version": 1,
         "payload": {
             "kind": "group_message",
             "group_id": group_id,
@@ -189,10 +267,11 @@ fn duplicate_create_is_idempotent_and_unknown_group_message_is_rejected() -> Res
     let (mut groups, _group_id) = create_remote_owned_group(alice.owner_pubkey, bob.owner_pubkey)?;
 
     let duplicate_create = serde_json::to_vec(&serde_json::json!({
-        "version": 1,
+        "wire_format_version": 1,
         "payload": {
             "kind": "create_group",
             "group_id": "group-1",
+            "protocol": "pairwise_fanout_v1",
             "base_revision": 0,
             "new_revision": 1,
             "name": "Remote",
@@ -209,7 +288,7 @@ fn duplicate_create_is_idempotent_and_unknown_group_message_is_rejected() -> Res
     );
 
     let unknown_message = serde_json::to_vec(&serde_json::json!({
-        "version": 1,
+        "wire_format_version": 1,
         "payload": {
             "kind": "group_message",
             "group_id": "missing-group",
@@ -233,7 +312,7 @@ fn duplicate_rename_is_idempotent() -> Result<()> {
     let (mut groups, group_id) = create_remote_owned_group(alice.owner_pubkey, bob.owner_pubkey)?;
 
     let rename = serde_json::to_vec(&serde_json::json!({
-        "version": 1,
+        "wire_format_version": 1,
         "payload": {
             "kind": "rename_group",
             "group_id": group_id,
@@ -252,6 +331,51 @@ fn duplicate_rename_is_idempotent() -> Result<()> {
     assert!(
         matches!(second, Some(GroupIncomingEvent::MetadataUpdated(snapshot)) if snapshot.revision == 2 && snapshot.name == "Renamed")
     );
+    Ok(())
+}
+
+#[test]
+fn create_and_sync_reject_unknown_protocol() -> Result<()> {
+    let alice = manager_device(19, 191);
+    let bob = manager_device(20, 201);
+    let (mut groups, group_id) = create_remote_owned_group(alice.owner_pubkey, bob.owner_pubkey)?;
+
+    let unknown_create = serde_json::to_vec(&serde_json::json!({
+        "wire_format_version": 1,
+        "payload": {
+            "kind": "create_group",
+            "group_id": group_id,
+            "protocol": "sender_key_v1",
+            "base_revision": 0,
+            "new_revision": 1,
+            "name": "Remote",
+            "created_by": bob.owner_pubkey,
+            "members": [bob.owner_pubkey, alice.owner_pubkey],
+            "admins": [bob.owner_pubkey],
+            "created_at": 1_900_001_000u64,
+            "updated_at": 1_900_001_000u64
+        }
+    }))?;
+    let create = groups.handle_incoming(bob.owner_pubkey, &unknown_create);
+    assert!(matches!(create, Ok(None)));
+
+    let unknown_sync = serde_json::to_vec(&serde_json::json!({
+        "wire_format_version": 1,
+        "payload": {
+            "kind": "sync_group",
+            "group_id": "group-1",
+            "protocol": "sender_key_v1",
+            "revision": 1,
+            "name": "Remote",
+            "created_by": bob.owner_pubkey,
+            "members": [bob.owner_pubkey, alice.owner_pubkey],
+            "admins": [bob.owner_pubkey],
+            "created_at": 1_900_001_000u64,
+            "updated_at": 1_900_001_000u64
+        }
+    }))?;
+    let sync = groups.handle_incoming(alice.owner_pubkey, &unknown_sync);
+    assert!(matches!(sync, Ok(None)));
     Ok(())
 }
 

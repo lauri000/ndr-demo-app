@@ -26,6 +26,7 @@ val androidSdkDir =
         ?: System.getenv("ANDROID_HOME")
         ?: System.getenv("ANDROID_SDK_ROOT")
         ?: error("Android SDK path was not found. Define sdk.dir in android/local.properties.")
+val androidAppId = "social.innode.irischat"
 val androidNdkDir = file("$androidSdkDir/ndk/$ndkVersionValue")
 val cargoBinary = file("${System.getProperty("user.home")}/.cargo/bin/cargo")
 val publicRelayFallbackCsv = "wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net"
@@ -113,11 +114,12 @@ android {
     ndkVersion = ndkVersionValue
 
     defaultConfig {
-        applicationId = "social.innode.ndr.demo"
+        applicationId = androidAppId
         minSdk = 26
         targetSdk = 36
         versionCode = appVersionCode
         versionName = appVersionName
+        testApplicationId = "$androidAppId.test"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testInstrumentationRunnerArguments["clearPackageData"] = "true"
 
@@ -238,6 +240,13 @@ val buildRustHostDebug by tasks.registering(Exec::class) {
     inputs.file(rustManifestPath)
     inputs.file(rustAppDir.resolve("uniffi.toml"))
     inputs.dir(rustSourceDir)
+    inputs.property("ndrAppVersion", appVersionName)
+    inputs.property("ndrBuildChannel", "debug")
+    inputs.property("ndrBuildGitSha", buildGitSha)
+    inputs.property("ndrBuildTimestampUtc", buildTimestampUtc)
+    inputs.property("ndrDefaultRelays", debugRelayConfig.relaysCsv)
+    inputs.property("ndrRelaySetId", debugRelayConfig.relaySetId)
+    inputs.property("ndrTrustedTestBuild", debugRelayConfig.trustedTestBuild)
     outputs.file(hostLibraryFile)
 }
 
@@ -319,6 +328,13 @@ fun registerRustAndroidTask(
         inputs.file(rustManifestPath)
         inputs.file(rustAppDir.resolve("uniffi.toml"))
         inputs.dir(rustSourceDir)
+        inputs.property("ndrAppVersion", appVersionName)
+        inputs.property("ndrBuildChannel", buildChannel)
+        inputs.property("ndrBuildGitSha", buildGitSha)
+        inputs.property("ndrBuildTimestampUtc", buildTimestampUtc)
+        inputs.property("ndrDefaultRelays", relayConfig.relaysCsv)
+        inputs.property("ndrRelaySetId", relayConfig.relaySetId)
+        inputs.property("ndrTrustedTestBuild", relayConfig.trustedTestBuild)
         outputs.dir(generatedJniDir)
     }
 
