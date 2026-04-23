@@ -12,5 +12,5 @@ tags:
   - chat
 metadata_sources:
   - github
-release_notes: ./RELEASE.md
+release_notes: ./ZAPSTORE_RELEASE_NOTES.md
 pubkey: npub1dmhju6xrn8y09malwrvrrs4krrt6sj7l6gtnf2q7d47nmqtldpgqgctgtm

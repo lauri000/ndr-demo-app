@@ -232,23 +232,26 @@ NDR_APP_VERSION_NAME=0.1.1
 NDR_APP_VERSION_CODE=2
 ```
 
-2. Run the normal release/test gate you want for this build.
+2. Update `ZAPSTORE_RELEASE_NOTES.md` with the public notes you want shown in
+   Zapstore.
 
-3. Build and validate the Zapstore APK:
+3. Run the normal release/test gate you want for this build.
+
+4. Build and validate the Zapstore APK:
 
 ```bash
 ./scripts/publish-zapstore-android.sh check
 ```
 
-4. Publish:
+5. Publish:
 
 ```bash
 ./scripts/publish-zapstore-android.sh publish
 ```
 
-5. Confirm the new release appears in Zapstore.
+6. Confirm the new release appears in Zapstore.
 
-6. Update your password manager if any local secret changed.
+7. Update your password manager if any local secret changed.
 
 ## Useful Verification Commands
 
