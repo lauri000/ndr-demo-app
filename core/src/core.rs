@@ -279,6 +279,7 @@ struct ProtocolSubscriptionRuntime {
     applying_plan: Option<ProtocolSubscriptionPlan>,
     refresh_in_flight: bool,
     refresh_dirty: bool,
+    force_refresh_dirty: bool,
     refresh_token: u64,
 }
 
@@ -585,6 +586,7 @@ impl AppCore {
                 device_nsec,
             } => self.restore_account_bundle(owner_nsec, &owner_pubkey_hex, &device_nsec),
             AppAction::StartLinkedDevice { owner_input } => self.start_linked_device(&owner_input),
+            AppAction::AppForegrounded => self.handle_app_foregrounded(),
             AppAction::Logout => self.logout(),
             AppAction::CreateChat { peer_input } => self.create_chat(&peer_input),
             AppAction::CreateGroup {
@@ -639,7 +641,8 @@ impl AppCore {
                 }
             }
             InternalEvent::PollPendingDeviceInvites { token } => {
-                if token != self.device_invite_poll_token || !self.can_poll_pending_device_invites() {
+                if token != self.device_invite_poll_token || !self.can_poll_pending_device_invites()
+                {
                     return;
                 }
                 self.fetch_pending_device_invites_for_local_owner();
@@ -731,8 +734,10 @@ impl AppCore {
                     self.push_debug_log("protocol.subscription.failed", "apply returned false");
                 }
                 if self.protocol_subscription_runtime.refresh_dirty {
+                    let force_refresh = self.protocol_subscription_runtime.force_refresh_dirty;
                     self.protocol_subscription_runtime.refresh_dirty = false;
-                    self.request_protocol_subscription_refresh();
+                    self.protocol_subscription_runtime.force_refresh_dirty = false;
+                    self.request_protocol_subscription_refresh_inner(force_refresh);
                 }
             }
             InternalEvent::SyncComplete => {
@@ -763,6 +768,43 @@ impl AppCore {
 
         self.state.busy.creating_account = false;
         self.rebuild_state();
+        self.emit_state();
+    }
+
+    fn handle_app_foregrounded(&mut self) {
+        if self.logged_in.is_none() {
+            return;
+        }
+
+        let now = unix_now();
+        self.push_debug_log("app.foreground", "refresh relay session");
+        self.schedule_session_connect();
+        self.request_protocol_subscription_refresh_forced();
+        self.fetch_recent_protocol_state();
+        self.fetch_recent_messages_for_tracked_peers(now);
+        if self.can_poll_pending_device_invites() {
+            self.fetch_pending_device_invites_for_local_owner();
+            self.schedule_pending_device_invite_poll(Duration::from_secs(
+                DEVICE_INVITE_DISCOVERY_POLL_SECS,
+            ));
+        }
+
+        for pending in &mut self.pending_outbound {
+            if !pending.in_flight {
+                pending.next_retry_at_secs = now.get();
+            }
+        }
+        for pending in &mut self.pending_group_controls {
+            if !pending.in_flight {
+                pending.next_retry_at_secs = now.get();
+            }
+        }
+        self.retry_pending_outbound(now);
+        self.retry_pending_group_controls(now);
+        self.schedule_next_pending_retry(now.get());
+        self.state.busy.syncing_network = true;
+        self.rebuild_state();
+        self.persist_best_effort();
         self.emit_state();
     }
 
@@ -4891,6 +4933,14 @@ impl AppCore {
     }
 
     fn request_protocol_subscription_refresh(&mut self) {
+        self.request_protocol_subscription_refresh_inner(false);
+    }
+
+    fn request_protocol_subscription_refresh_forced(&mut self) {
+        self.request_protocol_subscription_refresh_inner(true);
+    }
+
+    fn request_protocol_subscription_refresh_inner(&mut self, force: bool) {
         let Some(client) = self
             .logged_in
             .as_ref()
@@ -4903,6 +4953,7 @@ impl AppCore {
         if self.protocol_subscription_runtime.refresh_in_flight {
             self.push_debug_log("protocol.subscription.defer", "refresh already in flight");
             self.protocol_subscription_runtime.refresh_dirty = true;
+            self.protocol_subscription_runtime.force_refresh_dirty |= force;
             return;
         }
 
@@ -4911,7 +4962,7 @@ impl AppCore {
             "protocol.subscription.compute",
             summarize_protocol_plan(plan.as_ref()),
         );
-        if self.protocol_subscription_runtime.current_plan == plan {
+        if !force && self.protocol_subscription_runtime.current_plan == plan {
             self.push_debug_log("protocol.subscription.noop", "plan unchanged");
             return;
         }
@@ -4919,6 +4970,7 @@ impl AppCore {
         let subscription_id = SubscriptionId::new(PROTOCOL_SUBSCRIPTION_ID);
         self.protocol_subscription_runtime.refresh_in_flight = true;
         self.protocol_subscription_runtime.refresh_dirty = false;
+        self.protocol_subscription_runtime.force_refresh_dirty = false;
         self.protocol_subscription_runtime.refresh_token = self
             .protocol_subscription_runtime
             .refresh_token
@@ -4933,6 +4985,9 @@ impl AppCore {
         let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
             let mut applied = true;
+            client
+                .connect_with_timeout(Duration::from_secs(RELAY_CONNECT_TIMEOUT_SECS))
+                .await;
             if had_previous {
                 let _ = client.unsubscribe(subscription_id.clone()).await;
             }
@@ -6424,8 +6479,7 @@ mod tests {
         .expect("write old version persistence");
 
         let mut core = test_core(data_dir.path());
-        start_primary_test_session(&mut core, 31, true, false)
-            .expect("ignore old version state");
+        start_primary_test_session(&mut core, 31, true, false).expect("ignore old version state");
         assert!(core.active_chat_id.is_none());
         assert!(core.state.chat_list.is_empty());
 
@@ -6442,8 +6496,7 @@ mod tests {
         .expect("write unversioned persistence");
 
         let mut core = test_core(data_dir.path());
-        start_primary_test_session(&mut core, 31, true, false)
-            .expect("ignore unversioned state");
+        start_primary_test_session(&mut core, 31, true, false).expect("ignore unversioned state");
         assert!(core.active_chat_id.is_none());
         assert!(core.state.chat_list.is_empty());
     }
@@ -6540,10 +6593,7 @@ mod tests {
         let mut core = test_core(data_dir.path());
 
         core.push_screen(Screen::CreateAccount);
-        assert!(matches!(
-            core.state.router.default_screen,
-            Screen::Welcome
-        ));
+        assert!(matches!(core.state.router.default_screen, Screen::Welcome));
         assert!(matches!(
             core.state.router.screen_stack.as_slice(),
             [Screen::CreateAccount]
@@ -6577,9 +6627,18 @@ mod tests {
 
         assert!(matches!(core.state.router.default_screen, Screen::Welcome));
         assert_eq!(core.state.router.screen_stack.len(), 3);
-        assert!(matches!(core.state.router.screen_stack[0], Screen::CreateAccount));
-        assert!(matches!(core.state.router.screen_stack[1], Screen::RestoreAccount));
-        assert!(matches!(core.state.router.screen_stack[2], Screen::AddDevice));
+        assert!(matches!(
+            core.state.router.screen_stack[0],
+            Screen::CreateAccount
+        ));
+        assert!(matches!(
+            core.state.router.screen_stack[1],
+            Screen::RestoreAccount
+        ));
+        assert!(matches!(
+            core.state.router.screen_stack[2],
+            Screen::AddDevice
+        ));
         assert!(core.state.account.is_none());
         assert!(core.state.current_chat.is_none());
     }

@@ -1,5 +1,5 @@
-# Iris Chat 0.1.0
+# Iris Chat 0.1.1
 
-Initial alpha release of Iris Chat, a secure Nostr messenger built on Nostr Double Ratchet.
+Bugfix alpha release for relay reconnection after the app returns from the background.
 
-This Android build is intended for early testing.
+The app now refreshes relay sessions, subscriptions, catch-up, and pending publishes when it is foregrounded.

@@ -154,6 +154,10 @@ class AppManager(
         rust.dispatch(action)
     }
 
+    fun appForegrounded() {
+        rust.dispatch(AppAction.AppForegrounded)
+    }
+
     fun createChat(peerInput: String) {
         val trimmed = peerInput.trim()
         if (trimmed.isEmpty()) {

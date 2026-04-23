@@ -87,6 +87,16 @@ class AppManagerContractTest {
     }
 
     @Test
+    fun foreground_dispatches_relay_refresh_action() {
+        val appManager = createManager()
+        val rust = rustFactory.instances.single()
+
+        appManager.appForegrounded()
+
+        assertTrue(rust.dispatchedActions.contains(AppAction.AppForegrounded))
+    }
+
+    @Test
     fun restore_from_stored_bundle_dispatches_restore_account_bundle() {
         persistStoredSecret(
             StoredAccountBundle(

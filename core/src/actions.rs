@@ -16,6 +16,7 @@ pub enum AppAction {
     StartLinkedDevice {
         owner_input: String,
     },
+    AppForegrounded,
     Logout,
     CreateChat {
         peer_input: String,
