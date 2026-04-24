@@ -19,6 +19,23 @@ pub(super) struct ThreadRecord {
     pub(super) messages: Vec<ChatMessageSnapshot>,
 }
 
+impl ThreadRecord {
+    pub(super) fn insert_message_sorted(&mut self, message: ChatMessageSnapshot) {
+        let position = self
+            .messages
+            .partition_point(|existing| message_order_key(existing) <= message_order_key(&message));
+        self.messages.insert(position, message);
+    }
+}
+
+fn message_order_key(message: &ChatMessageSnapshot) -> (u64, u64, &str) {
+    (
+        message.created_at_secs,
+        message.id.parse::<u64>().unwrap_or(u64::MAX),
+        message.id.as_str(),
+    )
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub(super) enum PendingInbound {

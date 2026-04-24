@@ -31,7 +31,7 @@ Compared against `~/src/iris-chat-flutter` on 2026-04-24. Sources used include F
 - [ ] Invite response subscription for active invites without relying on fixed fetch windows. Flutter coverage: `test/unit/core/utils/invite_response_subscription_test.dart`.
 - [ ] Group metadata notices and chat settings notices.
 - [x] Group member profile-name presentation parity in all member lists.
-- [ ] Burst incoming message ordering and visibility parity with Flutter macOS e2e tests.
+- [x] Burst incoming message ordering and visibility parity with Flutter macOS e2e tests.
 
 ## Profile, Identity, And Devices
 

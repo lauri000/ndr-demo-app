@@ -946,6 +946,36 @@ fn established_send_stays_pending_until_publish_ack() {
 }
 
 #[test]
+fn incoming_messages_are_chronological_when_relay_events_arrive_out_of_order() {
+    let data_dir = TempDir::new().expect("temp dir");
+    let mut core = test_core(data_dir.path());
+    let chat_id = "chat-peer";
+
+    core.push_incoming_message_from(chat_id, "newer".to_string(), 30, Some("peer".to_string()));
+    core.push_incoming_message_from(chat_id, "older".to_string(), 10, Some("peer".to_string()));
+    core.push_incoming_message_from(chat_id, "middle".to_string(), 20, Some("peer".to_string()));
+    core.rebuild_state();
+
+    let thread = core.threads.get(chat_id).expect("thread");
+    let bodies = thread
+        .messages
+        .iter()
+        .map(|message| message.body.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(bodies, ["older", "middle", "newer"]);
+    assert_eq!(thread.updated_at_secs, 30);
+
+    let current = core
+        .state
+        .chat_list
+        .iter()
+        .find(|thread| thread.chat_id == chat_id)
+        .expect("chat list thread");
+    assert_eq!(current.last_message_preview.as_deref(), Some("newer"));
+    assert_eq!(current.last_message_at_secs, Some(30));
+}
+
+#[test]
 fn create_group_routes_into_group_chat() {
     let _guard = relay_test_lock()
         .lock()

@@ -844,10 +844,9 @@ impl AppCore {
                 updated_at_secs: created_at_secs,
                 messages: Vec::new(),
             })
-            .messages
-            .push(message.clone());
+            .insert_message_sorted(message.clone());
         if let Some(thread) = self.threads.get_mut(chat_id) {
-            thread.updated_at_secs = created_at_secs;
+            thread.updated_at_secs = thread.updated_at_secs.max(created_at_secs);
         }
         message
     }
@@ -873,9 +872,9 @@ impl AppCore {
         if self.active_chat_id.as_deref() != Some(chat_id) {
             thread.unread_count = thread.unread_count.saturating_add(1);
         }
-        thread.updated_at_secs = created_at_secs;
+        thread.updated_at_secs = thread.updated_at_secs.max(created_at_secs);
         let (body, attachments) = extract_message_attachments(&body);
-        thread.messages.push(ChatMessageSnapshot {
+        thread.insert_message_sorted(ChatMessageSnapshot {
             id: message_id,
             chat_id: chat_id.to_string(),
             author,
