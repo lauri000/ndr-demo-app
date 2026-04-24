@@ -887,6 +887,41 @@ impl AppCore {
         });
     }
 
+    pub(super) fn push_system_notice(&mut self, chat_id: &str, body: String, created_at_secs: u64) {
+        let message_id = self.allocate_message_id();
+        let thread = self
+            .threads
+            .entry(chat_id.to_string())
+            .or_insert_with(|| ThreadRecord {
+                chat_id: chat_id.to_string(),
+                unread_count: 0,
+                updated_at_secs: created_at_secs,
+                messages: Vec::new(),
+            });
+        if thread
+            .messages
+            .iter()
+            .any(|message| message.author == "Iris" && message.body == body)
+        {
+            return;
+        }
+        if self.active_chat_id.as_deref() != Some(chat_id) {
+            thread.unread_count = thread.unread_count.saturating_add(1);
+        }
+        thread.updated_at_secs = thread.updated_at_secs.max(created_at_secs);
+        thread.insert_message_sorted(ChatMessageSnapshot {
+            id: message_id,
+            chat_id: chat_id.to_string(),
+            author: "Iris".to_string(),
+            body,
+            attachments: Vec::new(),
+            reactions: Vec::new(),
+            is_outgoing: false,
+            created_at_secs,
+            delivery: DeliveryState::Received,
+        });
+    }
+
     pub(super) fn toggle_reaction(&mut self, chat_id: &str, message_id: &str, emoji: &str) {
         let emoji = emoji.trim();
         if chat_id.is_empty() || message_id.is_empty() || emoji.is_empty() {
@@ -1021,9 +1056,14 @@ impl AppCore {
     pub(super) fn apply_group_metadata_update(
         &mut self,
         group: GroupSnapshot,
+        previous: Option<GroupSnapshot>,
         created_at_secs: u64,
     ) {
-        self.apply_group_snapshot_to_threads(&group, created_at_secs.max(group.updated_at.get()));
+        self.apply_group_snapshot_to_threads_with_notices(
+            previous.as_ref(),
+            &group,
+            created_at_secs.max(group.updated_at.get()),
+        );
     }
 
     pub(super) fn apply_decrypted_payload(
@@ -1034,6 +1074,20 @@ impl AppCore {
     ) -> anyhow::Result<()> {
         let local_owner = self.logged_in.as_ref().expect("logged in").owner_pubkey;
 
+        let previous_groups = self
+            .logged_in
+            .as_ref()
+            .map(|logged_in| {
+                logged_in
+                    .group_manager
+                    .snapshot()
+                    .groups
+                    .into_iter()
+                    .map(|group| (group.group_id.clone(), group))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+
         let group_event = {
             let logged_in = self.logged_in.as_mut().expect("logged in");
             logged_in
@@ -1043,7 +1097,8 @@ impl AppCore {
 
         match group_event {
             Some(GroupIncomingEvent::MetadataUpdated(group)) => {
-                self.apply_group_metadata_update(group, created_at_secs);
+                let previous = previous_groups.get(&group.group_id).cloned();
+                self.apply_group_metadata_update(group, previous, created_at_secs);
             }
             Some(GroupIncomingEvent::Message(group_message)) => {
                 let decoded = decode_app_group_message_payload(&group_message.body)

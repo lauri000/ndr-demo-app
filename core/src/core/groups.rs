@@ -329,6 +329,68 @@ impl AppCore {
         thread.updated_at_secs = thread.updated_at_secs.max(updated_at_secs);
     }
 
+    pub(super) fn apply_group_snapshot_to_threads_with_notices(
+        &mut self,
+        previous: Option<&GroupSnapshot>,
+        group: &GroupSnapshot,
+        updated_at_secs: u64,
+    ) {
+        self.apply_group_snapshot_to_threads(group, updated_at_secs);
+        let chat_id = group_chat_id(&group.group_id);
+        for notice in self.group_metadata_notices(previous, group) {
+            self.push_system_notice(&chat_id, notice, updated_at_secs);
+        }
+    }
+
+    pub(super) fn group_metadata_notices(
+        &self,
+        previous: Option<&GroupSnapshot>,
+        group: &GroupSnapshot,
+    ) -> Vec<String> {
+        let Some(previous) = previous else {
+            return Vec::new();
+        };
+        let mut notices = Vec::new();
+        if previous.name != group.name {
+            notices.push(format!("Group renamed to {}", group.name));
+        }
+
+        let previous_members = previous.members.iter().copied().collect::<HashSet<_>>();
+        let current_members = group.members.iter().copied().collect::<HashSet<_>>();
+        let mut added = current_members
+            .difference(&previous_members)
+            .copied()
+            .collect::<Vec<_>>();
+        let mut removed = previous_members
+            .difference(&current_members)
+            .copied()
+            .collect::<Vec<_>>();
+        added.sort_by_key(|owner| owner.to_string());
+        removed.sort_by_key(|owner| owner.to_string());
+
+        if !added.is_empty() {
+            notices.push(format!(
+                "{} added",
+                self.group_notice_owner_list(added.as_slice())
+            ));
+        }
+        if !removed.is_empty() {
+            notices.push(format!(
+                "{} removed",
+                self.group_notice_owner_list(removed.as_slice())
+            ));
+        }
+        notices
+    }
+
+    fn group_notice_owner_list(&self, owners: &[OwnerPubkey]) -> String {
+        match owners {
+            [] => String::new(),
+            [owner] => self.owner_display_label(&owner.to_string()),
+            owners => format!("{} members", owners.len()),
+        }
+    }
+
     pub(super) fn queue_pending_group_control(
         &mut self,
         operation_id: String,
@@ -601,10 +663,18 @@ impl AppCore {
         self.emit_state();
 
         let now = unix_now();
+        let previous_group = self
+            .logged_in
+            .as_ref()
+            .and_then(|logged_in| logged_in.group_manager.group(&group_id));
         let control_result = self.prepare_group_control(&group_id, &kind, now);
         match control_result {
             Ok((snapshot, target_owner_hexes, prepared)) => {
-                self.apply_group_snapshot_to_threads(&snapshot, now.get());
+                self.apply_group_snapshot_to_threads_with_notices(
+                    previous_group.as_ref(),
+                    &snapshot,
+                    now.get(),
+                );
                 self.publish_group_local_sibling_best_effort(&prepared);
                 if let Some(reason) = pending_reason_from_group_prepared(&prepared) {
                     let operation_id = self.allocate_message_id();

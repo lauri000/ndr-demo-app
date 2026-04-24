@@ -1045,6 +1045,53 @@ fn incoming_group_metadata_creates_group_thread() {
 }
 
 #[test]
+fn group_metadata_changes_add_visible_notices_to_thread() {
+    let data_dir = TempDir::new().expect("temp dir");
+    let mut core = test_core(data_dir.path());
+    let owner = local_owner_from_keys(&keys_for_fill(90));
+    let first_member = local_owner_from_keys(&keys_for_fill(91));
+    let second_member = local_owner_from_keys(&keys_for_fill(92));
+    let group_id = "notice-group".to_string();
+    let previous = GroupSnapshot {
+        group_id: group_id.clone(),
+        protocol: nostr_double_ratchet::GroupProtocol::PairwiseFanoutV1,
+        name: "Old name".to_string(),
+        created_by: owner,
+        members: vec![owner, first_member],
+        admins: vec![owner],
+        revision: 1,
+        created_at: UnixSeconds(100),
+        updated_at: UnixSeconds(100),
+    };
+    let updated = GroupSnapshot {
+        name: "New name".to_string(),
+        members: vec![owner, first_member, second_member],
+        revision: 2,
+        updated_at: UnixSeconds(120),
+        ..previous.clone()
+    };
+
+    core.apply_group_snapshot_to_threads(&previous, previous.updated_at.get());
+    core.apply_group_snapshot_to_threads_with_notices(Some(&previous), &updated, 120);
+    core.rebuild_state();
+
+    let chat_id = group_chat_id(&group_id);
+    let thread = core.threads.get(&chat_id).expect("group thread");
+    let notices = thread
+        .messages
+        .iter()
+        .map(|message| message.body.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(notices.len(), 2);
+    assert_eq!(notices[0], "Group renamed to New name");
+    assert!(notices[1].ends_with(" added"));
+    assert_eq!(
+        core.state.chat_list[0].last_message_preview.as_deref(),
+        Some(notices[1])
+    );
+}
+
+#[test]
 fn incoming_group_message_routes_to_group_thread() {
     let _guard = relay_test_lock()
         .lock()
