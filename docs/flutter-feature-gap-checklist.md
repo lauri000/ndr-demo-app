@@ -16,7 +16,7 @@ Compared against `~/src/iris-chat-flutter` on 2026-04-24. Sources used include F
 - [x] Desktop emoji button and inline emoji picker. Flutter coverage: `test/widget/message_input_test.dart`.
 - [x] Hover action dock on desktop message bubbles with reply, react, and more. Flutter coverage: `test/widget/chat_message_bubble_test.dart`, `integration_test/message_actions_macos_suite.dart`.
 - [x] Reply-to message composer state and reply rendering.
-- [ ] Emoji reactions, reaction aggregation, and reaction push notification text. Flutter coverage: `test/unit/core/utils/reaction_updates_test.dart`.
+- [x] Emoji reactions, reaction aggregation, and reaction push notification text. Flutter coverage: `test/unit/core/utils/reaction_updates_test.dart`.
 - [x] Local message delete action.
 - [x] Tappable HTTP/www links inside message text. Flutter coverage: `test/widget/chat_message_bubble_test.dart`.
 - [x] Inline image attachment preview, fullscreen image viewer, and Escape-to-close on desktop. Flutter coverage: `test/widget/chat_message_bubble_test.dart`.

@@ -1,4 +1,7 @@
 use super::*;
+use crate::core::chats::{
+    apply_incoming_reaction, reaction_notification_body, toggle_local_reaction,
+};
 use crate::local_relay::{matches_filter, TestRelay};
 use crate::FfiApp;
 use nostr_double_ratchet::AuthorizedDevice;
@@ -555,6 +558,38 @@ fn local_reactions_and_deletes_are_core_state_and_persist() {
     assert_eq!(restored_messages[0].id, "1");
     assert_eq!(restored_messages[0].reactions[0].emoji, "❤️");
     assert!(restored_messages[0].reactions[0].reacted_by_me);
+}
+
+#[test]
+fn reaction_updates_aggregate_and_format_notification_text() {
+    let mut message = ChatMessageSnapshot {
+        id: "1".to_string(),
+        chat_id: "chat".to_string(),
+        author: "peer".to_string(),
+        body: "Nice image".to_string(),
+        attachments: Vec::new(),
+        reactions: Vec::new(),
+        is_outgoing: false,
+        created_at_secs: 1,
+        delivery: DeliveryState::Received,
+    };
+
+    assert!(apply_incoming_reaction(&mut message, "🔥"));
+    toggle_local_reaction(&mut message, "🔥");
+    assert_eq!(message.reactions.len(), 1);
+    assert_eq!(message.reactions[0].emoji, "🔥");
+    assert_eq!(message.reactions[0].count, 2);
+    assert!(message.reactions[0].reacted_by_me);
+
+    toggle_local_reaction(&mut message, "🔥");
+    assert_eq!(message.reactions[0].count, 1);
+    assert!(!message.reactions[0].reacted_by_me);
+
+    assert_eq!(
+        reaction_notification_body("🔥", "Nice image"),
+        "Reaction 🔥 to \"Nice image\""
+    );
+    assert_eq!(reaction_notification_body("❤️", ""), "New reaction ❤️");
 }
 
 #[test]

@@ -937,34 +937,7 @@ impl AppCore {
         else {
             return;
         };
-        if let Some(index) = message
-            .reactions
-            .iter()
-            .position(|reaction| reaction.emoji == emoji)
-        {
-            let reaction = &mut message.reactions[index];
-            if reaction.reacted_by_me {
-                reaction.reacted_by_me = false;
-                reaction.count = reaction.count.saturating_sub(1);
-                if reaction.count == 0 {
-                    message.reactions.remove(index);
-                }
-            } else {
-                reaction.reacted_by_me = true;
-                reaction.count = reaction.count.saturating_add(1);
-            }
-        } else {
-            message.reactions.push(MessageReactionSnapshot {
-                emoji: emoji.to_string(),
-                count: 1,
-                reacted_by_me: true,
-            });
-        }
-        message.reactions.sort_by(|left, right| {
-            left.emoji
-                .cmp(&right.emoji)
-                .then_with(|| right.count.cmp(&left.count))
-        });
+        toggle_local_reaction(message, emoji);
         self.persist_best_effort();
         self.rebuild_state();
         self.emit_state();
@@ -1128,5 +1101,93 @@ impl AppCore {
         let id = self.next_message_id;
         self.next_message_id = self.next_message_id.saturating_add(1);
         id.to_string()
+    }
+}
+
+pub(super) fn toggle_local_reaction(message: &mut ChatMessageSnapshot, emoji: &str) {
+    let emoji = emoji.trim();
+    if emoji.is_empty() {
+        return;
+    }
+    if let Some(index) = message
+        .reactions
+        .iter()
+        .position(|reaction| reaction.emoji == emoji)
+    {
+        let reaction = &mut message.reactions[index];
+        if reaction.reacted_by_me {
+            reaction.reacted_by_me = false;
+            reaction.count = reaction.count.saturating_sub(1);
+            if reaction.count == 0 {
+                message.reactions.remove(index);
+            }
+        } else {
+            reaction.reacted_by_me = true;
+            reaction.count = reaction.count.saturating_add(1);
+        }
+    } else {
+        message.reactions.push(MessageReactionSnapshot {
+            emoji: emoji.to_string(),
+            count: 1,
+            reacted_by_me: true,
+        });
+    }
+    sort_message_reactions(&mut message.reactions);
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn apply_incoming_reaction(message: &mut ChatMessageSnapshot, emoji: &str) -> bool {
+    let emoji = emoji.trim();
+    if emoji.is_empty() {
+        return false;
+    }
+    if let Some(reaction) = message
+        .reactions
+        .iter_mut()
+        .find(|reaction| reaction.emoji == emoji)
+    {
+        reaction.count = reaction.count.saturating_add(1);
+    } else {
+        message.reactions.push(MessageReactionSnapshot {
+            emoji: emoji.to_string(),
+            count: 1,
+            reacted_by_me: false,
+        });
+    }
+    sort_message_reactions(&mut message.reactions);
+    true
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn reaction_notification_body(emoji: &str, target_preview: &str) -> String {
+    let emoji = emoji.trim();
+    let target_preview = target_preview.trim();
+    if target_preview.is_empty() {
+        format!("New reaction {emoji}")
+    } else {
+        format!(
+            "Reaction {emoji} to \"{}\"",
+            truncate_reaction_preview(target_preview)
+        )
+    }
+}
+
+fn sort_message_reactions(reactions: &mut [MessageReactionSnapshot]) {
+    reactions.sort_by(|left, right| {
+        left.emoji
+            .cmp(&right.emoji)
+            .then_with(|| right.count.cmp(&left.count))
+    });
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn truncate_reaction_preview(preview: &str) -> String {
+    const MAX_CHARS: usize = 80;
+    let mut chars = preview.chars();
+    let truncated = chars.by_ref().take(MAX_CHARS).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
     }
 }
