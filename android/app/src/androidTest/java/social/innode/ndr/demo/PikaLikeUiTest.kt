@@ -17,6 +17,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.test.espresso.Espresso.pressBack
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -157,7 +158,7 @@ class PikaLikeUiTest {
     }
 
     @Test
-    fun enter_key_sends_message_locally() {
+    fun enter_key_keeps_mobile_draft_unsent() {
         composeRule.ensureChatList()
         composeRule.onNodeWithTag("chatListNewChatButton", useUnmergedTree = true).performClick()
         composeRule.waitForTag("chatListNewChatOption")
@@ -181,6 +182,10 @@ class PikaLikeUiTest {
                 ),
             )
 
+        composeRule.waitForIdle()
+        assertFalse(currentChatMessageBodies().contains("hello from enter"))
+        composeRule.onNodeWithTag("chatSendButton", useUnmergedTree = true).assertIsEnabled()
+        composeRule.onNodeWithTag("chatSendButton", useUnmergedTree = true).performClick()
         composeRule.waitForText("hello from enter")
         composeRule.onNodeWithTag("chatSendButton", useUnmergedTree = true).assertIsNotEnabled()
     }
@@ -359,4 +364,15 @@ class PikaLikeUiTest {
 
     private fun androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, *>.hasTag(tag: String): Boolean =
         onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+
+    private fun currentChatMessageBodies(): List<String> =
+        (composeRule.activity.application as IrisChatApp)
+            .container
+            .appManager
+            .state
+            .value
+            .currentChat
+            ?.messages
+            ?.map { it.body }
+            .orEmpty()
 }

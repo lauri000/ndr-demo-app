@@ -28,12 +28,12 @@ struct RootView: View {
                     LoadingOverlay()
                 }
             }
-            .onChange(of: manager.activeScreen) { newScreen in
+            .irisOnChange(of: manager.activeScreen) { newScreen in
                 if !matchesChatList(newScreen) {
                     showingProfile = false
                 }
             }
-            .onChange(of: manager.state.account?.npub) { npub in
+            .irisOnChange(of: manager.state.account?.npub) { npub in
                 if npub == nil {
                     showingProfile = false
                 }
@@ -1002,7 +1002,7 @@ struct ChatScreen: View {
                                     }
                                 }
                                 .irisInteractiveKeyboardDismiss()
-                                .onChange(of: chatId) { _ in
+                                .irisOnChange(of: chatId) { _ in
                                     initialScrollPending = true
                                     isNearBottom = true
                                 }

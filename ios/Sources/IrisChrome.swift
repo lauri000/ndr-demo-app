@@ -535,8 +535,7 @@ struct IrisComposerBar: View {
             TextField(placeholder, text: $draft)
                 .irisDraftInputModifiers()
                 .irisInputField()
-                .submitLabel(.send)
-                .onSubmit(submitDraft)
+                .irisDesktopSubmit(submitDraft)
                 .accessibilityIdentifier("chatMessageInput")
 
             Button(action: submitDraft) {

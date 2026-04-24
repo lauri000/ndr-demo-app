@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCAL_PROPERTIES="${ROOT_DIR}/android/local.properties"
-NDK_VERSION="26.3.11579264"
+NDK_VERSION="28.2.13676358"
 
 find_android_sdk() {
   local sdk_dir="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"

@@ -8,7 +8,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
-val ndkVersionValue = "26.3.11579264"
+val ndkVersionValue = "28.2.13676358"
 val rustAppDir = rootProject.file("../core")
 val rustManifestPath = rustAppDir.resolve("Cargo.toml")
 val rustSourceDir = rustAppDir.resolve("src")
@@ -300,6 +300,7 @@ fun registerRustAndroidTask(
         environment("ANDROID_HOME", androidSdkDir)
         environment("ANDROID_SDK_ROOT", androidSdkDir)
         environment("ANDROID_NDK_HOME", androidNdkDir.absolutePath)
+        environment("NDK_HOME", androidNdkDir.absolutePath)
         environment("NDR_APP_VERSION", appVersionName)
         environment("NDR_BUILD_CHANNEL", buildChannel)
         environment("NDR_BUILD_GIT_SHA", buildGitSha)

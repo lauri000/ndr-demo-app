@@ -76,6 +76,29 @@ extension View {
     }
 
     @ViewBuilder
+    func irisDesktopSubmit(_ action: @escaping () -> Void) -> some View {
+        #if canImport(AppKit)
+        self.onSubmit(action)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func irisOnChange<Value: Equatable>(
+        of value: Value,
+        _ action: @escaping (Value) -> Void
+    ) -> some View {
+        #if canImport(AppKit)
+        self.onChange(of: value) { _, newValue in
+            action(newValue)
+        }
+        #else
+        self.onChange(of: value, perform: action)
+        #endif
+    }
+
+    @ViewBuilder
     func irisInteractiveKeyboardDismiss() -> some View {
         #if canImport(UIKit)
         self.scrollDismissesKeyboard(.interactively)

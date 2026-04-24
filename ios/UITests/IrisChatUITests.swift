@@ -37,7 +37,7 @@ final class IrisChatUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["hello from ios ui test"].waitForExistence(timeout: 15))
     }
 
-    func testReturnKeySendsMessageLocally() {
+    func testReturnKeyKeepsMobileDraftUnsent() {
         let app = launchCleanApp()
 
         createAccount(app)
@@ -48,6 +48,8 @@ final class IrisChatUITests: XCTestCase {
         element(app, "chatMessageInput").tap()
         element(app, "chatMessageInput").typeText("hello from return key\n")
 
+        XCTAssertFalse(app.staticTexts["hello from return key"].waitForExistence(timeout: 2))
+        element(app, "chatSendButton").tap()
         XCTAssertTrue(app.staticTexts["hello from return key"].waitForExistence(timeout: 15))
     }
 
