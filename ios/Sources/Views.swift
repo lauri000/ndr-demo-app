@@ -1922,7 +1922,12 @@ private struct ChatMessageRow: View {
                             ReplyPreviewView(reply: reply, isOutgoing: message.isOutgoing)
                         }
                         if !bodyParts.body.isEmpty {
-                            Text(linkedMessageAttributedString(bodyParts.body))
+                            Text(
+                                linkedMessageAttributedString(
+                                    bodyParts.body,
+                                    linkColor: message.isOutgoing ? palette.onBubbleMine : palette.accentAlt
+                                )
+                            )
                             .font(.system(.body, design: .rounded))
                             .multilineTextAlignment(message.isOutgoing ? .trailing : .leading)
                         }
@@ -2323,7 +2328,7 @@ private func replySnippet(for message: ChatMessageSnapshot) -> String {
 
 private let replyMessagePrefix = "↩ "
 
-private func linkedMessageAttributedString(_ text: String) -> AttributedString {
+private func linkedMessageAttributedString(_ text: String, linkColor: Color) -> AttributedString {
     var attributed = AttributedString()
     var cursor = text.startIndex
     for match in messageURLMatches(in: text) {
@@ -2332,6 +2337,8 @@ private func linkedMessageAttributedString(_ text: String) -> AttributedString {
         }
         var linked = AttributedString(String(text[match.range]))
         linked.link = match.url
+        linked.foregroundColor = linkColor
+        linked.underlineStyle = .single
         attributed.append(linked)
         cursor = match.range.upperBound
     }

@@ -507,6 +507,7 @@ struct IrisComposerBar: View {
     @Binding var attachments: [StagedAttachment]
     @State private var showingAttachmentPicker = false
     @State private var showingEmojiPicker = false
+    @State private var isDropTargeted = false
 
     let placeholder: String
     let isSending: Bool
@@ -612,7 +613,18 @@ struct IrisComposerBar: View {
             Rectangle()
                 .fill(palette.toolbar)
         )
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: IrisLayout.inputCornerRadius + 8, style: .continuous)
+                    .stroke(palette.accent.opacity(0.78), lineWidth: 2)
+                    .padding(.horizontal, IrisLayout.usesDesktopChrome ? 8 : 10)
+                    .padding(.vertical, 6)
+            }
+        }
         .frame(maxWidth: .infinity)
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isDropTargeted) { providers in
+            handleDroppedFiles(providers)
+        }
         .fileImporter(
             isPresented: $showingAttachmentPicker,
             allowedContentTypes: [.item],
@@ -631,6 +643,61 @@ struct IrisComposerBar: View {
         }
         onSend()
     }
+
+    private func handleDroppedFiles(_ providers: [NSItemProvider]) -> Bool {
+        let fileProviders = providers.filter {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+        }
+        guard !fileProviders.isEmpty else {
+            return false
+        }
+
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var urls: [URL] = []
+
+        for provider in fileProviders {
+            group.enter()
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                if let url = droppedFileURL(from: item) {
+                    lock.lock()
+                    urls.append(url)
+                    lock.unlock()
+                }
+                group.leave()
+            }
+        }
+
+        group.notify(queue: .main) {
+            guard !urls.isEmpty else {
+                return
+            }
+            onAttach(urls)
+        }
+
+        return true
+    }
+}
+
+private func droppedFileURL(from item: NSSecureCoding?) -> URL? {
+    if let url = item as? URL {
+        return url
+    }
+    if let url = item as? NSURL {
+        return url as URL
+    }
+    if let data = item as? Data {
+        if let url = URL(dataRepresentation: data, relativeTo: nil) {
+            return url
+        }
+        if let string = String(data: data, encoding: .utf8) {
+            return URL(string: string.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+    if let string = item as? String {
+        return URL(string: string.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+    return nil
 }
 
 private struct IrisEmojiPicker: View {
