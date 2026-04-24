@@ -21,15 +21,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import social.innode.ndr.demo.core.AppManager
 import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.AppState
+import social.innode.ndr.demo.rust.GroupMemberSnapshot
 import social.innode.ndr.demo.rust.isValidPeerInput
 import social.innode.ndr.demo.rust.normalizePeerInput
+import social.innode.ndr.demo.ui.components.IrisAvatar
 import social.innode.ndr.demo.ui.components.IrisIcons
 import social.innode.ndr.demo.ui.components.IrisPrimaryButton
 import social.innode.ndr.demo.ui.components.IrisSectionCard
@@ -91,6 +95,7 @@ fun GroupDetailsScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             IrisSectionCard {
+                val creatorPrimary = primaryDisplayName(details.createdByDisplayName, details.createdByNpub)
                 Text(
                     text = details.name,
                     style = MaterialTheme.typography.headlineSmall,
@@ -101,13 +106,13 @@ fun GroupDetailsScreen(
                     color = IrisTheme.palette.muted,
                 )
                 Text(
-                    text = "Created by ${details.createdByDisplayName}",
+                    text = "Created by $creatorPrimary",
                     style = MaterialTheme.typography.bodySmall,
                     color = IrisTheme.palette.muted,
                 )
-                if (details.createdByDisplayName != details.createdByNpub) {
+                secondaryDisplayName(details.createdByNpub, creatorPrimary)?.let { npub ->
                     Text(
-                        text = details.createdByNpub,
+                        text = npub,
                         style = MaterialTheme.typography.bodySmall,
                         color = IrisTheme.palette.muted,
                     )
@@ -120,41 +125,45 @@ fun GroupDetailsScreen(
                     style = MaterialTheme.typography.titleMedium,
                 )
                 details.members.forEach { member ->
+                    val primary = primaryDisplayName(member.displayName, member.npub)
+                    val secondary = secondaryDisplayName(member.npub, primary)
+                    val roles = member.roleLabels()
                     Row(
                         modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.Top,
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
+                        IrisAvatar(
+                            label = primary,
+                            emphasize = member.isLocalOwner,
+                            size = 38.dp,
+                        )
                         Column(
-                            modifier = Modifier.weight(1f),
+                            modifier =
+                                Modifier
+                                    .weight(1f)
+                                    .padding(start = 12.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
                             Text(
-                                text = member.displayName,
+                                text = primary,
                                 style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
                             )
-                            if (member.displayName != member.npub) {
+                            if (secondary != null) {
                                 Text(
-                                    text = member.npub,
+                                    text = secondary,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = IrisTheme.palette.muted,
                                 )
                             }
-                            Text(
-                                text =
-                                    buildString {
-                                        if (member.isCreator) append("Creator")
-                                        if (member.isAdmin) {
-                                            if (isNotEmpty()) append(" · ")
-                                            append("Admin")
-                                        }
-                                        if (member.isLocalOwner) {
-                                            if (isNotEmpty()) append(" · ")
-                                            append("This device owner")
-                                        }
-                                    },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = IrisTheme.palette.muted,
-                            )
+                            if (roles.isNotEmpty()) {
+                                Text(
+                                    text = roles.joinToString(" · "),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = IrisTheme.palette.muted,
+                                )
+                            }
                         }
                         if (details.canManage && !member.isLocalOwner) {
                             Text(
@@ -303,3 +312,27 @@ fun GroupDetailsScreen(
         )
     }
 }
+
+private fun primaryDisplayName(
+    displayName: String,
+    fallback: String,
+): String =
+    displayName.trim().ifEmpty { fallback.trim() }
+
+private fun secondaryDisplayName(
+    secondary: String,
+    primary: String,
+): String? {
+    val trimmed = secondary.trim()
+    if (trimmed.isEmpty()) {
+        return null
+    }
+    return trimmed.takeUnless { it.equals(primary.trim(), ignoreCase = true) }
+}
+
+private fun GroupMemberSnapshot.roleLabels(): List<String> =
+    buildList {
+        if (isCreator) add("Creator")
+        if (isAdmin) add("Admin")
+        if (isLocalOwner) add("You")
+    }

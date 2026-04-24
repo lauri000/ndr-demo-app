@@ -7,7 +7,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -20,16 +22,21 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import social.innode.ndr.demo.core.AppManager
 import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.AppState
 import social.innode.ndr.demo.rust.ChatKind
+import social.innode.ndr.demo.rust.ChatThreadSnapshot
 import social.innode.ndr.demo.rust.isValidPeerInput
 import social.innode.ndr.demo.rust.normalizePeerInput
+import social.innode.ndr.demo.ui.components.IrisAvatar
 import social.innode.ndr.demo.ui.components.IrisIcons
 import social.innode.ndr.demo.ui.components.IrisPrimaryButton
 import social.innode.ndr.demo.ui.components.IrisSectionCard
@@ -196,8 +203,16 @@ fun NewGroupScreen(
                 if (selectedOwners.isNotEmpty()) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         selectedOwners.toList().sorted().forEach { owner ->
+                            val presentation = ownerPresentation(
+                                owner = owner,
+                                existingDirectChats = existingDirectChats,
+                                localOwnerHex = localOwner,
+                                localOwnerDisplayName = appState.account?.displayName.orEmpty(),
+                                localOwnerNpub = appState.account?.npub,
+                            )
                             MemberChip(
-                                label = normalizePeerInput(owner),
+                                title = presentation.primary,
+                                subtitle = presentation.secondary,
                                 onRemove = { selectedOwners = selectedOwners - owner },
                             )
                         }
@@ -213,8 +228,17 @@ fun NewGroupScreen(
                     )
                     existingDirectChats.forEach { chat ->
                         val selected = chat.chatId in selectedOwners
-                        IrisSecondaryButton(
-                            text = if (selected) "Selected: ${chat.displayName}" else chat.displayName,
+                        val presentation = ownerPresentation(
+                            owner = chat.chatId,
+                            existingDirectChats = existingDirectChats,
+                            localOwnerHex = localOwner,
+                            localOwnerDisplayName = appState.account?.displayName.orEmpty(),
+                            localOwnerNpub = appState.account?.npub,
+                        )
+                        ExistingMemberRow(
+                            title = presentation.primary,
+                            subtitle = presentation.secondary,
+                            selected = selected,
                             onClick = {
                                 selectedOwners =
                                     if (selected) {
@@ -222,13 +246,6 @@ fun NewGroupScreen(
                                     } else {
                                         selectedOwners + chat.chatId
                                     }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            icon = {
-                                Icon(
-                                    imageVector = if (selected) IrisIcons.Devices else IrisIcons.NewChat,
-                                    contentDescription = null,
-                                )
                             },
                         )
                     }
@@ -270,6 +287,60 @@ fun NewGroupScreen(
     }
 }
 
+private data class OwnerPresentation(
+    val primary: String,
+    val secondary: String?,
+)
+
+private fun ownerPresentation(
+    owner: String,
+    existingDirectChats: List<ChatThreadSnapshot>,
+    localOwnerHex: String?,
+    localOwnerDisplayName: String,
+    localOwnerNpub: String?,
+): OwnerPresentation {
+    existingDirectChats.firstOrNull { sameOwner(owner, hex = it.chatId, npub = it.subtitle) }?.let { chat ->
+        val primary = primaryDisplayName(chat.displayName, normalizePeerInput(owner))
+        return OwnerPresentation(primary, secondaryDisplayName(chat.subtitle, primary))
+    }
+
+    if (localOwnerHex != null && sameOwner(owner, hex = localOwnerHex, npub = localOwnerNpub)) {
+        val primary = primaryDisplayName(localOwnerDisplayName, localOwnerNpub ?: localOwnerHex)
+        return OwnerPresentation(primary, secondaryDisplayName(localOwnerNpub, primary))
+    }
+
+    return OwnerPresentation(normalizePeerInput(owner), null)
+}
+
+private fun sameOwner(
+    owner: String,
+    hex: String?,
+    npub: String?,
+): Boolean {
+    val rawOwner = owner.trim().lowercase()
+    val normalizedOwner = normalizePeerInput(owner).trim().lowercase()
+    return listOfNotNull(hex, npub)
+        .map { it.trim().lowercase() }
+        .any { it == rawOwner || it == normalizedOwner }
+}
+
+private fun primaryDisplayName(
+    displayName: String,
+    fallback: String,
+): String =
+    displayName.trim().ifEmpty { fallback.trim() }
+
+private fun secondaryDisplayName(
+    secondary: String?,
+    primary: String,
+): String? {
+    val trimmed = secondary?.trim().orEmpty()
+    if (trimmed.isEmpty()) {
+        return null
+    }
+    return trimmed.takeUnless { it.equals(primary.trim(), ignoreCase = true) }
+}
+
 @Composable
 private fun ScaffoldScreen(
     title: String,
@@ -304,21 +375,36 @@ private fun ScaffoldScreen(
 
 @Composable
 private fun MemberChip(
-    label: String,
+    title: String,
+    subtitle: String?,
     onRemove: () -> Unit,
 ) {
     Surface(
         color = IrisTheme.palette.panelAlt,
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(100.dp),
+        shape = RoundedCornerShape(14.dp),
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (subtitle != null) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = IrisTheme.palette.muted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
             Text(
                 text = "Remove",
                 modifier = Modifier.testTag("memberChipRemove").clickable(onClick = onRemove),
@@ -326,5 +412,49 @@ private fun MemberChip(
                 color = MaterialTheme.colorScheme.error,
             )
         }
+    }
+}
+
+@Composable
+private fun ExistingMemberRow(
+    title: String,
+    subtitle: String?,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IrisAvatar(label = title, emphasize = selected, size = 38.dp)
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = IrisTheme.palette.muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Icon(
+            imageVector = if (selected) IrisIcons.Devices else IrisIcons.NewChat,
+            contentDescription = null,
+            tint = if (selected) IrisTheme.palette.accent else IrisTheme.palette.muted,
+            modifier = Modifier.size(20.dp),
+        )
     }
 }

@@ -30,7 +30,7 @@ Compared against `~/src/iris-chat-flutter` on 2026-04-24. Sources used include F
 - [x] New-chat screen layout with Join Chat, New Chat, and New Group sections in the Flutter order. Flutter coverage: `test/widget/new_chat_screen_test.dart`.
 - [ ] Invite response subscription for active invites without relying on fixed fetch windows. Flutter coverage: `test/unit/core/utils/invite_response_subscription_test.dart`.
 - [ ] Group metadata notices and chat settings notices.
-- [ ] Group member profile-name presentation parity in all member lists.
+- [x] Group member profile-name presentation parity in all member lists.
 - [ ] Burst incoming message ordering and visibility parity with Flutter macOS e2e tests.
 
 ## Profile, Identity, And Devices
