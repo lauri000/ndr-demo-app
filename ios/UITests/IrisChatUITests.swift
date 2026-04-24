@@ -37,6 +37,29 @@ final class IrisChatUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["hello from ios ui test"].waitForExistence(timeout: 15))
     }
 
+    func testSubmittedMessagesStayPinnedToLatest() {
+        let app = launchCleanApp()
+
+        createAccount(app)
+        openChatWithPeer(app)
+
+        XCTAssertTrue(element(app, "chatComposerBar").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "chatMessageInput").waitForExistence(timeout: 10))
+
+        let messagePrefix = "scroll pin \(Int(Date().timeIntervalSince1970 * 1000))"
+        for index in 0..<18 {
+            let message = "\(messagePrefix) \(index)"
+            element(app, "chatMessageInput").tap()
+            element(app, "chatMessageInput").typeText(message)
+            element(app, "chatSendButton").tap()
+            let row = app.staticTexts[message]
+            XCTAssertTrue(row.waitForExistence(timeout: 8))
+            XCTAssertTrue(row.isHittable)
+        }
+
+        XCTAssertFalse(element(app, "chatJumpToBottom").exists)
+    }
+
     func testReturnKeyKeepsMobileDraftUnsent() {
         let app = launchCleanApp()
 

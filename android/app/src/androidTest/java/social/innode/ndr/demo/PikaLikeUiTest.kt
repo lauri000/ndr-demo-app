@@ -158,6 +158,30 @@ class PikaLikeUiTest {
     }
 
     @Test
+    fun submitted_messages_stay_scrolled_to_latest() {
+        composeRule.ensureChatList()
+        composeRule.onNodeWithTag("chatListNewChatButton", useUnmergedTree = true).performClick()
+        composeRule.waitForTag("chatListNewChatOption")
+        composeRule.onNodeWithTag("chatListNewChatOption", useUnmergedTree = true).performClick()
+
+        composeRule.waitForTag("newChatPeerInput")
+        composeRule.onNodeWithTag("newChatPeerInput", useUnmergedTree = true)
+            .performTextInput(VALID_PEER_NPUB)
+        composeRule.onNodeWithTag("newChatStartButton", useUnmergedTree = true).performClick()
+        composeRule.waitForTag("chatMessageInput")
+
+        val messagePrefix = "scroll pin ${System.nanoTime()}"
+        repeat(18) { index ->
+            val message = "$messagePrefix $index"
+            composeRule.onNodeWithTag("chatMessageInput", useUnmergedTree = true)
+                .performTextInput(message)
+            composeRule.onNodeWithTag("chatSendButton", useUnmergedTree = true).performClick()
+            composeRule.waitForText(message)
+            composeRule.onNodeWithText(message, useUnmergedTree = true).assertIsDisplayed()
+        }
+    }
+
+    @Test
     fun enter_key_keeps_mobile_draft_unsent() {
         composeRule.ensureChatList()
         composeRule.onNodeWithTag("chatListNewChatButton", useUnmergedTree = true).performClick()
@@ -170,8 +194,9 @@ class PikaLikeUiTest {
         composeRule.onNodeWithTag("newChatStartButton", useUnmergedTree = true).performClick()
 
         composeRule.waitForTag("chatMessageInput")
+        val message = "hello from enter ${System.nanoTime()}"
         composeRule.onNodeWithTag("chatMessageInput", useUnmergedTree = true)
-            .performTextInput("hello from enter")
+            .performTextInput(message)
         composeRule.onNodeWithTag("chatMessageInput", useUnmergedTree = true)
             .performKeyPress(
                 KeyEvent(
@@ -183,10 +208,10 @@ class PikaLikeUiTest {
             )
 
         composeRule.waitForIdle()
-        assertFalse(currentChatMessageBodies().contains("hello from enter"))
+        assertFalse(currentChatMessageBodies().contains(message))
         composeRule.onNodeWithTag("chatSendButton", useUnmergedTree = true).assertIsEnabled()
         composeRule.onNodeWithTag("chatSendButton", useUnmergedTree = true).performClick()
-        composeRule.waitForText("hello from enter")
+        composeRule.waitForText(message)
         composeRule.onNodeWithTag("chatSendButton", useUnmergedTree = true).assertIsNotEnabled()
     }
 

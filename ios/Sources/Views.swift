@@ -941,9 +941,12 @@ struct ChatScreen: View {
 
     @State private var draft = ""
     @State private var isNearBottom = true
+    @State private var shouldFollowLatest = true
+    @State private var forceScrollToLatest = false
     @State private var timelineViewportMaxY: CGFloat = 0
     @State private var timelineBottomMaxY: CGFloat = .greatestFiniteMagnitude
     @State private var initialScrollPending = true
+    @State private var renderedMessageCount = 0
 
     private var chat: CurrentChatSnapshot? {
         manager.state.currentChat?.chatId == chatId ? manager.state.currentChat : nil
@@ -1005,35 +1008,65 @@ struct ChatScreen: View {
                                 .irisOnChange(of: chatId) { _ in
                                     initialScrollPending = true
                                     isNearBottom = true
+                                    shouldFollowLatest = true
+                                    forceScrollToLatest = false
+                                    renderedMessageCount = 0
                                 }
                                 .onPreferenceChange(ChatTimelineViewportMaxYPreferenceKey.self) { value in
                                     timelineViewportMaxY = value
-                                    isNearBottom = chatTimelineIsNearBottom(
+                                    let nearBottom = chatTimelineIsNearBottom(
                                         viewportMaxY: value,
                                         bottomMaxY: timelineBottomMaxY
                                     )
+                                    isNearBottom = nearBottom
+                                    if chat.messages.count == renderedMessageCount {
+                                        shouldFollowLatest = nearBottom
+                                    }
                                 }
                                 .onPreferenceChange(ChatTimelineBottomMaxYPreferenceKey.self) { value in
                                     timelineBottomMaxY = value
-                                    isNearBottom = chatTimelineIsNearBottom(
+                                    let nearBottom = chatTimelineIsNearBottom(
                                         viewportMaxY: timelineViewportMaxY,
                                         bottomMaxY: value
                                     )
+                                    isNearBottom = nearBottom
+                                    if chat.messages.count == renderedMessageCount {
+                                        shouldFollowLatest = nearBottom
+                                    }
                                 }
                                 .task(id: chat.messages.last?.id) {
                                     guard !chat.messages.isEmpty else {
                                         initialScrollPending = true
+                                        shouldFollowLatest = true
+                                        forceScrollToLatest = false
+                                        renderedMessageCount = 0
                                         return
                                     }
-                                    guard initialScrollPending || isNearBottom else {
+                                    let messageCount = chat.messages.count
+                                    let messageCountIncreased = messageCount > renderedMessageCount
+                                    let shouldScroll = initialScrollPending
+                                        || forceScrollToLatest
+                                        || (messageCountIncreased && shouldFollowLatest)
+                                    renderedMessageCount = messageCount
+                                    if shouldScroll {
+                                        scrollToBottom(proxy: proxy, animated: !initialScrollPending)
+                                        initialScrollPending = false
+                                        shouldFollowLatest = true
+                                    }
+                                    if forceScrollToLatest {
+                                        forceScrollToLatest = false
+                                    }
+                                }
+                                .task(id: forceScrollToLatest) {
+                                    guard forceScrollToLatest, !chat.messages.isEmpty else {
                                         return
                                     }
-                                    scrollToBottom(proxy: proxy, animated: !initialScrollPending)
-                                    initialScrollPending = false
+                                    scrollToBottom(proxy: proxy, animated: true)
                                 }
 
                                 if !isNearBottom && !chat.messages.isEmpty {
                                     Button {
+                                        shouldFollowLatest = true
                                         scrollToBottom(proxy: proxy, animated: true)
                                     } label: {
                                         Image(systemName: "arrow.down")
@@ -1065,6 +1098,8 @@ struct ChatScreen: View {
                         ) {
                             let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
                             guard !text.isEmpty else { return }
+                            shouldFollowLatest = true
+                            forceScrollToLatest = true
                             draft = ""
                             manager.dispatch(.sendMessage(chatId: chatId, text: text))
                         }

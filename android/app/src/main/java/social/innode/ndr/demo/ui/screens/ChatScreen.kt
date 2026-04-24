@@ -70,7 +70,9 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     var shouldFollowLatest by remember(chatId) { mutableStateOf(true) }
+    var forceScrollToLatest by remember(chatId) { mutableStateOf(false) }
     var initialScrollPending by remember(chatId) { mutableStateOf(true) }
+    var observedMessageCount by remember(chatId) { mutableStateOf(0) }
     val showJumpToBottom by remember(chat?.messages?.size, listState) {
         derivedStateOf {
             val total = chat?.messages?.size ?: 0
@@ -85,7 +87,9 @@ fun ChatScreen(
 
     LaunchedEffect(chatId) {
         shouldFollowLatest = true
+        forceScrollToLatest = false
         initialScrollPending = true
+        observedMessageCount = 0
     }
 
     LaunchedEffect(listState, chat?.messages?.size) {
@@ -104,19 +108,34 @@ fun ChatScreen(
             }
     }
 
-    LaunchedEffect(chatId, chat?.messages?.size) {
+    LaunchedEffect(chatId, chat?.messages?.size, chat?.messages?.lastOrNull()?.id, forceScrollToLatest) {
         val total = chat?.messages?.size ?: 0
         if (total == 0) {
             initialScrollPending = true
+            observedMessageCount = 0
+            forceScrollToLatest = false
             return@LaunchedEffect
         }
-        if (initialScrollPending || shouldFollowLatest) {
+        val previousTotal = observedMessageCount
+        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+        val wasNearPreviousBottom = previousTotal == 0 || lastVisible >= previousTotal - 2
+        val messageCountIncreased = total > previousTotal
+        val shouldScroll =
+            initialScrollPending ||
+                forceScrollToLatest ||
+                (messageCountIncreased && (shouldFollowLatest || wasNearPreviousBottom))
+        observedMessageCount = total
+        if (shouldScroll) {
             if (initialScrollPending) {
                 listState.scrollToItem(total - 1)
             } else {
                 listState.animateScrollToItem(total - 1)
             }
             initialScrollPending = false
+            shouldFollowLatest = true
+        }
+        if (forceScrollToLatest) {
+            forceScrollToLatest = false
         }
     }
 
@@ -182,6 +201,7 @@ fun ChatScreen(
                         Modifier
                             .weight(1f)
                             .fillMaxWidth()
+                            .testTag("chatTimeline")
                             .padding(horizontal = 14.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
@@ -235,6 +255,8 @@ fun ChatScreen(
                     isSending = appState.busy.sendingMessage,
                     onDraftChange = { draft = it },
                     onSend = {
+                        shouldFollowLatest = true
+                        forceScrollToLatest = true
                         appManager.sendText(chatId, draft)
                         draft = ""
                     },
@@ -254,6 +276,7 @@ fun ChatScreen(
                 ) {
                     IconButton(
                         onClick = {
+                            shouldFollowLatest = true
                             coroutineScope.launch {
                                 val total = chat.messages.size
                                 if (total > 0) {
