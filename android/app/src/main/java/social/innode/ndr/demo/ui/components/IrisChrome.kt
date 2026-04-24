@@ -31,6 +31,7 @@ import androidx.compose.material.icons.rounded.Audiotrack
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Group
@@ -425,6 +426,7 @@ object IrisIcons {
     val Send = Icons.AutoMirrored.Rounded.Send
     val Attach = Icons.Rounded.AttachFile
     val Copy = Icons.Rounded.ContentCopy
+    val DeleteForever = Icons.Rounded.DeleteForever
     val Devices = Icons.Rounded.Devices
     val Edit = Icons.Rounded.Edit
     val File = Icons.AutoMirrored.Rounded.InsertDriveFile

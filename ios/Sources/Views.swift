@@ -1638,6 +1638,7 @@ struct ProfileSheet: View {
     @ObservedObject var manager: AppManager
     @Environment(\.dismiss) private var dismiss
     @State private var shareText: String?
+    @State private var showingDeleteAllConfirmation = false
     let closeSheet: () -> Void
 
     var body: some View {
@@ -1759,20 +1760,27 @@ struct ProfileSheet: View {
                         .buttonStyle(IrisSecondaryButtonStyle())
                         .accessibilityIdentifier("myProfileCopySupportBundleButton")
 
-                        Button("Reset app state", role: .destructive) {
-                            close()
-                            manager.resetAppState()
-                        }
-                        .buttonStyle(IrisSecondaryButtonStyle())
-                        .accessibilityIdentifier("myProfileResetStateButton")
                     }
 
-                    Button("Logout", role: .destructive) {
-                        close()
-                        manager.logout()
+                    IrisSectionCard {
+                        CardHeader(
+                            title: "Danger Zone",
+                            subtitle: "Local identity, keys, messages, and cached files are removed from this device."
+                        )
+
+                        Button("Logout", role: .destructive) {
+                            close()
+                            manager.logout()
+                        }
+                        .buttonStyle(IrisSecondaryButtonStyle())
+                        .accessibilityIdentifier("myProfileLogoutButton")
+
+                        Button("Delete all data", role: .destructive) {
+                            showingDeleteAllConfirmation = true
+                        }
+                        .buttonStyle(IrisSecondaryButtonStyle())
+                        .accessibilityIdentifier("myProfileDeleteAllDataButton")
                     }
-                    .buttonStyle(IrisPrimaryButtonStyle())
-                    .accessibilityIdentifier("myProfileLogoutButton")
                 }
             }
             .navigationTitle("Profile")
@@ -1789,6 +1797,16 @@ struct ProfileSheet: View {
             set: { shareText = $0?.text }
         )) { payload in
             ShareSheet(text: payload.text)
+        }
+        .alert("Delete All Data?", isPresented: $showingDeleteAllConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete Everything", role: .destructive) {
+                close()
+                manager.resetAppState()
+            }
+            .accessibilityIdentifier("myProfileConfirmDeleteAllDataButton")
+        } message: {
+            Text("This permanently deletes your identity, keys, messages, and cached files from this device. This action cannot be undone.")
         }
     }
 

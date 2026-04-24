@@ -12,11 +12,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -64,6 +66,7 @@ fun MyProfileSheet(
             createQrBitmap(npub, size = 768)
         }
     var supportBusy by remember { mutableStateOf(false) }
+    var showDeleteAllConfirmation by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -261,13 +264,24 @@ fun MyProfileSheet(
                     enabled = !supportBusy,
                     modifier = Modifier.testTag("myProfileCopySupportBundleButton"),
                 )
+            }
+
+            IrisSectionCard {
+                Text(
+                    text = "Danger Zone",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Text(
+                    text = "Local identity, keys, messages, and cached files are removed from this device.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = IrisTheme.palette.muted,
+                    modifier = Modifier.testTag("myProfileDangerZoneText"),
+                )
                 IrisSecondaryButton(
-                    text = "Reset app state",
-                    onClick = {
-                        onDismiss()
-                        appManager.resetAppState()
-                    },
-                    modifier = Modifier.testTag("myProfileResetStateButton"),
+                    text = "Logout",
+                    onClick = onLogout,
+                    modifier = Modifier.testTag("myProfileLogoutButton"),
                     icon = {
                         Icon(
                             imageVector = IrisIcons.Logout,
@@ -275,19 +289,51 @@ fun MyProfileSheet(
                         )
                     },
                 )
+                IrisSecondaryButton(
+                    text = "Delete all data",
+                    onClick = { showDeleteAllConfirmation = true },
+                    modifier = Modifier.testTag("myProfileDeleteAllDataButton"),
+                    icon = {
+                        Icon(
+                            imageVector = IrisIcons.DeleteForever,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                    },
+                )
             }
-
-            IrisSecondaryButton(
-                text = "Logout",
-                onClick = onLogout,
-                modifier = Modifier.testTag("myProfileLogoutButton"),
-                icon = {
-                    Icon(
-                        imageVector = IrisIcons.Logout,
-                        contentDescription = null,
-                    )
-                },
-            )
         }
+    }
+
+    if (showDeleteAllConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showDeleteAllConfirmation = false },
+            title = { Text("Delete All Data?") },
+            text = {
+                Text(
+                    "This permanently deletes your identity, keys, messages, and cached files from this device. This action cannot be undone.",
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteAllConfirmation = false }) {
+                    Text("Cancel")
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteAllConfirmation = false
+                        onDismiss()
+                        appManager.resetAppState()
+                    },
+                    modifier = Modifier.testTag("myProfileConfirmDeleteAllDataButton"),
+                ) {
+                    Text(
+                        text = "Delete Everything",
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+        )
     }
 }
