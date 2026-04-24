@@ -52,6 +52,7 @@ import androidx.compose.material.icons.rounded.Audiotrack
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -548,6 +549,22 @@ private fun MessageBubble(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
+                                if (message.expiresAtSecs != null) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Schedule,
+                                        contentDescription = "Disappearing message",
+                                        tint =
+                                            if (message.isOutgoing) {
+                                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.72f)
+                                            } else {
+                                                IrisTheme.palette.muted
+                                            },
+                                        modifier =
+                                            Modifier
+                                                .size(13.dp)
+                                                .testTag("chatMessageDisappearing-${message.id}"),
+                                    )
+                                }
                                 Text(
                                     text = formatMessageClock(message.createdAtSecs.toLong()),
                                     style = MaterialTheme.typography.labelSmall,

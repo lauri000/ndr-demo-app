@@ -249,6 +249,7 @@ impl AppCore {
                     self.remember_event(event_id);
                     return;
                 };
+                let expires_at_secs = message_expiration_from_event(&event);
                 self.debug_event_counters.message_events += 1;
 
                 let sender_owner = self.logged_in.as_ref().and_then(|logged_in| {
@@ -261,7 +262,7 @@ impl AppCore {
                     );
                     self.remember_event(event_id.clone());
                     self.pending_inbound
-                        .push(PendingInbound::envelope(envelope));
+                        .push(PendingInbound::envelope(envelope, expires_at_secs));
                     self.persist_best_effort();
                     return;
                 };
@@ -291,6 +292,7 @@ impl AppCore {
                             message.owner_pubkey,
                             &message.payload,
                             now.get(),
+                            expires_at_secs,
                         ) {
                             if is_retryable_group_payload_error(&error) {
                                 if is_unknown_group_payload_error(&error) {
@@ -308,6 +310,7 @@ impl AppCore {
                                     message.owner_pubkey,
                                     message.payload,
                                     now.get(),
+                                    expires_at_secs,
                                 ));
                             } else {
                                 self.state.toast = Some(error.to_string());
@@ -327,7 +330,7 @@ impl AppCore {
                         );
                         self.remember_event(event_id.clone());
                         self.pending_inbound
-                            .push(PendingInbound::envelope(envelope));
+                            .push(PendingInbound::envelope(envelope, expires_at_secs));
                         self.persist_best_effort();
                     }
                     Err(error) => {
@@ -341,5 +344,49 @@ impl AppCore {
                 self.debug_event_counters.other_events += 1;
             }
         }
+    }
+}
+
+fn message_expiration_from_event(event: &Event) -> Option<u64> {
+    let raw = event
+        .tags
+        .iter()
+        .find(|tag| tag.as_slice().first().map(|value| value.as_str()) == Some("expiration"))
+        .and_then(|tag| tag.as_slice().get(1))?;
+    let mut value = raw.parse::<u64>().ok()?;
+    if value == 0 {
+        return None;
+    }
+    while value > 9_999_999_999 {
+        value /= 1_000;
+    }
+    (value > 0).then_some(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nostr::Tag;
+
+    #[test]
+    fn parses_message_expiration_tag_seconds_and_milliseconds() {
+        let keys = Keys::generate();
+        let event = EventBuilder::new(Kind::from(codec::MESSAGE_EVENT_KIND as u16), "cipher")
+            .tag(Tag::parse(["expiration", "1704067260123"]).expect("expiration tag"))
+            .sign_with_keys(&keys)
+            .expect("event");
+
+        assert_eq!(message_expiration_from_event(&event), Some(1_704_067_260));
+    }
+
+    #[test]
+    fn ignores_invalid_message_expiration_tags() {
+        let keys = Keys::generate();
+        let event = EventBuilder::new(Kind::from(codec::MESSAGE_EVENT_KIND as u16), "cipher")
+            .tag(Tag::parse(["expiration", "0"]).expect("expiration tag"))
+            .sign_with_keys(&keys)
+            .expect("event");
+
+        assert_eq!(message_expiration_from_event(&event), None);
     }
 }

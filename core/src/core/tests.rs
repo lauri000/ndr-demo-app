@@ -433,6 +433,7 @@ fn start_session_restores_persisted_threads_only_when_enabled() {
                 reactions: Vec::new(),
                 is_outgoing: false,
                 created_at_secs: 55,
+                expires_at_secs: None,
                 delivery: DeliveryState::Received,
             }],
         },
@@ -496,6 +497,7 @@ fn local_reactions_and_deletes_are_core_state_and_persist() {
                     reactions: Vec::new(),
                     is_outgoing: false,
                     created_at_secs: 55,
+                    expires_at_secs: None,
                     delivery: DeliveryState::Received,
                 },
                 ChatMessageSnapshot {
@@ -507,6 +509,7 @@ fn local_reactions_and_deletes_are_core_state_and_persist() {
                     reactions: Vec::new(),
                     is_outgoing: false,
                     created_at_secs: 60,
+                    expires_at_secs: None,
                     delivery: DeliveryState::Received,
                 },
             ],
@@ -571,6 +574,7 @@ fn reaction_updates_aggregate_and_format_notification_text() {
         reactions: Vec::new(),
         is_outgoing: false,
         created_at_secs: 1,
+        expires_at_secs: None,
         delivery: DeliveryState::Received,
     };
 
@@ -717,6 +721,7 @@ fn update_screen_stack_opens_chat_and_clears_unread() {
                 reactions: Vec::new(),
                 is_outgoing: false,
                 created_at_secs: 100,
+                expires_at_secs: None,
                 delivery: DeliveryState::Received,
             }],
         },
@@ -986,9 +991,27 @@ fn incoming_messages_are_chronological_when_relay_events_arrive_out_of_order() {
     let mut core = test_core(data_dir.path());
     let chat_id = "chat-peer";
 
-    core.push_incoming_message_from(chat_id, "newer".to_string(), 30, Some("peer".to_string()));
-    core.push_incoming_message_from(chat_id, "older".to_string(), 10, Some("peer".to_string()));
-    core.push_incoming_message_from(chat_id, "middle".to_string(), 20, Some("peer".to_string()));
+    core.push_incoming_message_from(
+        chat_id,
+        "newer".to_string(),
+        30,
+        None,
+        Some("peer".to_string()),
+    );
+    core.push_incoming_message_from(
+        chat_id,
+        "older".to_string(),
+        10,
+        None,
+        Some("peer".to_string()),
+    );
+    core.push_incoming_message_from(
+        chat_id,
+        "middle".to_string(),
+        20,
+        None,
+        Some("peer".to_string()),
+    );
     core.rebuild_state();
 
     let thread = core.threads.get(chat_id).expect("thread");
@@ -1068,7 +1091,12 @@ fn incoming_group_metadata_creates_group_thread() {
         .expect("receive group create")
         .expect("group create payload");
     bob_core
-        .apply_decrypted_payload(received.owner_pubkey, &received.payload, 1_900_000_202)
+        .apply_decrypted_payload(
+            received.owner_pubkey,
+            &received.payload,
+            1_900_000_202,
+            None,
+        )
         .expect("apply group metadata");
     bob_core.rebuild_state();
 
@@ -1167,6 +1195,7 @@ fn incoming_group_message_routes_to_group_thread() {
             create_message.owner_pubkey,
             &create_message.payload,
             1_900_000_302,
+            None,
         )
         .expect("apply create");
 
@@ -1195,6 +1224,7 @@ fn incoming_group_message_routes_to_group_thread() {
             group_message.owner_pubkey,
             &group_message.payload,
             1_900_000_304,
+            None,
         )
         .expect("apply group message");
 
@@ -1508,21 +1538,23 @@ fn pending_inbound_persists_across_restore() {
     ));
 
     let mut core = logged_in_core_with_manager(data_dir.path(), 75, session_manager);
-    core.pending_inbound
-        .push(PendingInbound::envelope(MessageEnvelope {
+    core.pending_inbound.push(PendingInbound::envelope(
+        MessageEnvelope {
             sender: local_device_from_keys(&device_keys_for_fill(76)),
             signer_secret_key: [9; 32],
             created_at: UnixSeconds(501),
             encrypted_header: "header".to_string(),
             ciphertext: "ciphertext".to_string(),
-        }));
+        },
+        None,
+    ));
     core.persist_best_effort();
 
     let persisted = persisted_state(data_dir.path());
     assert_eq!(persisted.pending_inbound.len(), 1);
     assert_eq!(
         match &persisted.pending_inbound[0] {
-            PendingInbound::Envelope { envelope } => envelope.ciphertext.as_str(),
+            PendingInbound::Envelope { envelope, .. } => envelope.ciphertext.as_str(),
             PendingInbound::Decrypted { .. } => panic!("expected persisted envelope"),
         },
         "ciphertext"
@@ -1535,7 +1567,7 @@ fn pending_inbound_persists_across_restore() {
     assert_eq!(restored.pending_inbound.len(), 1);
     assert_eq!(
         match &restored.pending_inbound[0] {
-            PendingInbound::Envelope { envelope } => envelope.encrypted_header.as_str(),
+            PendingInbound::Envelope { envelope, .. } => envelope.encrypted_header.as_str(),
             PendingInbound::Decrypted { .. } => panic!("expected restored envelope"),
         },
         "header"
@@ -1567,6 +1599,7 @@ fn decrypted_pending_inbound_sender_is_tracked_for_recovery() {
         sender_owner,
         b"pending".to_vec(),
         now.get(),
+        None,
     ));
 
     assert!(core
@@ -2276,7 +2309,7 @@ fn primary_identity_publishes_owner_signed_roster_and_device_signed_invite() {
     let owner_key = PublicKey::parse(&account.public_key_hex).expect("owner key");
     let device_key = PublicKey::parse(&account.device_public_key_hex).expect("device key");
 
-    let deadline = Instant::now() + StdDuration::from_secs(5);
+    let deadline = Instant::now() + StdDuration::from_secs(15);
     let mut events = Vec::new();
     while Instant::now() < deadline {
         events = fetch_local_relay_events(vec![

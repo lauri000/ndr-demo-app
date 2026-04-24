@@ -41,28 +41,37 @@ fn message_order_key(message: &ChatMessageSnapshot) -> (u64, u64, &str) {
 pub(super) enum PendingInbound {
     Envelope {
         envelope: MessageEnvelope,
+        #[serde(default)]
+        expires_at_secs: Option<u64>,
     },
     Decrypted {
         sender_owner_hex: String,
         payload: Vec<u8>,
         created_at_secs: u64,
+        #[serde(default)]
+        expires_at_secs: Option<u64>,
     },
 }
 
 impl PendingInbound {
-    pub(super) fn envelope(envelope: MessageEnvelope) -> Self {
-        Self::Envelope { envelope }
+    pub(super) fn envelope(envelope: MessageEnvelope, expires_at_secs: Option<u64>) -> Self {
+        Self::Envelope {
+            envelope,
+            expires_at_secs,
+        }
     }
 
     pub(super) fn decrypted(
         sender_owner: OwnerPubkey,
         payload: Vec<u8>,
         created_at_secs: u64,
+        expires_at_secs: Option<u64>,
     ) -> Self {
         Self::Decrypted {
             sender_owner_hex: sender_owner.to_string(),
             payload,
             created_at_secs,
+            expires_at_secs,
         }
     }
 }
@@ -170,6 +179,7 @@ pub(super) struct RoutedChatMessage {
     pub(super) body: String,
     pub(super) is_outgoing: bool,
     pub(super) author: Option<String>,
+    pub(super) expires_at_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -384,6 +394,8 @@ pub(super) struct PersistedMessage {
     pub(super) reactions: Vec<MessageReactionSnapshot>,
     pub(super) is_outgoing: bool,
     pub(super) created_at_secs: u64,
+    #[serde(default)]
+    pub(super) expires_at_secs: Option<u64>,
     pub(super) delivery: PersistedDeliveryState,
 }
 

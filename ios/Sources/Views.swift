@@ -2248,6 +2248,12 @@ private struct ChatMessageRow: View {
 
                 if isLastInCluster {
                     HStack(spacing: 6) {
+                        if message.expiresAtSecs != nil {
+                            Image(systemName: "timer")
+                                .font(.system(.caption2, design: .rounded, weight: .semibold))
+                                .accessibilityLabel("Disappearing message")
+                                .accessibilityIdentifier("chatMessageDisappearing-\(message.id)")
+                        }
                         Text(irisMessageClock(message.createdAtSecs))
                             .font(.system(.caption2, design: .rounded, weight: .medium))
                         if message.isOutgoing {

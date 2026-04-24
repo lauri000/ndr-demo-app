@@ -230,6 +230,7 @@ impl AppCore {
                         chat_id,
                         text.to_string(),
                         now.get(),
+                        None,
                         DeliveryState::Pending,
                     );
                     self.queue_pending_outbound(
@@ -254,6 +255,7 @@ impl AppCore {
                                 chat_id,
                                 text.to_string(),
                                 now.get(),
+                                None,
                                 DeliveryState::Pending,
                             );
                             self.queue_pending_outbound(
@@ -278,6 +280,7 @@ impl AppCore {
                                 chat_id,
                                 text.to_string(),
                                 now.get(),
+                                None,
                                 DeliveryState::Failed,
                             );
                             self.update_message_delivery(
@@ -319,6 +322,7 @@ impl AppCore {
                         chat_id,
                         text.to_string(),
                         now.get(),
+                        None,
                         DeliveryState::Pending,
                     );
                     self.queue_pending_outbound(
@@ -343,6 +347,7 @@ impl AppCore {
                                 chat_id,
                                 text.to_string(),
                                 now.get(),
+                                None,
                                 DeliveryState::Pending,
                             );
                             self.queue_pending_outbound(
@@ -367,6 +372,7 @@ impl AppCore {
                                 chat_id,
                                 text.to_string(),
                                 now.get(),
+                                None,
                                 DeliveryState::Failed,
                             );
                             self.update_message_delivery(
@@ -400,6 +406,7 @@ impl AppCore {
                     sender_owner_hex,
                     payload,
                     created_at_secs,
+                    expires_at_secs,
                 } = item.clone()
                 {
                     let Ok(sender_pubkey) = PublicKey::parse(&sender_owner_hex) else {
@@ -410,6 +417,7 @@ impl AppCore {
                         OwnerPubkey::from_bytes(sender_pubkey.to_bytes()),
                         &payload,
                         created_at_secs,
+                        expires_at_secs,
                     ) {
                         Ok(()) => {
                             made_progress = true;
@@ -432,7 +440,11 @@ impl AppCore {
                     continue;
                 }
 
-                let PendingInbound::Envelope { envelope } = &item else {
+                let PendingInbound::Envelope {
+                    envelope,
+                    expires_at_secs,
+                } = &item
+                else {
                     continue;
                 };
 
@@ -456,6 +468,7 @@ impl AppCore {
                         message.owner_pubkey,
                         &message.payload,
                         envelope.created_at.get(),
+                        *expires_at_secs,
                     ) {
                         Ok(()) => {
                             made_progress = true;
@@ -472,6 +485,7 @@ impl AppCore {
                                 message.owner_pubkey,
                                 message.payload,
                                 envelope.created_at.get(),
+                                *expires_at_secs,
                             ));
                         }
                         Err(error) => {
@@ -817,6 +831,7 @@ impl AppCore {
         chat_id: &str,
         body: String,
         created_at_secs: u64,
+        expires_at_secs: Option<u64>,
         delivery: DeliveryState,
     ) -> ChatMessageSnapshot {
         let (body, attachments) = extract_message_attachments(&body);
@@ -834,6 +849,7 @@ impl AppCore {
             reactions: Vec::new(),
             is_outgoing: true,
             created_at_secs,
+            expires_at_secs,
             delivery,
         };
         self.threads
@@ -856,6 +872,7 @@ impl AppCore {
         chat_id: &str,
         body: String,
         created_at_secs: u64,
+        expires_at_secs: Option<u64>,
         author: Option<String>,
     ) {
         let message_id = self.allocate_message_id();
@@ -883,6 +900,7 @@ impl AppCore {
             reactions: Vec::new(),
             is_outgoing: false,
             created_at_secs,
+            expires_at_secs,
             delivery: DeliveryState::Received,
         });
     }
@@ -918,6 +936,7 @@ impl AppCore {
             reactions: Vec::new(),
             is_outgoing: false,
             created_at_secs,
+            expires_at_secs: None,
             delivery: DeliveryState::Received,
         });
     }
@@ -978,6 +997,7 @@ impl AppCore {
                 &routed.chat_id,
                 routed.body,
                 created_at_secs,
+                routed.expires_at_secs,
                 DeliveryState::Sent,
             );
         } else {
@@ -985,6 +1005,7 @@ impl AppCore {
                 &routed.chat_id,
                 routed.body,
                 created_at_secs,
+                routed.expires_at_secs,
                 routed.author,
             );
         }
@@ -1005,6 +1026,7 @@ impl AppCore {
                             body: decoded.body,
                             is_outgoing: true,
                             author: Some(self.owner_display_label(&local_owner.to_string())),
+                            expires_at_secs: None,
                         };
                     }
                 }
@@ -1015,6 +1037,7 @@ impl AppCore {
                 body: decoded.body,
                 is_outgoing: false,
                 author: Some(self.owner_display_label(&sender_owner.to_string())),
+                expires_at_secs: None,
             };
         }
 
@@ -1023,6 +1046,7 @@ impl AppCore {
             body: String::from_utf8_lossy(payload).into_owned(),
             is_outgoing: false,
             author: Some(self.owner_display_label(&sender_owner.to_string())),
+            expires_at_secs: None,
         }
     }
 
@@ -1044,6 +1068,7 @@ impl AppCore {
         sender_owner: OwnerPubkey,
         payload: &[u8],
         created_at_secs: u64,
+        expires_at_secs: Option<u64>,
     ) -> anyhow::Result<()> {
         let local_owner = self.logged_in.as_ref().expect("logged in").owner_pubkey;
 
@@ -1084,12 +1109,15 @@ impl AppCore {
                         author: Some(
                             self.owner_display_label(&group_message.sender_owner.to_string()),
                         ),
+                        expires_at_secs,
                     },
                     created_at_secs,
                 );
             }
             None => {
-                let routed = self.route_received_direct_message(local_owner, sender_owner, payload);
+                let mut routed =
+                    self.route_received_direct_message(local_owner, sender_owner, payload);
+                routed.expires_at_secs = expires_at_secs;
                 self.apply_routed_chat_message(routed, created_at_secs);
             }
         }

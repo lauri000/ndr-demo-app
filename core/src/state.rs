@@ -129,6 +129,7 @@ pub struct ChatMessageSnapshot {
     pub reactions: Vec<MessageReactionSnapshot>,
     pub is_outgoing: bool,
     pub created_at_secs: u64,
+    pub expires_at_secs: Option<u64>,
     pub delivery: DeliveryState,
 }
 

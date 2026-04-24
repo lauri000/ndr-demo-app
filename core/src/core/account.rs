@@ -461,6 +461,7 @@ impl AppCore {
                                         reactions: message.reactions.clone(),
                                         is_outgoing: message.is_outgoing,
                                         created_at_secs: message.created_at_secs,
+                                        expires_at_secs: message.expires_at_secs,
                                         delivery: message.delivery.clone().into(),
                                     }
                                 })
