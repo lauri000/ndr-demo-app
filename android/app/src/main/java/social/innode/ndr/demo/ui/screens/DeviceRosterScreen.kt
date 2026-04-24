@@ -9,11 +9,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
@@ -61,6 +63,8 @@ fun DeviceRosterScreen(
         roster?.canManageDevices == true &&
             normalizedInput.isNotBlank() &&
             !appState.busy.updatingRoster
+    val isCurrentDeviceRegistered =
+        roster?.devices?.any { it.devicePubkeyHex == roster.currentDevicePublicKeyHex } == true
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -135,9 +139,11 @@ fun DeviceRosterScreen(
                 Text(
                     text =
                         if (roster.canManageDevices) {
-                            "New linked devices should appear here automatically after they scan your owner QR. You can still scan an approval QR or paste a device npub as fallback."
+                            "Scan a link invite from the new device, or paste a device npub as fallback."
+                        } else if (isCurrentDeviceRegistered) {
+                            "Read-only on this device. Use a session with your main Secret Key to add or remove devices."
                         } else {
-                            "This linked device can read the roster but cannot publish roster changes."
+                            "This linked-device session is read-only and is not registered. Sign in here with your main Secret Key if you want to register this device."
                         },
                     style = MaterialTheme.typography.bodyMedium,
                     color = IrisTheme.palette.muted,
@@ -211,7 +217,7 @@ fun DeviceRosterScreen(
             }
 
             Text(
-                text = "Devices",
+                text = "Device Access",
                 style = MaterialTheme.typography.titleMedium,
             )
 
@@ -222,6 +228,23 @@ fun DeviceRosterScreen(
                         .testTag("deviceRosterList"),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                if (roster.devices.isEmpty()) {
+                    item {
+                        IrisSectionCard(
+                            modifier = Modifier.testTag("deviceRosterEmptyState"),
+                        ) {
+                            Text(
+                                text = "No registered devices",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Text(
+                                text = "Authorized device keys will appear here after the roster is published.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = IrisTheme.palette.muted,
+                            )
+                        }
+                    }
+                }
                 items(roster.devices, key = { it.devicePubkeyHex }) { device ->
                     DeviceRosterRow(
                         device = device,
@@ -267,6 +290,7 @@ private fun DeviceRosterRow(
 ) {
     val displayTitle = deviceDisplayTitle(device)
     val displaySubtitle = deviceDisplaySubtitle(device)
+    var confirmRemoval by remember { mutableStateOf(false) }
 
     IrisSectionCard(
         modifier = Modifier.testTag("deviceRosterRow-${device.devicePubkeyHex.take(12)}"),
@@ -320,7 +344,7 @@ private fun DeviceRosterRow(
 
                 IrisSecondaryButton(
                     text = "Remove device",
-                    onClick = onRemove,
+                    onClick = { confirmRemoval = true },
                     enabled = !isUpdatingRoster,
                     modifier =
                         Modifier.testTag(
@@ -329,6 +353,38 @@ private fun DeviceRosterRow(
                 )
             }
         }
+    }
+
+    if (confirmRemoval) {
+        AlertDialog(
+            onDismissRequest = { confirmRemoval = false },
+            title = { Text("Delete Device?") },
+            text = {
+                Text("This device will no longer be authorized for encrypted messaging.")
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmRemoval = false }) {
+                    Text("Cancel")
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmRemoval = false
+                        onRemove()
+                    },
+                    modifier =
+                        Modifier.testTag(
+                            "deviceRosterConfirmRemove-${device.devicePubkeyHex.take(12)}",
+                        ),
+                ) {
+                    Text(
+                        text = "Delete",
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+        )
     }
 }
 

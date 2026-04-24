@@ -1460,6 +1460,26 @@ struct DeviceRosterScreen: View {
         )
     }
 
+    private var isCurrentDeviceRegistered: Bool {
+        guard let roster = manager.state.deviceRoster else {
+            return false
+        }
+        return roster.devices.contains { $0.devicePubkeyHex == roster.currentDevicePublicKeyHex }
+    }
+
+    private var deviceAccessSubtitle: String {
+        guard let roster = manager.state.deviceRoster else {
+            return ""
+        }
+        if roster.canManageDevices {
+            return "Scan a link invite from the new device, or paste a device npub as fallback."
+        }
+        if isCurrentDeviceRegistered {
+            return "Read-only on this device. Use a session with your main Secret Key to add or remove devices."
+        }
+        return "This linked-device session is read-only and is not registered. Sign in here with your main Secret Key if you want to register this device."
+    }
+
     var body: some View {
         IrisScrollScreen {
             if let roster = manager.state.deviceRoster {
@@ -1476,7 +1496,7 @@ struct DeviceRosterScreen: View {
                 IrisSectionCard {
                     CardHeader(
                         title: "Approve a new device",
-                        subtitle: "New linked devices should appear here automatically after they scan the owner QR."
+                        subtitle: deviceAccessSubtitle
                     )
 
                     TextField("Device npub, hex, or approval code", text: $deviceInput)
@@ -1514,14 +1534,24 @@ struct DeviceRosterScreen: View {
 
                 IrisSectionCard {
                     CardHeader(
-                        title: "Device list",
+                        title: "Device Access",
                         subtitle: "\(roster.devices.count) linked device(s)."
                     )
 
-                    ForEach(Array(roster.devices.enumerated()), id: \.element.devicePubkeyHex) { index, device in
-                        DeviceRosterRow(manager: manager, device: device, canManageDevices: roster.canManageDevices)
-                        if index < roster.devices.count - 1 {
-                            Divider().overlay(palette.border)
+                    if roster.devices.isEmpty {
+                        Text("No registered devices")
+                            .font(.system(.headline, design: .rounded, weight: .semibold))
+                            .foregroundStyle(palette.textPrimary)
+                            .accessibilityIdentifier("deviceRosterEmptyState")
+                        Text("Authorized device keys will appear here after the roster is published.")
+                            .font(.system(.body, design: .rounded))
+                            .foregroundStyle(palette.muted)
+                    } else {
+                        ForEach(Array(roster.devices.enumerated()), id: \.element.devicePubkeyHex) { index, device in
+                            DeviceRosterRow(manager: manager, device: device, canManageDevices: roster.canManageDevices)
+                            if index < roster.devices.count - 1 {
+                                Divider().overlay(palette.border)
+                            }
                         }
                     }
                 }
@@ -1547,6 +1577,7 @@ private struct DeviceRosterRow: View {
     @ObservedObject var manager: AppManager
     let device: DeviceEntrySnapshot
     let canManageDevices: Bool
+    @State private var showingRemoveConfirmation = false
 
     private var displayTitle: String {
         device.isCurrentDevice ? PlatformDeviceLabels.currentDeviceLabel : "Linked device"
@@ -1610,11 +1641,20 @@ private struct DeviceRosterRow: View {
 
     private var removeButton: some View {
         Button("Remove device", role: .destructive) {
-            manager.removeAuthorizedDevice(devicePubkeyHex: device.devicePubkeyHex)
+            showingRemoveConfirmation = true
         }
         .buttonStyle(IrisSecondaryButtonStyle())
         .disabled(manager.state.busy.updatingRoster)
         .accessibilityIdentifier("deviceRosterRemove-\(String(device.devicePubkeyHex.prefix(12)))")
+        .alert("Delete Device?", isPresented: $showingRemoveConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                manager.removeAuthorizedDevice(devicePubkeyHex: device.devicePubkeyHex)
+            }
+            .accessibilityIdentifier("deviceRosterConfirmRemove-\(String(device.devicePubkeyHex.prefix(12)))")
+        } message: {
+            Text("This device will no longer be authorized for encrypted messaging.")
+        }
     }
 }
 
