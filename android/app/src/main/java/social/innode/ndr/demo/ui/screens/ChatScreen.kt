@@ -6,7 +6,9 @@ import android.provider.OpenableColumns
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -249,8 +251,8 @@ fun ChatScreen(
                                     previous.createdAtSecs.toLong(),
                                     message.createdAtSecs.toLong(),
                                 )
-                        val isFirstInCluster = startsMessageCluster(previous, message)
-                        val isLastInCluster = next == null || startsMessageCluster(message, next)
+                        val isFirstInCluster = startsMessageCluster(previous, message, chat.kind)
+                        val isLastInCluster = next == null || startsMessageCluster(message, next, chat.kind)
 
                         if (showDayChip) {
                             Box(
@@ -332,6 +334,7 @@ fun ChatScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageBubble(
     message: ChatMessageSnapshot,
@@ -339,11 +342,19 @@ private fun MessageBubble(
     isFirstInCluster: Boolean,
     isLastInCluster: Boolean,
 ) {
+    val clipboard = rememberIrisClipboard()
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (message.isOutgoing) Arrangement.End else Arrangement.Start,
     ) {
         Surface(
+            modifier =
+                Modifier.combinedClickable(
+                    onClick = {},
+                    onLongClick = {
+                        clipboard.setText("Message", copyableMessageText(message))
+                    },
+                ),
             color =
                 if (message.isOutgoing) {
                     IrisTheme.palette.bubbleMine
@@ -633,12 +644,25 @@ private fun attachmentIcon(attachment: MessageAttachmentSnapshot): ImageVector =
         else -> IrisIcons.File
     }
 
-private const val MessageClusterGapSecs = 3 * 60L
+private fun copyableMessageText(message: ChatMessageSnapshot): String {
+    val pieces = buildList {
+        if (message.body.isNotBlank()) {
+            add(message.body)
+        }
+        message.attachments.forEach { attachment ->
+            add(attachment.htreeUrl)
+        }
+    }
+    return pieces.joinToString("\n")
+}
+
+private const val MessageClusterGapSecs = 60L
 private const val ChatScreenLogTag = "IrisChat"
 
 private fun startsMessageCluster(
     previous: ChatMessageSnapshot?,
     message: ChatMessageSnapshot,
+    chatKind: ChatKind,
 ): Boolean {
     if (previous == null) {
         return true
@@ -648,15 +672,22 @@ private fun startsMessageCluster(
     if (!isSameTimelineDay(previousSecs, messageSecs)) {
         return true
     }
-    val gap = if (messageSecs >= previousSecs) messageSecs - previousSecs else 0
-    if (gap > MessageClusterGapSecs) {
-        return true
-    }
     if (previous.isOutgoing != message.isOutgoing) {
         return true
     }
-    if (!message.isOutgoing && previous.author != message.author) {
+    if (chatKind == ChatKind.GROUP && !message.isOutgoing && previous.author != message.author) {
         return true
     }
-    return false
+    val gap = if (messageSecs >= previousSecs) messageSecs - previousSecs else 0
+    if (gap <= MessageClusterGapSecs) {
+        return false
+    }
+    if (chatKind == ChatKind.DIRECT) {
+        val previousMinute = previousSecs / 60L
+        val messageMinute = messageSecs / 60L
+        if (messageMinute - previousMinute in 0L..1L) {
+            return false
+        }
+    }
+    return true
 }

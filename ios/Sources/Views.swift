@@ -965,8 +965,18 @@ struct ChatScreen: View {
                                             let previous = index > 0 ? chat.messages[index - 1] : nil
                                             let next = index + 1 < chat.messages.count ? chat.messages[index + 1] : nil
                                             let showDayChip = previous == nil || !irisSameTimelineDay(previous!.createdAtSecs, message.createdAtSecs)
-                                            let isFirstInCluster = irisStartsMessageCluster(previous: previous, message: message)
-                                            let isLastInCluster = next.map { irisStartsMessageCluster(previous: message, message: $0) } ?? true
+                                            let isFirstInCluster = irisStartsMessageCluster(
+                                                previous: previous,
+                                                message: message,
+                                                chatKind: chat.kind
+                                            )
+                                            let isLastInCluster = next.map {
+                                                irisStartsMessageCluster(
+                                                    previous: message,
+                                                    message: $0,
+                                                    chatKind: chat.kind
+                                                )
+                                            } ?? true
 
                                             ChatMessageRow(
                                                 message: message,
@@ -1138,11 +1148,12 @@ struct ChatScreen: View {
     }
 }
 
-private let irisMessageClusterGapSecs: UInt64 = 3 * 60
+private let irisMessageClusterGapSecs: UInt64 = 60
 
 private func irisStartsMessageCluster(
     previous: ChatMessageSnapshot?,
-    message: ChatMessageSnapshot
+    message: ChatMessageSnapshot,
+    chatKind: ChatKind
 ) -> Bool {
     guard let previous else {
         return true
@@ -1150,19 +1161,26 @@ private func irisStartsMessageCluster(
     if !irisSameTimelineDay(previous.createdAtSecs, message.createdAtSecs) {
         return true
     }
-    let gap = message.createdAtSecs >= previous.createdAtSecs
-        ? message.createdAtSecs - previous.createdAtSecs
-        : 0
-    if gap > irisMessageClusterGapSecs {
-        return true
-    }
     if previous.isOutgoing != message.isOutgoing {
         return true
     }
-    if !message.isOutgoing && previous.author != message.author {
+    if chatKind == .group && !message.isOutgoing && previous.author != message.author {
         return true
     }
-    return false
+    let gap = message.createdAtSecs >= previous.createdAtSecs
+        ? message.createdAtSecs - previous.createdAtSecs
+        : 0
+    if gap <= irisMessageClusterGapSecs {
+        return false
+    }
+    if chatKind == .direct {
+        let previousMinute = previous.createdAtSecs / 60
+        let messageMinute = message.createdAtSecs / 60
+        if messageMinute >= previousMinute && messageMinute - previousMinute <= 1 {
+            return false
+        }
+    }
+    return true
 }
 
 private enum ChatTimelineCoordinateSpace {
@@ -1845,6 +1863,11 @@ private struct ChatMessageRow: View {
                     RoundedRectangle(cornerRadius: 22, style: .continuous)
                         .fill(message.isOutgoing ? palette.bubbleMine : palette.bubbleTheirs)
                 )
+                .contextMenu {
+                    Button("Copy") {
+                        PlatformClipboard.setString(copyableMessageText(message))
+                    }
+                }
                 .accessibilityIdentifier("chatMessage-\(message.id)")
 
                 if isLastInCluster {
@@ -1908,6 +1931,15 @@ private struct ChatAttachmentView: View {
         }
         return "doc.fill"
     }
+}
+
+private func copyableMessageText(_ message: ChatMessageSnapshot) -> String {
+    var pieces: [String] = []
+    if !message.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        pieces.append(message.body)
+    }
+    pieces.append(contentsOf: message.attachments.map(\.htreeUrl))
+    return pieces.joined(separator: "\n")
 }
 
 private struct FlowWrap<Content: View>: View {

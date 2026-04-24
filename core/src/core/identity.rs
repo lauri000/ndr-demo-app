@@ -1,18 +1,17 @@
 use super::*;
+use nostr::nips::nip19::{FromBech32, Nip19};
 
 pub(crate) fn parse_peer_input(input: &str) -> anyhow::Result<(String, PublicKey)> {
-    let mut normalized = input.trim().to_ascii_lowercase();
-    if let Some(stripped) = normalized.strip_prefix("nostr:") {
-        normalized = stripped.to_string();
-    }
+    let normalized = normalize_peer_input_for_display(input);
     let pubkey = PublicKey::parse(&normalized)?;
     Ok((pubkey.to_hex(), pubkey))
 }
 
 pub(crate) fn normalize_peer_input_for_display(input: &str) -> String {
-    let mut normalized = input.trim().to_ascii_lowercase();
-    if let Some(stripped) = normalized.strip_prefix("nostr:") {
-        normalized = stripped.to_string();
+    let normalized = compact_identity_input(input);
+
+    if let Some(pubkey) = extract_nip19_identity(&normalized) {
+        return pubkey.to_bech32().unwrap_or_else(|_| pubkey.to_hex());
     }
 
     match PublicKey::parse(&normalized) {
@@ -22,6 +21,43 @@ pub(crate) fn normalize_peer_input_for_display(input: &str) -> String {
         Ok(pubkey) => pubkey.to_hex(),
         Err(_) => normalized,
     }
+}
+
+fn compact_identity_input(input: &str) -> String {
+    let compact = input
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    compact
+        .strip_prefix("nostr:")
+        .unwrap_or(&compact)
+        .to_string()
+}
+
+fn extract_nip19_identity(input: &str) -> Option<PublicKey> {
+    for prefix in ["npub1", "nprofile1"] {
+        let Some(start) = input.find(prefix) else {
+            continue;
+        };
+        let token = take_bech32_token(&input[start..]);
+        if let Ok(nip19) = Nip19::from_bech32(token) {
+            match nip19 {
+                Nip19::Pubkey(pubkey) => return Some(pubkey),
+                Nip19::Profile(profile) => return Some(profile.public_key),
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+fn take_bech32_token(input: &str) -> &str {
+    let end = input
+        .find(|ch: char| !ch.is_ascii_alphanumeric())
+        .unwrap_or(input.len());
+    &input[..end]
 }
 
 pub(super) fn parse_owner_input(input: &str) -> anyhow::Result<OwnerPubkey> {

@@ -375,14 +375,29 @@ fn normalize_and_validate_peer_input_accepts_expected_forms() {
         .unwrap_or_else(|poison| poison.into_inner());
     let npub = npub_for_fill(11);
     let (hex, _) = parse_peer_input(&npub).expect("parse npub");
+    let profile = nostr::nips::nip19::Nip19Profile::new(
+        PublicKey::parse(&npub).expect("profile public key"),
+        Vec::<&str>::new(),
+    )
+    .expect("profile");
+    let nprofile = profile.to_bech32().expect("nprofile");
 
     assert_eq!(normalize_peer_input_for_display(&npub), npub);
     assert_eq!(
         normalize_peer_input_for_display(&format!("nostr:{npub}")),
         npub
     );
+    assert_eq!(
+        normalize_peer_input_for_display(&format!("https://chat.iris.to/\n#{npub}")),
+        npub
+    );
+    assert_eq!(
+        normalize_peer_input_for_display(&format!("https://chat.iris.to/#/{nprofile}")),
+        npub
+    );
     assert_eq!(normalize_peer_input_for_display(&hex), hex);
     assert!(parse_peer_input(&format!("nostr:{hex}")).is_ok());
+    assert!(parse_peer_input(&format!("https://chat.iris.to/#/{nprofile}")).is_ok());
     assert!(parse_peer_input("not-a-key").is_err());
 }
 
