@@ -1,7 +1,9 @@
 package social.innode.ndr.demo.ui.components
 
+import android.graphics.BitmapFactory
 import android.text.format.DateUtils
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -54,17 +56,23 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import social.innode.ndr.demo.rust.DeliveryState
 import social.innode.ndr.demo.ui.theme.IrisTheme
+import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -146,8 +154,23 @@ fun IrisAvatar(
     modifier: Modifier = Modifier,
     size: Dp = 40.dp,
     emphasize: Boolean = false,
+    imageUrl: String? = null,
 ) {
     val palette = IrisTheme.palette
+    val avatarBitmap =
+        produceState<android.graphics.Bitmap?>(initialValue = null, imageUrl) {
+            val url = imageUrl?.trim().orEmpty()
+            value =
+                if (url.startsWith("https://") || url.startsWith("http://")) {
+                    withContext(Dispatchers.IO) {
+                        runCatching {
+                            URL(url).openStream().use { BitmapFactory.decodeStream(it) }
+                        }.getOrNull()
+                    }
+                } else {
+                    null
+                }
+        }
     Box(
         modifier =
             modifier
@@ -157,7 +180,14 @@ fun IrisAvatar(
                 .border(1.dp, palette.border, CircleShape),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
+        avatarBitmap.value?.let { bitmap ->
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.size(size),
+            )
+        } ?: Text(
             text = label.take(1).uppercase(),
             style = MaterialTheme.typography.titleSmall,
             color = if (emphasize) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,

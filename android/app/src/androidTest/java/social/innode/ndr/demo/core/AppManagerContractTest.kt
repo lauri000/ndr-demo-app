@@ -388,6 +388,7 @@ class AppManagerContractTest {
                     publicKeyHex = "owner-hex",
                     npub = "npub1owner",
                     displayName = "Owner",
+                    pictureUrl = null,
                     devicePublicKeyHex = "device-hex",
                     deviceNpub = "npub1device",
                     hasOwnerSigningAuthority = true,

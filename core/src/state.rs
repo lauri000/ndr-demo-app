@@ -60,6 +60,7 @@ pub struct AccountSnapshot {
     pub public_key_hex: String,
     pub npub: String,
     pub display_name: String,
+    pub picture_url: Option<String>,
     pub device_public_key_hex: String,
     pub device_npub: String,
     pub has_owner_signing_authority: bool,

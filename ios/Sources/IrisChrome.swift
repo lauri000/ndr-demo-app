@@ -288,11 +288,13 @@ struct IrisAvatar: View {
     let label: String
     let size: CGFloat
     let emphasize: Bool
+    let imageURL: String?
 
-    init(label: String, size: CGFloat = 42, emphasize: Bool = false) {
+    init(label: String, size: CGFloat = 42, emphasize: Bool = false, imageURL: String? = nil) {
         self.label = label
         self.size = size
         self.emphasize = emphasize
+        self.imageURL = imageURL
     }
 
     var body: some View {
@@ -301,11 +303,29 @@ struct IrisAvatar: View {
                 .fill(emphasize ? palette.accent : palette.panelAlt)
                 .overlay(Circle().stroke(palette.border, lineWidth: 1))
 
-            Text(String((label.trimmingCharacters(in: .whitespacesAndNewlines).first ?? "?")).uppercased())
-                .font(.system(size: size * 0.42, weight: .bold, design: .rounded))
-                .foregroundStyle(emphasize ? palette.onAccent : palette.textPrimary)
+            if let imageURL, let url = URL(string: imageURL) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    default:
+                        avatarInitial
+                    }
+                }
+                .clipShape(Circle())
+            } else {
+                avatarInitial
+            }
         }
         .frame(width: size, height: size)
+    }
+
+    private var avatarInitial: some View {
+        Text(String((label.trimmingCharacters(in: .whitespacesAndNewlines).first ?? "?")).uppercased())
+            .font(.system(size: size * 0.42, weight: .bold, design: .rounded))
+            .foregroundStyle(emphasize ? palette.onAccent : palette.textPrimary)
     }
 }
 

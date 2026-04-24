@@ -98,6 +98,10 @@ impl AppCore {
         let display_name = self
             .owner_display_name(&owner_public_key_hex)
             .unwrap_or_else(|| owner_npub.clone());
+        let picture_url = self
+            .owner_profiles
+            .get(&owner_public_key_hex)
+            .and_then(|profile| profile.picture.clone());
         let device_public_key_hex = logged_in.device_keys.public_key().to_hex();
         let device_npub = logged_in
             .device_keys
@@ -109,6 +113,7 @@ impl AppCore {
             public_key_hex: owner_public_key_hex,
             npub: owner_npub,
             display_name,
+            picture_url,
             device_public_key_hex,
             device_npub,
             has_owner_signing_authority: logged_in.owner_keys.is_some(),

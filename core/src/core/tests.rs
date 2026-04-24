@@ -278,6 +278,7 @@ fn logged_in_core_with_manager(
         public_key_hex: owner_keys.public_key().to_hex(),
         npub: owner_keys.public_key().to_bech32().expect("npub"),
         display_name: owner_keys.public_key().to_bech32().expect("npub"),
+        picture_url: None,
         device_public_key_hex: device_keys.public_key().to_hex(),
         device_npub: device_keys.public_key().to_bech32().expect("device npub"),
         has_owner_signing_authority: true,
@@ -3308,6 +3309,7 @@ fn metadata_event_updates_direct_chat_display_name() {
         serde_json::to_string(&NostrProfileMetadata {
             name: Some("Bob".to_string()),
             display_name: Some("Bob".to_string()),
+            picture: None,
         })
         .expect("metadata"),
     )
@@ -3360,6 +3362,7 @@ fn metadata_event_updates_group_member_display_name() {
         serde_json::to_string(&NostrProfileMetadata {
             name: Some("Bob".to_string()),
             display_name: Some("Bobby".to_string()),
+            picture: None,
         })
         .expect("metadata"),
     )
@@ -3411,6 +3414,42 @@ fn owner_profile_restores_display_name() {
             .expect("account")
             .display_name,
         "Alice"
+    );
+}
+
+#[test]
+fn metadata_event_updates_local_profile_picture_url() {
+    let _guard = relay_test_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let data_dir = TempDir::new().expect("temp dir");
+    let mut core = test_core(data_dir.path());
+    start_primary_test_session(&mut core, 217, false, false).expect("session");
+    let owner_keys = keys_for_fill(217);
+
+    let metadata_event = EventBuilder::new(
+        Kind::Metadata,
+        serde_json::to_string(&NostrProfileMetadata {
+            name: Some("Alice".to_string()),
+            display_name: Some("Alice".to_string()),
+            picture: Some("https://example.com/alice.jpg".to_string()),
+        })
+        .expect("metadata"),
+    )
+    .sign_with_keys(&owner_keys)
+    .expect("metadata event");
+
+    assert!(core.apply_profile_metadata_event(&metadata_event));
+    core.rebuild_state();
+
+    assert_eq!(
+        core.state
+            .account
+            .as_ref()
+            .expect("account")
+            .picture_url
+            .as_deref(),
+        Some("https://example.com/alice.jpg")
     );
 }
 

@@ -674,7 +674,11 @@ struct ChatListScreen: View {
     private func accountCard(_ account: AccountSnapshot) -> some View {
         IrisSectionCard {
             HStack(spacing: 14) {
-                IrisAvatar(label: account.displayName.isEmpty ? account.npub : account.displayName, emphasize: true)
+                IrisAvatar(
+                    label: account.displayName.isEmpty ? account.npub : account.displayName,
+                    emphasize: true,
+                    imageURL: account.pictureUrl
+                )
                 VStack(alignment: .leading, spacing: 4) {
                     Text(account.displayName.isEmpty ? "Your account" : account.displayName)
                         .font(.system(.headline, design: .rounded, weight: .semibold))
@@ -1736,7 +1740,12 @@ struct ProfileSheet: View {
                     if let account = manager.state.account {
                         IrisSectionCard(accent: true) {
                             HStack(spacing: 14) {
-                                IrisAvatar(label: account.displayName.isEmpty ? account.npub : account.displayName, size: 52, emphasize: true)
+                                IrisAvatar(
+                                    label: account.displayName.isEmpty ? account.npub : account.displayName,
+                                    size: 52,
+                                    emphasize: true,
+                                    imageURL: account.pictureUrl
+                                )
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(account.displayName.isEmpty ? "Owner profile" : account.displayName)
                                         .font(.system(.title3, design: .rounded, weight: .bold))
