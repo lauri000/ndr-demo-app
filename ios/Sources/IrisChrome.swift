@@ -522,6 +522,10 @@ struct IrisComposerBar: View {
     let isSending: Bool
     let onSend: () -> Void
 
+    private var canSend: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSending
+    }
+
     var body: some View {
         HStack(alignment: .bottom, spacing: 12) {
             Color.clear
@@ -531,15 +535,17 @@ struct IrisComposerBar: View {
             TextField(placeholder, text: $draft)
                 .irisDraftInputModifiers()
                 .irisInputField()
+                .submitLabel(.send)
+                .onSubmit(submitDraft)
                 .accessibilityIdentifier("chatMessageInput")
 
-            Button(action: onSend) {
+            Button(action: submitDraft) {
                 Image(systemName: isSending ? "ellipsis.circle.fill" : "paperplane.fill")
                     .font(.system(size: 18, weight: .bold))
                     .frame(width: IrisLayout.usesDesktopChrome ? 52 : 46, height: 46)
             }
             .buttonStyle(IrisPrimaryCircleButtonStyle())
-            .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
+            .disabled(!canSend)
             .accessibilityIdentifier("chatSendButton")
         }
         .padding(.horizontal, IrisLayout.contentHorizontalPadding)
@@ -554,6 +560,13 @@ struct IrisComposerBar: View {
         )
         .frame(maxWidth: IrisLayout.chatMaxWidth)
         .frame(maxWidth: .infinity)
+    }
+
+    private func submitDraft() {
+        guard canSend else {
+            return
+        }
+        onSend()
     }
 }
 

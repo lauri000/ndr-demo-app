@@ -23,7 +23,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import social.innode.ndr.demo.core.AppManager
@@ -36,6 +35,7 @@ import social.innode.ndr.demo.ui.components.IrisPrimaryButton
 import social.innode.ndr.demo.ui.components.IrisSectionCard
 import social.innode.ndr.demo.ui.components.IrisSecondaryButton
 import social.innode.ndr.demo.ui.components.IrisTopBar
+import social.innode.ndr.demo.ui.components.rememberIrisClipboard
 import social.innode.ndr.demo.ui.theme.IrisTheme
 
 @Composable
@@ -45,7 +45,7 @@ fun GroupDetailsScreen(
     groupId: String,
 ) {
     val details = appState.groupDetails?.takeIf { it.groupId == groupId }
-    val clipboard = LocalClipboardManager.current
+    val clipboard = rememberIrisClipboard()
     var renameValue by remember(groupId, details?.name) { mutableStateOf(details?.name.orEmpty()) }
     var memberInput by remember(groupId) { mutableStateOf("") }
     var showScanner by remember { mutableStateOf(false) }
@@ -243,7 +243,11 @@ fun GroupDetailsScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         IrisSecondaryButton(
                             text = "Paste",
-                            onClick = { memberInput = normalizePeerInput(clipboard.getText()?.text.orEmpty()) },
+                            onClick = {
+                                clipboard.getText { text ->
+                                    memberInput = normalizePeerInput(text)
+                                }
+                            },
                             icon = {
                                 Icon(
                                     imageVector = IrisIcons.Copy,

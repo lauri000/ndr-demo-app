@@ -26,13 +26,7 @@ final class IrisChatUITests: XCTestCase {
         let app = launchCleanApp()
 
         createAccount(app)
-
-        element(app, "chatListNewChatButton").tap()
-        XCTAssertTrue(element(app, "newChatPrimaryCard").waitForExistence(timeout: 10))
-        XCTAssertTrue(element(app, "newChatPeerInput").waitForExistence(timeout: 10))
-        element(app, "newChatPeerInput").tap()
-        element(app, "newChatPeerInput").typeText(validPeerNpub)
-        element(app, "newChatStartButton").tap()
+        openChatWithPeer(app)
 
         XCTAssertTrue(element(app, "chatComposerBar").waitForExistence(timeout: 10))
         XCTAssertTrue(element(app, "chatMessageInput").waitForExistence(timeout: 10))
@@ -41,6 +35,20 @@ final class IrisChatUITests: XCTestCase {
         element(app, "chatSendButton").tap()
 
         XCTAssertTrue(app.staticTexts["hello from ios ui test"].waitForExistence(timeout: 15))
+    }
+
+    func testReturnKeySendsMessageLocally() {
+        let app = launchCleanApp()
+
+        createAccount(app)
+        openChatWithPeer(app)
+
+        XCTAssertTrue(element(app, "chatComposerBar").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "chatMessageInput").waitForExistence(timeout: 10))
+        element(app, "chatMessageInput").tap()
+        element(app, "chatMessageInput").typeText("hello from return key\n")
+
+        XCTAssertTrue(app.staticTexts["hello from return key"].waitForExistence(timeout: 15))
     }
 
     func testCreateGroupAndOpenGroupDetails() {
@@ -64,6 +72,15 @@ final class IrisChatUITests: XCTestCase {
         XCTAssertTrue(element(app, "groupDetailsScreen").waitForExistence(timeout: 10))
         XCTAssertTrue(element(app, "groupDetailsNameInput").waitForExistence(timeout: 5))
         XCTAssertTrue(element(app, "groupDetailsAddMembersButton").waitForExistence(timeout: 5))
+    }
+
+    private func openChatWithPeer(_ app: XCUIApplication) {
+        element(app, "chatListNewChatButton").tap()
+        XCTAssertTrue(element(app, "newChatPrimaryCard").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "newChatPeerInput").waitForExistence(timeout: 10))
+        element(app, "newChatPeerInput").tap()
+        element(app, "newChatPeerInput").typeText(validPeerNpub)
+        element(app, "newChatStartButton").tap()
     }
 
     func testRestoreAccountOpensDedicatedScreenAndEntersChatList() {

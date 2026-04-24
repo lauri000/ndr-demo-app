@@ -1,5 +1,7 @@
 package social.innode.ndr.demo
 
+import android.view.KeyEvent as AndroidKeyEvent
+import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -10,6 +12,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyPress
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.test.espresso.Espresso.pressBack
@@ -150,6 +153,35 @@ class PikaLikeUiTest {
         composeRule.onNodeWithTag("chatSendButton", useUnmergedTree = true).performClick()
 
         composeRule.waitForText("hello from test")
+        composeRule.onNodeWithTag("chatSendButton", useUnmergedTree = true).assertIsNotEnabled()
+    }
+
+    @Test
+    fun enter_key_sends_message_locally() {
+        composeRule.ensureChatList()
+        composeRule.onNodeWithTag("chatListNewChatButton", useUnmergedTree = true).performClick()
+        composeRule.waitForTag("chatListNewChatOption")
+        composeRule.onNodeWithTag("chatListNewChatOption", useUnmergedTree = true).performClick()
+
+        composeRule.waitForTag("newChatPeerInput")
+        composeRule.onNodeWithTag("newChatPeerInput", useUnmergedTree = true)
+            .performTextInput(VALID_PEER_NPUB)
+        composeRule.onNodeWithTag("newChatStartButton", useUnmergedTree = true).performClick()
+
+        composeRule.waitForTag("chatMessageInput")
+        composeRule.onNodeWithTag("chatMessageInput", useUnmergedTree = true)
+            .performTextInput("hello from enter")
+        composeRule.onNodeWithTag("chatMessageInput", useUnmergedTree = true)
+            .performKeyPress(
+                KeyEvent(
+                    AndroidKeyEvent(
+                        AndroidKeyEvent.ACTION_DOWN,
+                        AndroidKeyEvent.KEYCODE_ENTER,
+                    ),
+                ),
+            )
+
+        composeRule.waitForText("hello from enter")
         composeRule.onNodeWithTag("chatSendButton", useUnmergedTree = true).assertIsNotEnabled()
     }
 

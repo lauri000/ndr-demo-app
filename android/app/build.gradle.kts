@@ -217,7 +217,7 @@ android {
         unitTests.isIncludeAndroidResources = true
     }
 
-    sourceSets["main"].jniLibs.setSrcDirs(listOf(generatedJniDir.get().asFile))
+    sourceSets["main"].jniLibs.directories.add(generatedJniDir.get().asFile.absolutePath)
 }
 
 val buildRustHostDebug by tasks.registering(Exec::class) {

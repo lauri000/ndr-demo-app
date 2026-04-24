@@ -1,6 +1,8 @@
 package social.innode.ndr.demo.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,8 +41,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -355,6 +364,13 @@ private fun ComposerBar(
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
 ) {
+    val canSend = draft.isNotBlank() && !isSending
+    fun submitDraft() {
+        if (canSend) {
+            onSend()
+        }
+    }
+
     Surface(
         modifier =
             Modifier
@@ -390,9 +406,23 @@ private fun ComposerBar(
                     modifier =
                         Modifier
                             .fillMaxWidth()
+                            .onPreviewKeyEvent { event ->
+                                if (
+                                    event.type == KeyEventType.KeyDown &&
+                                    event.key == Key.Enter &&
+                                    !event.isShiftPressed
+                                ) {
+                                    submitDraft()
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
                             .testTag("chatMessageInput"),
                     minLines = 1,
                     maxLines = 5,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { submitDraft() }),
                     colors =
                         TextFieldDefaults.colors(
                             focusedContainerColor = Color.Transparent,
@@ -414,8 +444,8 @@ private fun ComposerBar(
                 shape = CircleShape,
             ) {
                 IconButton(
-                    onClick = onSend,
-                    enabled = draft.isNotBlank() && !isSending,
+                    onClick = { submitDraft() },
+                    enabled = canSend,
                     modifier = Modifier.testTag("chatSendButton"),
                 ) {
                     if (isSending) {

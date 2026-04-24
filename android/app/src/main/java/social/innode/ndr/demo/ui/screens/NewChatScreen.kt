@@ -19,7 +19,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import social.innode.ndr.demo.core.AppManager
@@ -32,6 +31,7 @@ import social.innode.ndr.demo.ui.components.IrisPrimaryButton
 import social.innode.ndr.demo.ui.components.IrisSectionCard
 import social.innode.ndr.demo.ui.components.IrisSecondaryButton
 import social.innode.ndr.demo.ui.components.IrisTopBar
+import social.innode.ndr.demo.ui.components.rememberIrisClipboard
 import social.innode.ndr.demo.ui.theme.IrisTheme
 
 @Composable
@@ -39,7 +39,7 @@ fun NewChatScreen(
     appManager: AppManager,
     appState: AppState,
 ) {
-    val clipboard = LocalClipboardManager.current
+    val clipboard = rememberIrisClipboard()
     var peerInput by remember { mutableStateOf("") }
     var showScanner by remember { mutableStateOf(false) }
     val normalizedInput = normalizePeerInput(peerInput)
@@ -121,7 +121,9 @@ fun NewChatScreen(
                     IrisSecondaryButton(
                         text = "Paste",
                         onClick = {
-                            peerInput = normalizePeerInput(clipboard.getText()?.text.orEmpty())
+                            clipboard.getText { text ->
+                                peerInput = normalizePeerInput(text)
+                            }
                         },
                         modifier = Modifier.testTag("newChatPasteButton"),
                         icon = {

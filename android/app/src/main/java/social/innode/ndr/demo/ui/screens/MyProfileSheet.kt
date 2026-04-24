@@ -25,10 +25,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import social.innode.ndr.demo.core.AppManager
@@ -37,6 +35,7 @@ import social.innode.ndr.demo.ui.components.IrisInlineAction
 import social.innode.ndr.demo.ui.components.IrisPrimaryButton
 import social.innode.ndr.demo.ui.components.IrisSectionCard
 import social.innode.ndr.demo.ui.components.IrisSecondaryButton
+import social.innode.ndr.demo.ui.components.rememberIrisClipboard
 import social.innode.ndr.demo.ui.theme.IrisTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -52,7 +51,7 @@ fun MyProfileSheet(
     onLogout: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val clipboard = LocalClipboardManager.current
+    val clipboard = rememberIrisClipboard()
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val qrBitmap =
@@ -119,7 +118,7 @@ fun MyProfileSheet(
                 }
                 IrisInlineAction(
                     text = "Copy owner npub",
-                    onClick = { clipboard.setText(AnnotatedString(npub)) },
+                    onClick = { clipboard.setText("Owner npub", npub) },
                 ) {
                     Icon(imageVector = IrisIcons.Copy, contentDescription = null)
                 }
@@ -217,7 +216,7 @@ fun MyProfileSheet(
                             supportBusy = true
                             val bundle = appManager.exportSupportBundleJson()
                             supportBusy = false
-                            clipboard.setText(AnnotatedString(bundle))
+                            clipboard.setText("Support bundle", bundle)
                             Toast.makeText(context, "Support bundle copied", Toast.LENGTH_SHORT).show()
                         }
                     },

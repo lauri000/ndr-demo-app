@@ -36,9 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -53,6 +51,7 @@ import social.innode.ndr.demo.rust.normalizePeerInput
 import social.innode.ndr.demo.ui.components.IrisPrimaryButton
 import social.innode.ndr.demo.ui.components.IrisSectionCard
 import social.innode.ndr.demo.ui.components.IrisSecondaryButton
+import social.innode.ndr.demo.ui.components.rememberIrisClipboard
 import social.innode.ndr.demo.ui.theme.IrisTheme
 
 @Composable
@@ -391,7 +390,7 @@ fun AddDeviceScreen(
 ) {
     var ownerInput by rememberSaveable { mutableStateOf("") }
     var showScanner by remember { mutableStateOf(false) }
-    val clipboard = LocalClipboardManager.current
+    val clipboard = rememberIrisClipboard()
     val normalizedOwnerInput = normalizePeerInput(ownerInput)
     val isValidOwnerInput =
         normalizedOwnerInput.isNotBlank() && isValidPeerInput(normalizedOwnerInput)
@@ -448,7 +447,9 @@ fun AddDeviceScreen(
                     IrisSecondaryButton(
                         text = "Paste",
                         onClick = {
-                            ownerInput = normalizePeerInput(clipboard.getText()?.text.orEmpty())
+                            clipboard.getText { text ->
+                                ownerInput = normalizePeerInput(text)
+                            }
                         },
                         enabled = !appState.busy.linkingDevice,
                         modifier =
@@ -533,7 +534,7 @@ private fun AddDeviceQrPanel(
     appState: AppState,
     awaitingApproval: Boolean,
 ) {
-    val clipboard = LocalClipboardManager.current
+    val clipboard = rememberIrisClipboard()
     val account = appState.account
 
     if (!awaitingApproval || account == null) {
@@ -603,7 +604,7 @@ private fun AddDeviceQrPanel(
         }
         IrisSecondaryButton(
             text = "Copy approval QR",
-            onClick = { clipboard.setText(AnnotatedString(approvalQrValue)) },
+            onClick = { clipboard.setText("Approval QR", approvalQrValue) },
             modifier =
                 Modifier
                     .fillMaxWidth()
