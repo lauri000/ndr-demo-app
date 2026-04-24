@@ -734,6 +734,66 @@ private let IrisComposerEmojiChoices = [
     "🌞", "🌙", "⭐️", "🍓", "☕️", "🌊", "🚀", "✅"
 ]
 
+private enum IrisAttachmentCategory: String {
+    case image = "Image"
+    case video = "Video"
+    case audio = "Audio"
+    case archive = "Archive"
+    case document = "Document"
+    case file = "File"
+
+    var systemIcon: String {
+        switch self {
+        case .image:
+            return "photo.fill"
+        case .video:
+            return "play.rectangle.fill"
+        case .audio:
+            return "waveform"
+        case .archive:
+            return "archivebox.fill"
+        case .document:
+            return "doc.text.fill"
+        case .file:
+            return "doc.fill"
+        }
+    }
+}
+
+private let irisImageExtensions: Set<String> = ["gif", "heic", "heif", "jpeg", "jpg", "png", "webp", "bmp", "tif", "tiff", "avif"]
+private let irisVideoExtensions: Set<String> = ["avi", "flv", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ogv", "webm", "wmv", "ts", "mts", "m2ts"]
+private let irisAudioExtensions: Set<String> = ["aac", "aiff", "flac", "m4a", "mp3", "ogg", "opus", "wav", "wma"]
+private let irisArchiveExtensions: Set<String> = ["7z", "apk", "arc", "arj", "bz2", "cpio", "gz", "jar", "rar", "tar", "xz", "zip"]
+private let irisDocumentExtensions: Set<String> = ["csv", "doc", "docm", "docx", "json", "key", "md", "odf", "odg", "odp", "ods", "odt", "pdf", "ppt", "pptx", "rtf", "tex", "txt", "xhtml", "xls", "xlsx", "xml", "yaml", "yml"]
+
+private func irisAttachmentCategory(from filename: String) -> IrisAttachmentCategory {
+    let ext = filename
+        .split(separator: ".")
+        .last
+        .map { String($0).lowercased() }
+
+    guard let extensionValue = ext, !extensionValue.isEmpty else {
+        return .file
+    }
+
+    if irisImageExtensions.contains(extensionValue) {
+        return .image
+    }
+    if irisVideoExtensions.contains(extensionValue) {
+        return .video
+    }
+    if irisAudioExtensions.contains(extensionValue) {
+        return .audio
+    }
+    if irisArchiveExtensions.contains(extensionValue) {
+        return .archive
+    }
+    if irisDocumentExtensions.contains(extensionValue) {
+        return .document
+    }
+    return .file
+}
+
 private struct IrisSelectedAttachmentChip: View {
     @Environment(\.irisPalette) private var palette
     let attachment: StagedAttachment
@@ -741,16 +801,24 @@ private struct IrisSelectedAttachmentChip: View {
     let onRemove: () -> Void
 
     var body: some View {
+        let category = irisAttachmentCategory(from: attachment.filename)
+
         HStack(spacing: 7) {
-            Image(systemName: "doc.fill")
+            Image(systemName: category.systemIcon)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(palette.muted)
-            Text(attachment.filename)
-                .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                .foregroundStyle(palette.textPrimary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: 220)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(attachment.filename)
+                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                    .foregroundStyle(palette.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(category.rawValue)
+                    .font(.system(.caption, design: .rounded, weight: .medium))
+                    .foregroundStyle(palette.muted)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: 220, alignment: .leading)
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 16, weight: .semibold))
@@ -760,6 +828,7 @@ private struct IrisSelectedAttachmentChip: View {
             .disabled(!enabled)
             .accessibilityIdentifier("chatSelectedAttachmentRemove")
         }
+        .accessibilityLabel("\(category.rawValue), \(attachment.filename)")
         .padding(.leading, 11)
         .padding(.trailing, 7)
         .padding(.vertical, 7)

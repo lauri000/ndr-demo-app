@@ -45,6 +45,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.Audiotrack
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -72,6 +77,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -1115,9 +1122,14 @@ private fun SelectedAttachmentChip(
     enabled: Boolean,
     onRemove: () -> Unit,
 ) {
+    val selectedAttachmentType = attachmentType(attachment)
+
     Surface(
         color = IrisTheme.palette.panel,
         shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.semantics {
+            contentDescription = "${selectedAttachmentType.label}, ${attachment.filename}"
+        },
     ) {
         Row(
             modifier = Modifier.padding(start = 10.dp, top = 7.dp, end = 4.dp, bottom = 7.dp),
@@ -1125,19 +1137,30 @@ private fun SelectedAttachmentChip(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                imageVector = IrisIcons.File,
+                imageVector = selectedAttachmentType.icon,
                 contentDescription = null,
                 tint = IrisTheme.palette.muted,
                 modifier = Modifier.size(18.dp),
             )
-            Text(
-                text = attachment.filename,
-                modifier = Modifier.widthIn(max = 220.dp),
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Column(
+                modifier = Modifier.widthIn(max = 200.dp),
+                verticalArrangement = Arrangement.spacedBy(1.dp),
+            ) {
+                Text(
+                    text = attachment.filename,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = selectedAttachmentType.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = IrisTheme.palette.muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             IconButton(
                 onClick = onRemove,
                 enabled = enabled,
@@ -1161,6 +1184,67 @@ private data class PickedAttachment(
     val path: String,
     val filename: String,
 )
+
+private enum class ChatAttachmentType(
+    val label: String,
+    val icon: ImageVector,
+) {
+    IMAGE("Image", Icons.Rounded.Image),
+    VIDEO("Video", Icons.Rounded.Movie),
+    AUDIO("Audio", Icons.Rounded.Audiotrack),
+    ARCHIVE("Archive", Icons.Rounded.Archive),
+    DOCUMENT("Document", Icons.Rounded.Description),
+    FILE("File", IrisIcons.File),
+}
+
+private val chatImageExtensions = setOf(
+    "gif", "heic", "heif", "jpeg", "jpg", "png", "webp", "bmp", "tif", "tiff", "avif",
+)
+private val chatVideoExtensions = setOf("avi", "flv", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ogv", "webm", "wmv", "ts", "mts", "m2ts")
+private val chatAudioExtensions = setOf("aac", "aiff", "flac", "m4a", "mp3", "ogg", "opus", "wav", "wma")
+private val chatArchiveExtensions = setOf("7z", "apk", "arc", "arj", "bz2", "cpio", "gz", "jar", "rar", "tar", "xz", "zip")
+private val chatDocumentExtensions = setOf(
+    "csv", "doc", "docm", "docx", "json", "key", "md", "odf", "odg", "odp", "ods", "odt", "pdf", "ppt", "pptx", "rtf", "tex", "txt", "xhtml", "xls", "xlsx", "xml", "yaml", "yml",
+)
+
+private fun attachmentType(attachment: PickedAttachment): ChatAttachmentType =
+    attachmentType(attachment.filename)
+
+private fun attachmentType(attachment: MessageAttachmentSnapshot): ChatAttachmentType {
+    if (attachment.isImage) {
+        return ChatAttachmentType.IMAGE
+    }
+    if (attachment.isVideo) {
+        return ChatAttachmentType.VIDEO
+    }
+    if (attachment.isAudio) {
+        return ChatAttachmentType.AUDIO
+    }
+    return attachmentType(attachment.filename)
+}
+
+private fun attachmentType(filename: String): ChatAttachmentType {
+    val extension = filename.substringAfterLast(".", "").trim().lowercase()
+    if (extension.isEmpty()) {
+        return ChatAttachmentType.FILE
+    }
+    if (chatImageExtensions.contains(extension)) {
+        return ChatAttachmentType.IMAGE
+    }
+    if (chatVideoExtensions.contains(extension)) {
+        return ChatAttachmentType.VIDEO
+    }
+    if (chatAudioExtensions.contains(extension)) {
+        return ChatAttachmentType.AUDIO
+    }
+    if (chatArchiveExtensions.contains(extension)) {
+        return ChatAttachmentType.ARCHIVE
+    }
+    if (chatDocumentExtensions.contains(extension)) {
+        return ChatAttachmentType.DOCUMENT
+    }
+    return ChatAttachmentType.FILE
+}
 
 private fun copyAttachmentToCache(
     context: Context,
@@ -1219,6 +1303,7 @@ private fun AttachmentChip(
         } else {
             MaterialTheme.colorScheme.onSurface
         }
+    val type = attachmentType(attachment)
 
     suspend fun loadImageIfNeeded(): ByteArray? {
         localImageData?.let { return it }
@@ -1317,6 +1402,7 @@ private fun AttachmentChip(
     Row(
         modifier =
             Modifier
+                .semantics { contentDescription = "${type.label}, ${attachment.filename}" }
                 .clip(RoundedCornerShape(12.dp))
                 .background(foreground.copy(alpha = 0.12f))
                 .clickable { clipboard.setText(attachment.filename, attachment.htreeUrl) }
@@ -1325,18 +1411,30 @@ private fun AttachmentChip(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            imageVector = attachmentIcon(attachment),
+            imageVector = type.icon,
             contentDescription = null,
             tint = foreground,
             modifier = Modifier.size(20.dp),
         )
-        Text(
-            text = attachment.filename,
-            style = MaterialTheme.typography.labelLarge,
-            color = foreground,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Column(
+            modifier = Modifier.widthIn(max = 220.dp),
+            verticalArrangement = Arrangement.spacedBy(1.dp),
+        ) {
+            Text(
+                text = attachment.filename,
+                style = MaterialTheme.typography.labelLarge,
+                color = foreground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = type.label,
+                style = MaterialTheme.typography.labelSmall,
+                color = foreground.copy(alpha = 0.72f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
@@ -1484,14 +1582,6 @@ private fun isAnimatedImage(
     isLikelyGif(filename) ||
         data.take(6).toByteArray().contentEquals("GIF87a".toByteArray()) ||
         data.take(6).toByteArray().contentEquals("GIF89a".toByteArray())
-
-private fun attachmentIcon(attachment: MessageAttachmentSnapshot): ImageVector =
-    when {
-        attachment.isImage -> IrisIcons.Image
-        attachment.isVideo -> IrisIcons.Movie
-        attachment.isAudio -> IrisIcons.Audio
-        else -> IrisIcons.File
-    }
 
 private fun copyableMessageText(message: ChatMessageSnapshot): String {
     val pieces = buildList {

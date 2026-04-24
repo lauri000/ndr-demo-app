@@ -2121,6 +2121,79 @@ private struct ReplyPreviewView: View {
     }
 }
 
+private enum ChatAttachmentCategory: String {
+    case image = "Image"
+    case video = "Video"
+    case audio = "Audio"
+    case archive = "Archive"
+    case document = "Document"
+    case file = "File"
+
+    var systemIcon: String {
+        switch self {
+        case .image:
+            return "photo.fill"
+        case .video:
+            return "play.rectangle.fill"
+        case .audio:
+            return "waveform"
+        case .archive:
+            return "archivebox.fill"
+        case .document:
+            return "doc.text.fill"
+        case .file:
+            return "doc.fill"
+        }
+    }
+}
+
+private let chatImageExtensions: Set<String> = ["gif", "heic", "heif", "jpeg", "jpg", "png", "webp", "bmp", "tif", "tiff", "avif"]
+private let chatVideoExtensions: Set<String> = ["avi", "flv", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ogv", "webm", "wmv", "ts", "mts", "m2ts"]
+private let chatAudioExtensions: Set<String> = ["aac", "aiff", "flac", "m4a", "mp3", "ogg", "opus", "wav", "wma"]
+private let chatArchiveExtensions: Set<String> = ["7z", "apk", "arc", "arj", "bz2", "cpio", "gz", "jar", "rar", "tar", "xz", "zip"]
+private let chatDocumentExtensions: Set<String> = ["csv", "doc", "docm", "docx", "json", "key", "md", "odf", "odg", "odp", "ods", "odt", "pdf", "ppt", "pptx", "rtf", "tex", "txt", "xhtml", "xls", "xlsx", "xml", "yaml", "yml"]
+
+private func chatAttachmentCategory(from filename: String) -> ChatAttachmentCategory {
+    let ext = filename
+        .split(separator: ".")
+        .last
+        .map { String($0).lowercased() }
+
+    guard let extensionValue = ext, !extensionValue.isEmpty else {
+        return .file
+    }
+
+    if chatImageExtensions.contains(extensionValue) {
+        return .image
+    }
+    if chatVideoExtensions.contains(extensionValue) {
+        return .video
+    }
+    if chatAudioExtensions.contains(extensionValue) {
+        return .audio
+    }
+    if chatArchiveExtensions.contains(extensionValue) {
+        return .archive
+    }
+    if chatDocumentExtensions.contains(extensionValue) {
+        return .document
+    }
+    return .file
+}
+
+private func chatAttachmentCategory(for attachment: MessageAttachmentSnapshot) -> ChatAttachmentCategory {
+    if attachment.isImage {
+        return .image
+    }
+    if attachment.isVideo {
+        return .video
+    }
+    if attachment.isAudio {
+        return .audio
+    }
+    return chatAttachmentCategory(from: attachment.filename)
+}
+
 private struct ChatAttachmentView: View {
     @Environment(\.irisPalette) private var palette
 
@@ -2191,16 +2264,24 @@ private struct ChatAttachmentView: View {
                 await loadImageIfNeeded()
             }
         } else {
+            let category = chatAttachmentCategory(for: attachment)
+
             Button {
                 PlatformClipboard.setString(attachment.htreeUrl)
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: iconName)
+                    Image(systemName: category.systemIcon)
                         .font(.system(size: 15, weight: .semibold))
                         .frame(width: 20, height: 20)
-                    Text(attachment.filename)
-                        .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                        .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(attachment.filename)
+                            .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                            .lineLimit(1)
+                        Text(category.rawValue)
+                            .font(.system(.caption, design: .rounded, weight: .medium))
+                            .foregroundStyle(isOutgoing ? palette.onBubbleMine.opacity(0.6) : palette.onBubbleTheirs.opacity(0.6))
+                            .lineLimit(1)
+                    }
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
@@ -2210,7 +2291,7 @@ private struct ChatAttachmentView: View {
                 )
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(attachment.filename)
+            .accessibilityLabel("\(category.rawValue), \(attachment.filename)")
         }
     }
 
@@ -2235,18 +2316,6 @@ private struct ChatAttachmentView: View {
         isLoadingImage = false
     }
 
-    private var iconName: String {
-        if attachment.isImage {
-            return "photo.fill"
-        }
-        if attachment.isVideo {
-            return "play.rectangle.fill"
-        }
-        if attachment.isAudio {
-            return "waveform"
-        }
-        return "doc.fill"
-    }
 }
 
 private struct ImageViewerItem: Identifiable, Equatable {
