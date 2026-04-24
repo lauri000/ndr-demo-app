@@ -1,4 +1,4 @@
-use crate::state::Screen;
+use crate::state::{OutgoingAttachment, Screen};
 
 #[derive(uniffi::Enum, Clone, Debug)]
 pub enum AppAction {
@@ -36,6 +36,11 @@ pub enum AppAction {
         chat_id: String,
         file_path: String,
         filename: String,
+        caption: String,
+    },
+    SendAttachments {
+        chat_id: String,
+        attachments: Vec<OutgoingAttachment>,
         caption: String,
     },
     UpdateGroupName {

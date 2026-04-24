@@ -11,8 +11,8 @@ Compared against `~/src/iris-chat-flutter` on 2026-04-24. Sources used include F
 - [x] Basic hashtree attachment send path through native file pickers.
 - [x] Strip raw `nhash.../filename` attachment links from displayed message body and render file chips.
 - [x] Long-press/context-menu copy for message text and attachment URLs.
-- [ ] Selected attachment tray before send, with removable chips and thumbnail previews. Flutter coverage: `test/widget/message_input_test.dart`.
-- [ ] Upload progress label and progress bar for attachment upload. Flutter coverage: `test/widget/message_input_test.dart`.
+- [x] Selected attachment tray before send, with removable file chips. Flutter coverage: `test/widget/message_input_test.dart`.
+- [x] Upload progress label and progress bar for attachment upload. Flutter coverage: `test/widget/message_input_test.dart`.
 - [ ] Desktop emoji button and inline emoji picker. Flutter coverage: `test/widget/message_input_test.dart`.
 - [ ] Hover action dock on desktop message bubbles with reply, react, and more. Flutter coverage: `test/widget/chat_message_bubble_test.dart`, `integration_test/message_actions_macos_suite.dart`.
 - [ ] Reply-to message composer state and reply rendering.
@@ -60,7 +60,7 @@ Compared against `~/src/iris-chat-flutter` on 2026-04-24. Sources used include F
 - [ ] Hashtree download path for opening attachments locally.
 - [ ] Image proxy settings and URL rewrite controls. Flutter coverage: `test/unit/core/services/imgproxy_service_test.dart`, `test/widget/settings_screen_test.dart`.
 - [ ] Attachment cache management for downloaded media.
-- [ ] Multiple attachments per composer send.
+- [x] Multiple attachments per composer send.
 
 ## Test And Release Parity
 

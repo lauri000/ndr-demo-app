@@ -35,6 +35,7 @@ import social.innode.ndr.demo.rust.AppReconciler
 import social.innode.ndr.demo.rust.AppState
 import social.innode.ndr.demo.rust.AppUpdate
 import social.innode.ndr.demo.rust.FfiApp
+import social.innode.ndr.demo.rust.OutgoingAttachment
 import social.innode.ndr.demo.rust.Screen
 
 interface RustAppClient {
@@ -255,6 +256,32 @@ class AppManager(
                 trimmedChatId,
                 trimmedPath,
                 trimmedFilename,
+                caption.trim(),
+            ),
+        )
+    }
+
+    fun sendAttachments(
+        chatId: String,
+        attachments: List<OutgoingAttachment>,
+        caption: String,
+    ) {
+        val trimmedChatId = chatId.trim()
+        val outgoing =
+            attachments
+                .map {
+                    OutgoingAttachment(
+                        filePath = it.filePath.trim(),
+                        filename = it.filename.trim(),
+                    )
+                }.filter { it.filePath.isNotEmpty() && it.filename.isNotEmpty() }
+        if (trimmedChatId.isEmpty() || outgoing.isEmpty()) {
+            return
+        }
+        rust.dispatch(
+            AppAction.SendAttachments(
+                trimmedChatId,
+                outgoing,
                 caption.trim(),
             ),
         )

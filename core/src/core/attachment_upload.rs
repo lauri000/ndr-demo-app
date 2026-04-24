@@ -18,9 +18,24 @@ impl AppCore {
         filename: &str,
         caption: &str,
     ) {
+        self.send_attachments(
+            chat_id,
+            &[OutgoingAttachment {
+                file_path: file_path.to_string(),
+                filename: filename.to_string(),
+            }],
+            caption,
+        );
+    }
+
+    pub(super) fn send_attachments(
+        &mut self,
+        chat_id: &str,
+        attachments: &[OutgoingAttachment],
+        caption: &str,
+    ) {
         let chat_id = chat_id.trim();
-        let file_path = PathBuf::from(file_path.trim());
-        if chat_id.is_empty() || file_path.as_os_str().is_empty() {
+        if chat_id.is_empty() || attachments.is_empty() {
             self.state.toast = Some("Attachment could not be sent.".to_string());
             self.emit_state();
             return;
@@ -45,11 +60,14 @@ impl AppCore {
             self.emit_state();
             return;
         };
-        if !file_path.is_file() {
-            self.state.toast = Some("Attachment file was not found.".to_string());
-            self.emit_state();
-            return;
-        }
+        let prepared = match prepare_outgoing_attachments(attachments) {
+            Ok(prepared) => prepared,
+            Err(message) => {
+                self.state.toast = Some(message.to_string());
+                self.emit_state();
+                return;
+            }
+        };
 
         let logged_in = self.logged_in.as_ref().expect("logged_in checked above");
         let upload_keys = logged_in
@@ -57,19 +75,22 @@ impl AppCore {
             .as_ref()
             .unwrap_or(&logged_in.device_keys);
         let secret_hex = upload_keys.secret_key().to_secret_hex();
-        let filename = display_filename(filename, &file_path);
         let caption = caption.trim().to_string();
         let sender = self.core_sender.clone();
         let upload_chat_id = normalized_chat_id.clone();
-        let upload_path = file_path.clone();
+        let upload_attachments = prepared.clone();
 
         self.push_debug_log(
             "attachment.upload.start",
             format!(
-                "chat_id={} filename={} path={}",
+                "chat_id={} count={} files={}",
                 normalized_chat_id,
-                filename,
-                file_path.display()
+                prepared.len(),
+                prepared
+                    .iter()
+                    .map(|attachment| attachment.filename.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
             ),
         );
         self.active_chat_id = Some(normalized_chat_id.clone());
@@ -81,9 +102,9 @@ impl AppCore {
         self.emit_state();
 
         self.runtime.spawn(async move {
-            let result = upload_file_to_hashtree(&secret_hex, &upload_path)
+            let result = upload_files_to_hashtree(&secret_hex, &upload_attachments)
                 .await
-                .map(|nhash| format_attachment_message(&caption, &nhash, &filename))
+                .map(|uploaded| format_attachment_links_message(&caption, &uploaded))
                 .map_err(|error| error.to_string());
             let _ = sender.send(CoreMsg::Internal(Box::new(
                 InternalEvent::AttachmentUploadFinished {
@@ -120,6 +141,32 @@ impl AppCore {
     }
 }
 
+#[derive(Clone, Debug)]
+struct PreparedOutgoingAttachment {
+    file_path: PathBuf,
+    filename: String,
+}
+
+fn prepare_outgoing_attachments(
+    attachments: &[OutgoingAttachment],
+) -> Result<Vec<PreparedOutgoingAttachment>, &'static str> {
+    let mut prepared = Vec::with_capacity(attachments.len());
+    for attachment in attachments {
+        let file_path = PathBuf::from(attachment.file_path.trim());
+        if file_path.as_os_str().is_empty() {
+            return Err("Attachment could not be sent.");
+        }
+        if !file_path.is_file() {
+            return Err("Attachment file was not found.");
+        }
+        prepared.push(PreparedOutgoingAttachment {
+            filename: display_filename(&attachment.filename, &file_path),
+            file_path,
+        });
+    }
+    Ok(prepared)
+}
+
 fn display_filename(filename: &str, file_path: &Path) -> String {
     let from_input = filename.trim();
     let candidate = if from_input.is_empty() {
@@ -134,6 +181,18 @@ fn display_filename(filename: &str, file_path: &Path) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or("attachment")
         .to_string()
+}
+
+async fn upload_files_to_hashtree(
+    secret_hex: &str,
+    attachments: &[PreparedOutgoingAttachment],
+) -> anyhow::Result<Vec<(String, String)>> {
+    let mut uploaded = Vec::with_capacity(attachments.len());
+    for attachment in attachments {
+        let nhash = upload_file_to_hashtree(secret_hex, &attachment.file_path).await?;
+        uploaded.push((nhash, attachment.filename.clone()));
+    }
+    Ok(uploaded)
 }
 
 async fn upload_file_to_hashtree(secret_hex: &str, path: &Path) -> anyhow::Result<String> {
@@ -340,5 +399,30 @@ mod tests {
             "source.bin"
         );
         assert_eq!(display_filename("", Path::new("/")), "attachment");
+    }
+
+    #[test]
+    fn prepares_multiple_outgoing_attachments() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = dir.path().join("first.bin");
+        let second = dir.path().join("second.bin");
+        fs::write(&first, b"one").expect("write first");
+        fs::write(&second, b"two").expect("write second");
+
+        let prepared = prepare_outgoing_attachments(&[
+            OutgoingAttachment {
+                file_path: first.to_string_lossy().to_string(),
+                filename: "nested/photo.png".to_string(),
+            },
+            OutgoingAttachment {
+                file_path: second.to_string_lossy().to_string(),
+                filename: String::new(),
+            },
+        ])
+        .expect("prepared");
+
+        assert_eq!(prepared.len(), 2);
+        assert_eq!(prepared[0].filename, "photo.png");
+        assert_eq!(prepared[1].filename, "second.bin");
     }
 }

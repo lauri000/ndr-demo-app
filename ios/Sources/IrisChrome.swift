@@ -504,50 +504,85 @@ struct IrisComposerBar: View {
     @Environment(\.irisPalette) private var palette
 
     @Binding var draft: String
+    @Binding var attachments: [StagedAttachment]
     @State private var showingAttachmentPicker = false
 
     let placeholder: String
     let isSending: Bool
     let isUploading: Bool
-    let onAttach: (URL) -> Void
+    let onAttach: ([URL]) -> Void
     let onSend: () -> Void
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSending && !isUploading
+        (
+            !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+            !attachments.isEmpty
+        ) && !isSending && !isUploading
     }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 12) {
+        VStack(spacing: 8) {
             Color.clear
                 .frame(width: 0, height: 0)
                 .accessibilityIdentifier("chatComposerBar")
 
-            Button {
-                showingAttachmentPicker = true
-            } label: {
-                Image(systemName: isUploading ? "ellipsis.circle.fill" : "paperclip")
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundStyle((isSending || isUploading) ? palette.muted.opacity(0.54) : palette.textPrimary)
-                    .frame(width: 42, height: 46)
+            if !attachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(attachments) { attachment in
+                            IrisSelectedAttachmentChip(
+                                attachment: attachment,
+                                enabled: !isSending && !isUploading
+                            ) {
+                                attachments.removeAll { $0 == attachment }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 1)
+                }
+                .accessibilityIdentifier("chatSelectedAttachments")
             }
-            .buttonStyle(.plain)
-            .disabled(isSending || isUploading)
-            .accessibilityIdentifier("chatAttachButton")
 
-            TextField(placeholder, text: $draft)
-                .irisDraftInputModifiers()
-                .irisInputField()
-                .irisDesktopSubmit(submitDraft)
-                .accessibilityIdentifier("chatMessageInput")
-
-            Button(action: submitDraft) {
-                Image(systemName: isSending ? "ellipsis.circle.fill" : "paperplane.fill")
-                    .font(.system(size: 18, weight: .bold))
-                    .frame(width: IrisLayout.usesDesktopChrome ? 52 : 46, height: 46)
+            if isUploading {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Uploading")
+                        .font(.system(.caption, design: .rounded, weight: .semibold))
+                        .foregroundStyle(palette.muted)
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                        .tint(palette.accent)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(IrisPrimaryCircleButtonStyle())
-            .disabled(!canSend)
-            .accessibilityIdentifier("chatSendButton")
+
+            HStack(alignment: .bottom, spacing: 12) {
+                Button {
+                    showingAttachmentPicker = true
+                } label: {
+                    Image(systemName: isUploading ? "ellipsis.circle.fill" : "paperclip")
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle((isSending || isUploading) ? palette.muted.opacity(0.54) : palette.textPrimary)
+                        .frame(width: 42, height: 46)
+                }
+                .buttonStyle(.plain)
+                .disabled(isSending || isUploading)
+                .accessibilityIdentifier("chatAttachButton")
+
+                TextField(placeholder, text: $draft)
+                    .irisDraftInputModifiers()
+                    .irisInputField()
+                    .irisDesktopSubmit(submitDraft)
+                    .accessibilityIdentifier("chatMessageInput")
+
+                Button(action: submitDraft) {
+                    Image(systemName: isSending ? "ellipsis.circle.fill" : "paperplane.fill")
+                        .font(.system(size: 18, weight: .bold))
+                        .frame(width: IrisLayout.usesDesktopChrome ? 52 : 46, height: 46)
+                }
+                .buttonStyle(IrisPrimaryCircleButtonStyle())
+                .disabled(!canSend)
+                .accessibilityIdentifier("chatSendButton")
+            }
         }
         .padding(.horizontal, IrisLayout.usesDesktopChrome ? 16 : IrisLayout.contentHorizontalPadding)
         .padding(.top, 10)
@@ -560,12 +595,12 @@ struct IrisComposerBar: View {
         .fileImporter(
             isPresented: $showingAttachmentPicker,
             allowedContentTypes: [.item],
-            allowsMultipleSelection: false
+            allowsMultipleSelection: true
         ) { result in
-            guard case .success(let urls) = result, let url = urls.first else {
+            guard case .success(let urls) = result, !urls.isEmpty else {
                 return
             }
-            onAttach(url)
+            onAttach(urls)
         }
     }
 
@@ -574,6 +609,42 @@ struct IrisComposerBar: View {
             return
         }
         onSend()
+    }
+}
+
+private struct IrisSelectedAttachmentChip: View {
+    @Environment(\.irisPalette) private var palette
+    let attachment: StagedAttachment
+    let enabled: Bool
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "doc.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(palette.muted)
+            Text(attachment.filename)
+                .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                .foregroundStyle(palette.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 220)
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(enabled ? palette.muted : palette.muted.opacity(0.45))
+            }
+            .buttonStyle(.plain)
+            .disabled(!enabled)
+            .accessibilityIdentifier("chatSelectedAttachmentRemove")
+        }
+        .padding(.leading, 11)
+        .padding(.trailing, 7)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(palette.panel)
+        )
     }
 }
 

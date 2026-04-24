@@ -10,6 +10,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,14 +22,17 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -66,6 +70,7 @@ import social.innode.ndr.demo.rust.AppState
 import social.innode.ndr.demo.rust.ChatKind
 import social.innode.ndr.demo.rust.ChatMessageSnapshot
 import social.innode.ndr.demo.rust.MessageAttachmentSnapshot
+import social.innode.ndr.demo.rust.OutgoingAttachment
 import social.innode.ndr.demo.rust.Screen
 import social.innode.ndr.demo.ui.components.DeliveryGlyph
 import social.innode.ndr.demo.ui.components.IrisIcons
@@ -86,6 +91,7 @@ fun ChatScreen(
     val context = LocalContext.current
     val chat = appState.currentChat?.takeIf { it.chatId == chatId }
     var draft by remember(chatId) { mutableStateOf("") }
+    var selectedAttachments by remember(chatId) { mutableStateOf<List<PickedAttachment>>(emptyList()) }
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     var shouldFollowLatest by remember(chatId) { mutableStateOf(true) }
@@ -93,21 +99,18 @@ fun ChatScreen(
     var initialScrollPending by remember(chatId) { mutableStateOf(true) }
     var observedMessageCount by remember(chatId) { mutableStateOf(0) }
     val attachmentPicker =
-        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            uri ?: return@rememberLauncherForActivityResult
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+            if (uris.isEmpty()) {
+                return@rememberLauncherForActivityResult
+            }
             coroutineScope.launch {
-                val attachment = withContext(Dispatchers.IO) {
-                    copyAttachmentToCache(context, uri)
-                } ?: return@launch
-                shouldFollowLatest = true
-                forceScrollToLatest = true
-                appManager.sendAttachment(
-                    chatId = chatId,
-                    filePath = attachment.path,
-                    filename = attachment.filename,
-                    caption = draft,
-                )
-                draft = ""
+                val attachments =
+                    withContext(Dispatchers.IO) {
+                        uris.mapNotNull { uri -> copyAttachmentToCache(context, uri) }
+                    }
+                if (attachments.isNotEmpty()) {
+                    selectedAttachments = selectedAttachments + attachments
+                }
             }
         }
     val showJumpToBottom by remember(chat?.messages?.size, listState) {
@@ -287,14 +290,33 @@ fun ChatScreen(
 
                 ComposerBar(
                     draft = draft,
+                    selectedAttachments = selectedAttachments,
                     isSending = appState.busy.sendingMessage,
                     isUploading = appState.busy.uploadingAttachment,
                     onDraftChange = { draft = it },
                     onAttach = { attachmentPicker.launch(arrayOf("*/*")) },
+                    onRemoveAttachment = { attachment ->
+                        selectedAttachments = selectedAttachments - attachment
+                    },
                     onSend = {
                         shouldFollowLatest = true
                         forceScrollToLatest = true
-                        appManager.sendText(chatId, draft)
+                        if (selectedAttachments.isEmpty()) {
+                            appManager.sendText(chatId, draft)
+                        } else {
+                            appManager.sendAttachments(
+                                chatId = chatId,
+                                attachments =
+                                    selectedAttachments.map { attachment ->
+                                        OutgoingAttachment(
+                                            filePath = attachment.path,
+                                            filename = attachment.filename,
+                                        )
+                                    },
+                                caption = draft,
+                            )
+                            selectedAttachments = emptyList()
+                        }
                         draft = ""
                     },
                 )
@@ -430,14 +452,16 @@ private fun MessageBubble(
 @Composable
 private fun ComposerBar(
     draft: String,
+    selectedAttachments: List<PickedAttachment>,
     isSending: Boolean,
     isUploading: Boolean,
     onDraftChange: (String) -> Unit,
     onAttach: () -> Unit,
+    onRemoveAttachment: (PickedAttachment) -> Unit,
     onSend: () -> Unit,
 ) {
     val isBusy = isSending || isUploading
-    val canSend = draft.isNotBlank() && !isBusy
+    val canSend = (draft.isNotBlank() || selectedAttachments.isNotEmpty()) && !isBusy
     fun submitDraft() {
         if (canSend) {
             onSend()
@@ -454,101 +478,191 @@ private fun ComposerBar(
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,
     ) {
-        Row(
+        Column(
             modifier =
                 Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.Bottom,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            IconButton(
-                onClick = onAttach,
-                enabled = !isBusy,
-                modifier =
-                    Modifier
-                        .size(48.dp)
-                        .testTag("chatAttachButton"),
-            ) {
-                if (isUploading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
-                        color = IrisTheme.palette.muted,
-                    )
-                } else {
-                    Icon(
-                        imageVector = IrisIcons.Attach,
-                        contentDescription = "Attach",
-                        tint =
-                            if (isBusy) {
-                                IrisTheme.palette.muted.copy(alpha = 0.54f)
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
-                            },
-                    )
-                }
-            }
-
-            Surface(
-                modifier = Modifier.weight(1f),
-                color = IrisTheme.palette.panel,
-                shape = RoundedCornerShape(24.dp),
-            ) {
-                TextField(
-                    value = draft,
-                    onValueChange = onDraftChange,
-                    placeholder = {
-                        Text(
-                            text = "Message",
-                            color = IrisTheme.palette.muted,
-                        )
-                    },
+            if (selectedAttachments.isNotEmpty()) {
+                Row(
                     modifier =
                         Modifier
                             .fillMaxWidth()
-                            .testTag("chatMessageInput"),
-                    minLines = 1,
-                    maxLines = 5,
-                    colors =
-                        TextFieldDefaults.colors(
-                            focusedContainerColor = Color.Transparent,
-                            unfocusedContainerColor = Color.Transparent,
-                            disabledContainerColor = Color.Transparent,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                            disabledIndicatorColor = Color.Transparent,
-                        ),
-                )
-            }
-
-            Surface(
-                modifier =
-                    Modifier
-                        .size(52.dp)
-                        .clip(CircleShape),
-                color = IrisTheme.palette.accent,
-                shape = CircleShape,
-            ) {
-                IconButton(
-                    onClick = { submitDraft() },
-                    enabled = canSend,
-                    modifier = Modifier.testTag("chatSendButton"),
+                            .horizontalScroll(rememberScrollState())
+                            .testTag("chatSelectedAttachments"),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    if (isSending) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary,
-                        )
-                    } else {
-                        Icon(
-                            imageVector = IrisIcons.Send,
-                            contentDescription = "Send",
-                            tint = MaterialTheme.colorScheme.onPrimary,
+                    selectedAttachments.forEach { attachment ->
+                        SelectedAttachmentChip(
+                            attachment = attachment,
+                            enabled = !isBusy,
+                            onRemove = { onRemoveAttachment(attachment) },
                         )
                     }
                 }
+            }
+
+            if (isUploading) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Text(
+                        text = "Uploading attachment",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = IrisTheme.palette.muted,
+                    )
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = IrisTheme.palette.accent,
+                        trackColor = IrisTheme.palette.muted.copy(alpha = 0.18f),
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.Bottom,
+            ) {
+                IconButton(
+                    onClick = onAttach,
+                    enabled = !isBusy,
+                    modifier =
+                        Modifier
+                            .size(48.dp)
+                            .testTag("chatAttachButton"),
+                ) {
+                    if (isUploading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = IrisTheme.palette.muted,
+                        )
+                    } else {
+                        Icon(
+                            imageVector = IrisIcons.Attach,
+                            contentDescription = "Attach",
+                            tint =
+                                if (isBusy) {
+                                    IrisTheme.palette.muted.copy(alpha = 0.54f)
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                },
+                        )
+                    }
+                }
+
+                Surface(
+                    modifier = Modifier.weight(1f),
+                    color = IrisTheme.palette.panel,
+                    shape = RoundedCornerShape(24.dp),
+                ) {
+                    TextField(
+                        value = draft,
+                        onValueChange = onDraftChange,
+                        placeholder = {
+                            Text(
+                                text = "Message",
+                                color = IrisTheme.palette.muted,
+                            )
+                        },
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .testTag("chatMessageInput"),
+                        minLines = 1,
+                        maxLines = 5,
+                        colors =
+                            TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                disabledContainerColor = Color.Transparent,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                                disabledIndicatorColor = Color.Transparent,
+                            ),
+                    )
+                }
+
+                Surface(
+                    modifier =
+                        Modifier
+                            .size(52.dp)
+                            .clip(CircleShape),
+                    color = IrisTheme.palette.accent,
+                    shape = CircleShape,
+                ) {
+                    IconButton(
+                        onClick = { submitDraft() },
+                        enabled = canSend,
+                        modifier = Modifier.testTag("chatSendButton"),
+                    ) {
+                        if (isSending) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                            )
+                        } else {
+                            Icon(
+                                imageVector = IrisIcons.Send,
+                                contentDescription = "Send",
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SelectedAttachmentChip(
+    attachment: PickedAttachment,
+    enabled: Boolean,
+    onRemove: () -> Unit,
+) {
+    Surface(
+        color = IrisTheme.palette.panel,
+        shape = RoundedCornerShape(16.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 10.dp, top = 7.dp, end = 4.dp, bottom = 7.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = IrisIcons.File,
+                contentDescription = null,
+                tint = IrisTheme.palette.muted,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                text = attachment.filename,
+                modifier = Modifier.widthIn(max = 220.dp),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            IconButton(
+                onClick = onRemove,
+                enabled = enabled,
+                modifier =
+                    Modifier
+                        .size(28.dp)
+                        .testTag("chatSelectedAttachmentRemove"),
+            ) {
+                Icon(
+                    imageVector = IrisIcons.Close,
+                    contentDescription = "Remove attachment",
+                    tint = IrisTheme.palette.muted,
+                    modifier = Modifier.size(16.dp),
+                )
             }
         }
     }

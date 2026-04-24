@@ -940,6 +940,7 @@ struct ChatScreen: View {
     let chatId: String
 
     @State private var draft = ""
+    @State private var selectedAttachments: [StagedAttachment] = []
     @State private var isNearBottom = true
     @State private var shouldFollowLatest = true
     @State private var forceScrollToLatest = false
@@ -1099,23 +1100,33 @@ struct ChatScreen: View {
 
                         IrisComposerBar(
                             draft: $draft,
+                            attachments: $selectedAttachments,
                             placeholder: "Message",
                             isSending: manager.state.busy.sendingMessage,
                             isUploading: manager.state.busy.uploadingAttachment,
-                            onAttach: { url in
-                                shouldFollowLatest = true
-                                forceScrollToLatest = true
-                                let caption = draft
-                                draft = ""
-                                manager.sendAttachment(chatId: chatId, fileURL: url, caption: caption)
+                            onAttach: { urls in
+                                do {
+                                    selectedAttachments.append(
+                                        contentsOf: try manager.stageOutgoingAttachments(urls)
+                                    )
+                                } catch {
+                                    manager.showAttachmentOpenError()
+                                }
                             }
                         ) {
                             let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-                            guard !text.isEmpty else { return }
+                            guard !text.isEmpty || !selectedAttachments.isEmpty else { return }
                             shouldFollowLatest = true
                             forceScrollToLatest = true
-                            draft = ""
-                            manager.dispatch(.sendMessage(chatId: chatId, text: text))
+                            if selectedAttachments.isEmpty {
+                                draft = ""
+                                manager.dispatch(.sendMessage(chatId: chatId, text: text))
+                            } else {
+                                let attachments = selectedAttachments
+                                selectedAttachments = []
+                                draft = ""
+                                manager.sendAttachments(chatId: chatId, attachments: attachments, caption: text)
+                            }
                         }
                     }
                 } else {

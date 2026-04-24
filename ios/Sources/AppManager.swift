@@ -8,6 +8,12 @@ struct StoredAccountBundle: Codable, Equatable {
     let deviceNsec: String
 }
 
+struct StagedAttachment: Identifiable, Equatable {
+    let id = UUID()
+    let path: String
+    let filename: String
+}
+
 protocol AccountSecretStore {
     func load() -> StoredAccountBundle?
     func save(_ bundle: StoredAccountBundle)
@@ -235,6 +241,10 @@ final class AppManager: ObservableObject {
         showToast("Copied")
     }
 
+    func showAttachmentOpenError() {
+        showToast("Attachment could not be opened")
+    }
+
     func sendAttachment(chatId: String, fileURL: URL, caption: String) {
         let trimmedChatId = chatId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedChatId.isEmpty else {
@@ -253,6 +263,29 @@ final class AppManager: ObservableObject {
             )
         } catch {
             showToast("Attachment could not be opened")
+        }
+    }
+
+    func sendAttachments(chatId: String, attachments: [StagedAttachment], caption: String) {
+        let trimmedChatId = chatId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedChatId.isEmpty, !attachments.isEmpty else {
+            return
+        }
+        rust.dispatch(
+            action: .sendAttachments(
+                chatId: trimmedChatId,
+                attachments: attachments.map {
+                    OutgoingAttachment(filePath: $0.path, filename: $0.filename)
+                },
+                caption: caption.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        )
+    }
+
+    func stageOutgoingAttachments(_ sourceURLs: [URL]) throws -> [StagedAttachment] {
+        try sourceURLs.map { url in
+            let staged = try stageOutgoingAttachment(url)
+            return StagedAttachment(path: staged.path, filename: staged.filename)
         }
     }
 

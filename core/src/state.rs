@@ -36,6 +36,12 @@ pub struct BusyState {
     pub uploading_attachment: bool,
 }
 
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct OutgoingAttachment {
+    pub file_path: String,
+    pub filename: String,
+}
+
 #[derive(uniffi::Enum, Clone, Debug)]
 pub enum DeviceAuthorizationState {
     Authorized,

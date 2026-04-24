@@ -38,13 +38,19 @@ pub(super) fn message_preview(message: &ChatMessageSnapshot) -> String {
     }
 }
 
-pub(super) fn format_attachment_message(caption: &str, nhash: &str, filename: &str) -> String {
-    let file_link = format_file_link(nhash, filename);
+pub(super) fn format_attachment_links_message(
+    caption: &str,
+    attachments: &[(String, String)],
+) -> String {
     let caption = caption.trim();
-    if caption.is_empty() {
-        file_link
-    } else {
-        format!("{caption}\n{file_link}")
+    let file_links = attachments
+        .iter()
+        .map(|(nhash, filename)| format_file_link(nhash, filename))
+        .collect::<Vec<_>>();
+    match (caption.is_empty(), file_links.is_empty()) {
+        (true, _) => file_links.join("\n"),
+        (_, true) => caption.to_string(),
+        (false, false) => format!("{caption}\n{}", file_links.join("\n")),
     }
 }
 
@@ -243,12 +249,28 @@ mod tests {
     #[test]
     fn formats_attachment_messages_with_encoded_filename() {
         assert_eq!(
-            format_attachment_message("hello", "nhash1abc123", "photo 1.png"),
+            format_attachment_links_message(
+                "hello",
+                &[("nhash1abc123".to_string(), "photo 1.png".to_string())],
+            ),
             "hello\nnhash1abc123/photo%201.png"
         );
         assert_eq!(
-            format_attachment_message("", "nhash1abc123", "m\u{00F6}te.txt"),
+            format_attachment_links_message(
+                "",
+                &[("nhash1abc123".to_string(), "m\u{00F6}te.txt".to_string())],
+            ),
             "nhash1abc123/m%C3%B6te.txt"
+        );
+        assert_eq!(
+            format_attachment_links_message(
+                "album",
+                &[
+                    ("nhash1abc123".to_string(), "one.png".to_string()),
+                    ("nhash1def456".to_string(), "two final.png".to_string()),
+                ],
+            ),
+            "album\nnhash1abc123/one.png\nnhash1def456/two%20final.png"
         );
     }
 }

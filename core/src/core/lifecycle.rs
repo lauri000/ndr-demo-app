@@ -99,6 +99,11 @@ impl AppCore {
                 filename,
                 caption,
             } => self.send_attachment(&chat_id, &file_path, &filename, &caption),
+            AppAction::SendAttachments {
+                chat_id,
+                attachments,
+                caption,
+            } => self.send_attachments(&chat_id, &attachments, &caption),
             AppAction::UpdateGroupName { group_id, name } => {
                 self.update_group_name(&group_id, &name)
             }
