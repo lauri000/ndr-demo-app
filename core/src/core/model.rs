@@ -363,6 +363,8 @@ pub(super) struct PersistedMessage {
     pub(super) body: String,
     #[serde(default)]
     pub(super) attachments: Vec<MessageAttachmentSnapshot>,
+    #[serde(default)]
+    pub(super) reactions: Vec<MessageReactionSnapshot>,
     pub(super) is_outgoing: bool,
     pub(super) created_at_secs: u64,
     pub(super) delivery: PersistedDeliveryState,

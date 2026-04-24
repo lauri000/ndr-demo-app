@@ -112,6 +112,13 @@ pub struct MessageAttachmentSnapshot {
     pub is_audio: bool,
 }
 
+#[derive(uniffi::Record, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageReactionSnapshot {
+    pub emoji: String,
+    pub count: u64,
+    pub reacted_by_me: bool,
+}
+
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct ChatMessageSnapshot {
     pub id: String,
@@ -119,6 +126,7 @@ pub struct ChatMessageSnapshot {
     pub author: String,
     pub body: String,
     pub attachments: Vec<MessageAttachmentSnapshot>,
+    pub reactions: Vec<MessageReactionSnapshot>,
     pub is_outgoing: bool,
     pub created_at_secs: u64,
     pub delivery: DeliveryState,

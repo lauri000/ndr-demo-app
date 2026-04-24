@@ -831,6 +831,7 @@ impl AppCore {
                 .unwrap_or_else(|| "me".to_string()),
             body,
             attachments,
+            reactions: Vec::new(),
             is_outgoing: true,
             created_at_secs,
             delivery,
@@ -880,10 +881,84 @@ impl AppCore {
             author,
             body,
             attachments,
+            reactions: Vec::new(),
             is_outgoing: false,
             created_at_secs,
             delivery: DeliveryState::Received,
         });
+    }
+
+    pub(super) fn toggle_reaction(&mut self, chat_id: &str, message_id: &str, emoji: &str) {
+        let emoji = emoji.trim();
+        if chat_id.is_empty() || message_id.is_empty() || emoji.is_empty() {
+            return;
+        }
+        let Some(thread) = self.threads.get_mut(chat_id) else {
+            return;
+        };
+        let Some(message) = thread
+            .messages
+            .iter_mut()
+            .find(|message| message.id == message_id)
+        else {
+            return;
+        };
+        if let Some(index) = message
+            .reactions
+            .iter()
+            .position(|reaction| reaction.emoji == emoji)
+        {
+            let reaction = &mut message.reactions[index];
+            if reaction.reacted_by_me {
+                reaction.reacted_by_me = false;
+                reaction.count = reaction.count.saturating_sub(1);
+                if reaction.count == 0 {
+                    message.reactions.remove(index);
+                }
+            } else {
+                reaction.reacted_by_me = true;
+                reaction.count = reaction.count.saturating_add(1);
+            }
+        } else {
+            message.reactions.push(MessageReactionSnapshot {
+                emoji: emoji.to_string(),
+                count: 1,
+                reacted_by_me: true,
+            });
+        }
+        message.reactions.sort_by(|left, right| {
+            left.emoji
+                .cmp(&right.emoji)
+                .then_with(|| right.count.cmp(&left.count))
+        });
+        self.persist_best_effort();
+        self.rebuild_state();
+        self.emit_state();
+    }
+
+    pub(super) fn delete_local_message(&mut self, chat_id: &str, message_id: &str) {
+        if chat_id.is_empty() || message_id.is_empty() {
+            return;
+        }
+        let Some(thread) = self.threads.get_mut(chat_id) else {
+            return;
+        };
+        let original_len = thread.messages.len();
+        thread.messages.retain(|message| message.id != message_id);
+        if thread.messages.len() == original_len {
+            return;
+        }
+        thread.updated_at_secs = thread
+            .messages
+            .last()
+            .map(|message| message.created_at_secs)
+            .unwrap_or(thread.updated_at_secs);
+        if self.active_chat_id.as_deref() == Some(chat_id) {
+            thread.unread_count = 0;
+        }
+        self.persist_best_effort();
+        self.rebuild_state();
+        self.emit_state();
     }
 
     pub(super) fn apply_routed_chat_message(

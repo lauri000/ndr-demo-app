@@ -458,6 +458,7 @@ impl AppCore {
                                         } else {
                                             message.attachments.clone()
                                         },
+                                        reactions: message.reactions.clone(),
                                         is_outgoing: message.is_outgoing,
                                         created_at_secs: message.created_at_secs,
                                         delivery: message.delivery.clone().into(),

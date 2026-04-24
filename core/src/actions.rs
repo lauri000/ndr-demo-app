@@ -43,6 +43,15 @@ pub enum AppAction {
         attachments: Vec<OutgoingAttachment>,
         caption: String,
     },
+    ToggleReaction {
+        chat_id: String,
+        message_id: String,
+        emoji: String,
+    },
+    DeleteLocalMessage {
+        chat_id: String,
+        message_id: String,
+    },
     UpdateGroupName {
         group_id: String,
         name: String,

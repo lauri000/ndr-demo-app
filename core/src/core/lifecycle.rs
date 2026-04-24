@@ -104,6 +104,15 @@ impl AppCore {
                 attachments,
                 caption,
             } => self.send_attachments(&chat_id, &attachments, &caption),
+            AppAction::ToggleReaction {
+                chat_id,
+                message_id,
+                emoji,
+            } => self.toggle_reaction(&chat_id, &message_id, &emoji),
+            AppAction::DeleteLocalMessage {
+                chat_id,
+                message_id,
+            } => self.delete_local_message(&chat_id, &message_id),
             AppAction::UpdateGroupName { group_id, name } => {
                 self.update_group_name(&group_id, &name)
             }

@@ -52,6 +52,7 @@ impl AppCore {
                             author: message.author.clone(),
                             body: message.body.clone(),
                             attachments: message.attachments.clone(),
+                            reactions: message.reactions.clone(),
                             is_outgoing: message.is_outgoing,
                             created_at_secs: message.created_at_secs,
                             delivery: (&message.delivery).into(),

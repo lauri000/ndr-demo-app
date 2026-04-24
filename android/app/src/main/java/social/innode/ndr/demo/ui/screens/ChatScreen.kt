@@ -85,6 +85,7 @@ import social.innode.ndr.demo.rust.AppState
 import social.innode.ndr.demo.rust.ChatKind
 import social.innode.ndr.demo.rust.ChatMessageSnapshot
 import social.innode.ndr.demo.rust.MessageAttachmentSnapshot
+import social.innode.ndr.demo.rust.MessageReactionSnapshot
 import social.innode.ndr.demo.rust.OutgoingAttachment
 import social.innode.ndr.demo.rust.Screen
 import social.innode.ndr.demo.ui.components.DeliveryGlyph
@@ -114,8 +115,6 @@ fun ChatScreen(
     var initialScrollPending by remember(chatId) { mutableStateOf(true) }
     var observedMessageCount by remember(chatId) { mutableStateOf(0) }
     var replyTarget by remember(chatId) { mutableStateOf<ChatMessageSnapshot?>(null) }
-    var deletedMessageIds by remember(chatId) { mutableStateOf<Set<String>>(emptySet()) }
-    var localReactions by remember(chatId) { mutableStateOf<Map<String, Map<String, Int>>>(emptyMap()) }
     var imageViewerItem by remember(chatId) { mutableStateOf<DownloadedImageAttachment?>(null) }
     val attachmentPicker =
         rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -245,7 +244,7 @@ fun ChatScreen(
             }
             return@Scaffold
         }
-        val visibleMessages = chat.messages.filterNot { message -> message.id in deletedMessageIds }
+        val visibleMessages = chat.messages
 
         Box(
             modifier =
@@ -304,13 +303,24 @@ fun ChatScreen(
                             chatKind = chat.kind,
                             isFirstInCluster = isFirstInCluster,
                             isLastInCluster = isLastInCluster,
-                            reactions = localReactions[message.id].orEmpty(),
+                            reactions = message.reactions,
                             onReply = { replyTarget = message },
                             onReact = { emoji ->
-                                localReactions = toggleLocalReaction(localReactions, message.id, emoji)
+                                appManager.dispatch(
+                                    AppAction.ToggleReaction(
+                                        chatId = chatId,
+                                        messageId = message.id,
+                                        emoji = emoji,
+                                    ),
+                                )
                             },
                             onDelete = {
-                                deletedMessageIds = deletedMessageIds + message.id
+                                appManager.dispatch(
+                                    AppAction.DeleteLocalMessage(
+                                        chatId = chatId,
+                                        messageId = message.id,
+                                    ),
+                                )
                                 if (replyTarget?.id == message.id) {
                                     replyTarget = null
                                 }
@@ -416,7 +426,7 @@ private fun MessageBubble(
     chatKind: ChatKind,
     isFirstInCluster: Boolean,
     isLastInCluster: Boolean,
-    reactions: Map<String, Int>,
+    reactions: List<MessageReactionSnapshot>,
     onReply: () -> Unit,
     onReact: (String) -> Unit,
     onDelete: () -> Unit,
@@ -640,15 +650,20 @@ private fun ReplyPreview(
 }
 
 @Composable
-private fun ReactionRow(reactions: Map<String, Int>) {
+private fun ReactionRow(reactions: List<MessageReactionSnapshot>) {
     Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-        reactions.keys.sorted().forEach { emoji ->
+        reactions.forEach { reaction ->
             Surface(
-                color = IrisTheme.palette.panel,
+                color =
+                    if (reaction.reactedByMe) {
+                        IrisTheme.palette.accent.copy(alpha = 0.18f)
+                    } else {
+                        IrisTheme.palette.panel
+                    },
                 shape = RoundedCornerShape(100.dp),
             ) {
                 Text(
-                    text = "$emoji ${reactions[emoji] ?: 0}",
+                    text = "${reaction.emoji} ${reaction.count}",
                     modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.SemiBold,
@@ -765,26 +780,6 @@ private fun replySnippet(message: ChatMessageSnapshot): String {
         return message.attachments.firstOrNull()?.filename ?: "Attachment"
     }
     return normalized.take(96)
-}
-
-private fun toggleLocalReaction(
-    reactionsByMessage: Map<String, Map<String, Int>>,
-    messageId: String,
-    emoji: String,
-): Map<String, Map<String, Int>> {
-    val messageReactions = reactionsByMessage[messageId].orEmpty().toMutableMap()
-    if (messageReactions.containsKey(emoji)) {
-        messageReactions.remove(emoji)
-    } else {
-        messageReactions[emoji] = 1
-    }
-    val next = reactionsByMessage.toMutableMap()
-    if (messageReactions.isEmpty()) {
-        next.remove(messageId)
-    } else {
-        next[messageId] = messageReactions
-    }
-    return next
 }
 
 private const val ReplyMessagePrefix = "↩ "

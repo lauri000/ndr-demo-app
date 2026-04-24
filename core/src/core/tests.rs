@@ -427,6 +427,7 @@ fn start_session_restores_persisted_threads_only_when_enabled() {
                 author: "peer".to_string(),
                 body: "restored".to_string(),
                 attachments: Vec::new(),
+                reactions: Vec::new(),
                 is_outgoing: false,
                 created_at_secs: 55,
                 delivery: DeliveryState::Received,
@@ -461,6 +462,99 @@ fn start_session_restores_persisted_threads_only_when_enabled() {
     assert!(fresh.state.chat_list.is_empty());
     assert!(fresh.active_chat_id.is_none());
     assert!(!fresh.has_seen_event("event-1"));
+}
+
+#[test]
+fn local_reactions_and_deletes_are_core_state_and_persist() {
+    let _guard = relay_test_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let _env = RelayEnvGuard::local_only();
+    let data_dir = TempDir::new().expect("temp dir");
+    let chat_id = parse_peer_input(&npub_for_fill(24))
+        .expect("peer chat id")
+        .0;
+
+    let mut core = test_core(data_dir.path());
+    start_primary_test_session(&mut core, 23, false, false).expect("start session");
+    core.threads.insert(
+        chat_id.clone(),
+        ThreadRecord {
+            chat_id: chat_id.clone(),
+            unread_count: 0,
+            updated_at_secs: 60,
+            messages: vec![
+                ChatMessageSnapshot {
+                    id: "1".to_string(),
+                    chat_id: chat_id.clone(),
+                    author: "peer".to_string(),
+                    body: "react to me".to_string(),
+                    attachments: Vec::new(),
+                    reactions: Vec::new(),
+                    is_outgoing: false,
+                    created_at_secs: 55,
+                    delivery: DeliveryState::Received,
+                },
+                ChatMessageSnapshot {
+                    id: "2".to_string(),
+                    chat_id: chat_id.clone(),
+                    author: "peer".to_string(),
+                    body: "delete me".to_string(),
+                    attachments: Vec::new(),
+                    reactions: Vec::new(),
+                    is_outgoing: false,
+                    created_at_secs: 60,
+                    delivery: DeliveryState::Received,
+                },
+            ],
+        },
+    );
+    core.update_screen_stack(vec![Screen::Chat {
+        chat_id: chat_id.clone(),
+    }]);
+
+    core.handle_action(AppAction::ToggleReaction {
+        chat_id: chat_id.clone(),
+        message_id: "1".to_string(),
+        emoji: "❤️".to_string(),
+    });
+    let reactions = &core
+        .state
+        .current_chat
+        .as_ref()
+        .expect("current chat")
+        .messages[0]
+        .reactions;
+    assert_eq!(reactions.len(), 1);
+    assert_eq!(reactions[0].emoji, "❤️");
+    assert_eq!(reactions[0].count, 1);
+    assert!(reactions[0].reacted_by_me);
+
+    core.handle_action(AppAction::DeleteLocalMessage {
+        chat_id: chat_id.clone(),
+        message_id: "2".to_string(),
+    });
+    let messages = &core
+        .state
+        .current_chat
+        .as_ref()
+        .expect("current chat")
+        .messages;
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].id, "1");
+
+    let mut restored = test_core(data_dir.path());
+    start_primary_test_session(&mut restored, 23, true, true).expect("restore session");
+    let restored_messages = &restored
+        .state
+        .current_chat
+        .as_ref()
+        .expect("restored current chat")
+        .messages;
+    assert_eq!(restored_messages.len(), 1);
+    assert_eq!(restored_messages[0].id, "1");
+    assert_eq!(restored_messages[0].reactions[0].emoji, "❤️");
+    assert!(restored_messages[0].reactions[0].reacted_by_me);
 }
 
 #[test]
@@ -585,6 +679,7 @@ fn update_screen_stack_opens_chat_and_clears_unread() {
                 author: "peer".to_string(),
                 body: "hello".to_string(),
                 attachments: Vec::new(),
+                reactions: Vec::new(),
                 is_outgoing: false,
                 created_at_secs: 100,
                 delivery: DeliveryState::Received,

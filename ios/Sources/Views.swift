@@ -950,8 +950,6 @@ struct ChatScreen: View {
     @State private var initialScrollPending = true
     @State private var renderedMessageCount = 0
     @State private var replyTarget: ChatMessageSnapshot?
-    @State private var deletedMessageIds: Set<String> = []
-    @State private var localReactions: [String: [String: Int]] = [:]
     @State private var imageViewerItem: ImageViewerItem?
 
     private var chat: CurrentChatSnapshot? {
@@ -966,7 +964,7 @@ struct ChatScreen: View {
                         ScrollViewReader { proxy in
                             ZStack(alignment: .bottomTrailing) {
                                 ScrollView {
-                                    let visibleMessages = chat.messages.filter { !deletedMessageIds.contains($0.id) }
+                                    let visibleMessages = chat.messages
                                     LazyVStack(spacing: 0) {
                                         ForEach(Array(visibleMessages.enumerated()), id: \.element.id) { index, message in
                                             let previous = index > 0 ? visibleMessages[index - 1] : nil
@@ -991,15 +989,23 @@ struct ChatScreen: View {
                                                 showDayChip: showDayChip,
                                                 isFirstInCluster: isFirstInCluster,
                                                 isLastInCluster: isLastInCluster,
-                                                reactions: localReactions[message.id] ?? [:],
+                                                reactions: message.reactions,
                                                 onReply: {
                                                     replyTarget = message
                                                 },
                                                 onReact: { emoji in
-                                                    toggleLocalReaction(messageId: message.id, emoji: emoji)
+                                                    manager.dispatch(
+                                                        .toggleReaction(
+                                                            chatId: chatId,
+                                                            messageId: message.id,
+                                                            emoji: emoji
+                                                        )
+                                                    )
                                                 },
                                                 onDelete: {
-                                                    deletedMessageIds.insert(message.id)
+                                                    manager.dispatch(
+                                                        .deleteLocalMessage(chatId: chatId, messageId: message.id)
+                                                    )
                                                     if replyTarget?.id == message.id {
                                                         replyTarget = nil
                                                     }
@@ -1198,19 +1204,6 @@ struct ChatScreen: View {
         }
     }
 
-    private func toggleLocalReaction(messageId: String, emoji: String) {
-        var reactions = localReactions[messageId] ?? [:]
-        if reactions[emoji] == nil {
-            reactions[emoji] = 1
-        } else {
-            reactions.removeValue(forKey: emoji)
-        }
-        if reactions.isEmpty {
-            localReactions.removeValue(forKey: messageId)
-        } else {
-            localReactions[messageId] = reactions
-        }
-    }
 }
 
 private let irisMessageClusterGapSecs: UInt64 = 60
@@ -1889,7 +1882,7 @@ private struct ChatMessageRow: View {
     let showDayChip: Bool
     let isFirstInCluster: Bool
     let isLastInCluster: Bool
-    let reactions: [String: Int]
+    let reactions: [MessageReactionSnapshot]
     let onReply: () -> Void
     let onReact: (String) -> Void
     let onDelete: () -> Void
@@ -2038,19 +2031,19 @@ private struct ChatMessageActionDock: View {
 
 private struct ReactionRow: View {
     @Environment(\.irisPalette) private var palette
-    let reactions: [String: Int]
+    let reactions: [MessageReactionSnapshot]
     let isOutgoing: Bool
 
     var body: some View {
         HStack(spacing: 5) {
-            ForEach(reactions.keys.sorted(), id: \.self) { emoji in
-                Text("\(emoji) \(reactions[emoji] ?? 0)")
+            ForEach(reactions, id: \.emoji) { reaction in
+                Text("\(reaction.emoji) \(reaction.count)")
                     .font(.system(.caption, design: .rounded, weight: .semibold))
                     .padding(.horizontal, 7)
                     .padding(.vertical, 4)
                     .background(
                         Capsule(style: .continuous)
-                            .fill(palette.panel)
+                            .fill(reaction.reactedByMe ? palette.accent.opacity(0.18) : palette.panel)
                     )
             }
         }
