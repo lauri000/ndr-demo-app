@@ -53,8 +53,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -407,7 +414,7 @@ private fun MessageBubble(
                     )
                 }
                 if (message.body.isNotBlank()) {
-                    Text(
+                    LinkedMessageText(
                         text = message.body,
                         style = MaterialTheme.typography.bodyLarge,
                         color =
@@ -415,6 +422,12 @@ private fun MessageBubble(
                                 MaterialTheme.colorScheme.onPrimary
                             } else {
                                 MaterialTheme.colorScheme.onSurface
+                            },
+                        linkColor =
+                            if (message.isOutgoing) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                IrisTheme.palette.accent
                             },
                     )
                 }
@@ -450,6 +463,68 @@ private fun MessageBubble(
 }
 
 @Composable
+private fun LinkedMessageText(
+    text: String,
+    style: TextStyle,
+    color: Color,
+    linkColor: Color,
+) {
+    val annotated = remember(text, linkColor) {
+        linkedMessageAnnotatedString(text, linkColor)
+    }
+
+    Text(
+        text = annotated,
+        style = style.copy(color = color),
+    )
+}
+
+private fun linkedMessageAnnotatedString(
+    text: String,
+    linkColor: Color,
+): AnnotatedString =
+    buildAnnotatedString {
+        var index = 0
+        for (match in MessageUrlRegex.findAll(text)) {
+            val range = trimTrailingUrlPunctuation(match.value)
+            if (range.isEmpty()) {
+                continue
+            }
+            append(text.substring(index, match.range.first))
+            val visible = range
+            val url = normalizedMessageUrl(visible)
+            val start = length
+            append(visible)
+            addLink(
+                LinkAnnotation.Url(
+                    url = url,
+                    styles = TextLinkStyles(style = SpanStyle(color = linkColor)),
+                ),
+                start,
+                length,
+            )
+            index = match.range.first + visible.length
+        }
+        if (index < text.length) {
+            append(text.substring(index))
+        }
+    }
+
+private fun trimTrailingUrlPunctuation(value: String): String =
+    value.trimEnd('.', ',', ';', ':', '!', '?', ')', ']')
+
+private fun normalizedMessageUrl(value: String): String =
+    if (value.startsWith("http://", ignoreCase = true) ||
+        value.startsWith("https://", ignoreCase = true)
+    ) {
+        value
+    } else {
+        "https://$value"
+    }
+
+private val MessageUrlRegex = Regex("""(?i)\b((https?://|www\.)[^\s<]+)""")
+
+@Composable
 private fun ComposerBar(
     draft: String,
     selectedAttachments: List<PickedAttachment>,
@@ -462,6 +537,8 @@ private fun ComposerBar(
 ) {
     val isBusy = isSending || isUploading
     val canSend = (draft.isNotBlank() || selectedAttachments.isNotEmpty()) && !isBusy
+    val showDesktopComposerTools = LocalConfiguration.current.screenWidthDp >= 600
+    var showingEmojiPicker by remember { mutableStateOf(false) }
     fun submitDraft() {
         if (canSend) {
             onSend()
@@ -522,6 +599,16 @@ private fun ComposerBar(
                 }
             }
 
+            if (showDesktopComposerTools && showingEmojiPicker) {
+                EmojiPickerRow(
+                    enabled = !isBusy,
+                    onEmoji = { emoji ->
+                        onDraftChange(draft + emoji)
+                        showingEmojiPicker = false
+                    },
+                )
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -546,6 +633,28 @@ private fun ComposerBar(
                             imageVector = IrisIcons.Attach,
                             contentDescription = "Attach",
                             tint =
+                                if (isBusy) {
+                                    IrisTheme.palette.muted.copy(alpha = 0.54f)
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                },
+                        )
+                    }
+                }
+
+                if (showDesktopComposerTools) {
+                    IconButton(
+                        onClick = { showingEmojiPicker = !showingEmojiPicker },
+                        enabled = !isBusy,
+                        modifier =
+                            Modifier
+                                .size(48.dp)
+                                .testTag("chatEmojiButton"),
+                    ) {
+                        Text(
+                            text = "☺",
+                            style = MaterialTheme.typography.titleLarge,
+                            color =
                                 if (isBusy) {
                                     IrisTheme.palette.muted.copy(alpha = 0.54f)
                                 } else {
@@ -619,6 +728,53 @@ private fun ComposerBar(
         }
     }
 }
+
+@Composable
+private fun EmojiPickerRow(
+    enabled: Boolean,
+    onEmoji: (String) -> Unit,
+) {
+    Surface(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .testTag("chatEmojiPicker"),
+        color = IrisTheme.palette.panel,
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Row(
+            modifier =
+                Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ComposerEmojiChoices.forEach { emoji ->
+                Box(
+                    modifier =
+                        Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(enabled = enabled) { onEmoji(emoji) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = emoji,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private val ComposerEmojiChoices =
+    listOf(
+        "😀", "😂", "😊", "😍", "🥰", "😎", "🤔", "😭",
+        "❤️", "🔥", "✨", "🙏", "👍", "👀", "🎉", "💜",
+        "🌞", "🌙", "⭐️", "🍓", "☕️", "🌊", "🚀", "✅",
+    )
 
 @Composable
 private fun SelectedAttachmentChip(

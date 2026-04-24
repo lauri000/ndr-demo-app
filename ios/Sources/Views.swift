@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 struct RootView: View {
@@ -1859,7 +1860,7 @@ private struct ChatMessageRow: View {
 
                 VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 8) {
                     if !message.body.isEmpty {
-                        Text(message.body)
+                        Text(linkedMessageAttributedString(message.body))
                             .font(.system(.body, design: .rounded))
                             .multilineTextAlignment(message.isOutgoing ? .trailing : .leading)
                     }
@@ -1943,6 +1944,57 @@ private struct ChatAttachmentView: View {
         return "doc.fill"
     }
 }
+
+private func linkedMessageAttributedString(_ text: String) -> AttributedString {
+    var attributed = AttributedString()
+    var cursor = text.startIndex
+    for match in messageURLMatches(in: text) {
+        if cursor < match.range.lowerBound {
+            attributed.append(AttributedString(String(text[cursor..<match.range.lowerBound])))
+        }
+        var linked = AttributedString(String(text[match.range]))
+        linked.link = match.url
+        attributed.append(linked)
+        cursor = match.range.upperBound
+    }
+    if cursor < text.endIndex {
+        attributed.append(AttributedString(String(text[cursor...])))
+    }
+    return attributed
+}
+
+private func messageURLMatches(in text: String) -> [(range: Range<String.Index>, url: URL)] {
+    var matches: [(Range<String.Index>, URL)] = []
+    let pattern = #"\b((https?://|www\.)[^\s<]+)"#
+    guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+        return matches
+    }
+    let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+    regex.enumerateMatches(in: text, range: nsRange) { result, _, _ in
+        guard
+            let result,
+            let range = Range(result.range(at: 1), in: text)
+        else {
+            return
+        }
+        let visible = String(text[range]).trimmingCharacters(in: messageURLTrailingPunctuation)
+        guard !visible.isEmpty else {
+            return
+        }
+        let end = text.index(range.lowerBound, offsetBy: visible.count)
+        let lowercase = visible.lowercased()
+        let normalized = lowercase.hasPrefix("http://") || lowercase.hasPrefix("https://")
+            ? visible
+            : "https://\(visible)"
+        guard let url = URL(string: normalized) else {
+            return
+        }
+        matches.append((range.lowerBound..<end, url))
+    }
+    return matches
+}
+
+private let messageURLTrailingPunctuation = CharacterSet(charactersIn: ".,;:!?)]")
 
 private func copyableMessageText(_ message: ChatMessageSnapshot) -> String {
     var pieces: [String] = []
