@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum IrisLayout {
     #if canImport(AppKit)
@@ -503,12 +504,16 @@ struct IrisComposerBar: View {
     @Environment(\.irisPalette) private var palette
 
     @Binding var draft: String
+    @State private var showingAttachmentPicker = false
+
     let placeholder: String
     let isSending: Bool
+    let isUploading: Bool
+    let onAttach: (URL) -> Void
     let onSend: () -> Void
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSending
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSending && !isUploading
     }
 
     var body: some View {
@@ -516,6 +521,18 @@ struct IrisComposerBar: View {
             Color.clear
                 .frame(width: 0, height: 0)
                 .accessibilityIdentifier("chatComposerBar")
+
+            Button {
+                showingAttachmentPicker = true
+            } label: {
+                Image(systemName: isUploading ? "ellipsis.circle.fill" : "paperclip")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle((isSending || isUploading) ? palette.muted.opacity(0.54) : palette.textPrimary)
+                    .frame(width: 42, height: 46)
+            }
+            .buttonStyle(.plain)
+            .disabled(isSending || isUploading)
+            .accessibilityIdentifier("chatAttachButton")
 
             TextField(placeholder, text: $draft)
                 .irisDraftInputModifiers()
@@ -540,6 +557,16 @@ struct IrisComposerBar: View {
                 .fill(palette.toolbar)
         )
         .frame(maxWidth: .infinity)
+        .fileImporter(
+            isPresented: $showingAttachmentPicker,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: false
+        ) { result in
+            guard case .success(let urls) = result, let url = urls.first else {
+                return
+            }
+            onAttach(url)
+        }
     }
 
     private func submitDraft() {

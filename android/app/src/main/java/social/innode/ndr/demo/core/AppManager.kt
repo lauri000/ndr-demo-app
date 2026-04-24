@@ -238,6 +238,28 @@ class AppManager(
         rust.dispatch(AppAction.SendMessage(trimmedChatId, trimmedText))
     }
 
+    fun sendAttachment(
+        chatId: String,
+        filePath: String,
+        filename: String,
+        caption: String,
+    ) {
+        val trimmedChatId = chatId.trim()
+        val trimmedPath = filePath.trim()
+        val trimmedFilename = filename.trim()
+        if (trimmedChatId.isEmpty() || trimmedPath.isEmpty() || trimmedFilename.isEmpty()) {
+            return
+        }
+        rust.dispatch(
+            AppAction.SendAttachment(
+                trimmedChatId,
+                trimmedPath,
+                trimmedFilename,
+                caption.trim(),
+            ),
+        )
+    }
+
     fun logout() {
         applicationScope.launch(ioDispatcher) {
             // Logout is owned by Rust. The shell clears native secrets and then swaps in a fresh core

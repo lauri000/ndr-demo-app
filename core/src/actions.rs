@@ -32,6 +32,12 @@ pub enum AppAction {
         chat_id: String,
         text: String,
     },
+    SendAttachment {
+        chat_id: String,
+        file_path: String,
+        filename: String,
+        caption: String,
+    },
     UpdateGroupName {
         group_id: String,
         name: String,

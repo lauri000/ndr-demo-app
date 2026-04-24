@@ -28,6 +28,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, Duration};
 
 mod account;
+mod attachment_upload;
 mod attachments;
 mod chats;
 mod config;

@@ -38,6 +38,20 @@ pub(super) fn message_preview(message: &ChatMessageSnapshot) -> String {
     }
 }
 
+pub(super) fn format_attachment_message(caption: &str, nhash: &str, filename: &str) -> String {
+    let file_link = format_file_link(nhash, filename);
+    let caption = caption.trim();
+    if caption.is_empty() {
+        file_link
+    } else {
+        format!("{caption}\n{file_link}")
+    }
+}
+
+pub(super) fn format_file_link(nhash: &str, filename: &str) -> String {
+    format!("{}/{}", nhash.trim(), percent_encode_filename(filename))
+}
+
 fn find_file_links(text: &str) -> Vec<FileLinkMatch> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
@@ -169,6 +183,19 @@ fn percent_decode(value: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| value.to_string())
 }
 
+fn percent_encode_filename(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            byte => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -211,5 +238,17 @@ mod tests {
 
         assert_eq!(body, "npub1abc/file.png nhash1bad");
         assert!(attachments.is_empty());
+    }
+
+    #[test]
+    fn formats_attachment_messages_with_encoded_filename() {
+        assert_eq!(
+            format_attachment_message("hello", "nhash1abc123", "photo 1.png"),
+            "hello\nnhash1abc123/photo%201.png"
+        );
+        assert_eq!(
+            format_attachment_message("", "nhash1abc123", "m\u{00F6}te.txt"),
+            "nhash1abc123/m%C3%B6te.txt"
+        );
     }
 }

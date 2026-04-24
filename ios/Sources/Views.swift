@@ -1090,7 +1090,15 @@ struct ChatScreen: View {
                         IrisComposerBar(
                             draft: $draft,
                             placeholder: "Message",
-                            isSending: manager.state.busy.sendingMessage
+                            isSending: manager.state.busy.sendingMessage,
+                            isUploading: manager.state.busy.uploadingAttachment,
+                            onAttach: { url in
+                                shouldFollowLatest = true
+                                forceScrollToLatest = true
+                                let caption = draft
+                                draft = ""
+                                manager.sendAttachment(chatId: chatId, fileURL: url, caption: caption)
+                            }
                         ) {
                             let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
                             guard !text.isEmpty else { return }

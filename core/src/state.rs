@@ -33,6 +33,7 @@ pub struct BusyState {
     pub updating_roster: bool,
     pub updating_group: bool,
     pub syncing_network: bool,
+    pub uploading_attachment: bool,
 }
 
 #[derive(uniffi::Enum, Clone, Debug)]

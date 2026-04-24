@@ -43,6 +43,10 @@ pub(crate) enum InternalEvent {
         chat_id: String,
         success: bool,
     },
+    AttachmentUploadFinished {
+        chat_id: String,
+        result: Result<String, String>,
+    },
     GroupControlPublishFinished {
         operation_id: String,
         success: bool,

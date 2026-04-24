@@ -235,6 +235,27 @@ final class AppManager: ObservableObject {
         showToast("Copied")
     }
 
+    func sendAttachment(chatId: String, fileURL: URL, caption: String) {
+        let trimmedChatId = chatId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedChatId.isEmpty else {
+            return
+        }
+
+        do {
+            let staged = try stageOutgoingAttachment(fileURL)
+            rust.dispatch(
+                action: .sendAttachment(
+                    chatId: trimmedChatId,
+                    filePath: staged.path,
+                    filename: staged.filename,
+                    caption: caption.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            )
+        } catch {
+            showToast("Attachment could not be opened")
+        }
+    }
+
     func supportBundleJson() -> String {
         rust.exportSupportBundleJson()
     }
@@ -315,6 +336,29 @@ final class AppManager: ObservableObject {
             }
             self?.toastMessage = nil
         }
+    }
+
+    private func stageOutgoingAttachment(_ sourceURL: URL) throws -> (path: String, filename: String) {
+        let accessed = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessed {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let directory = dataDir
+            .appendingPathComponent("attachments", isDirectory: true)
+            .appendingPathComponent("outgoing", isDirectory: true)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let filename = sourceURL.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = filename.isEmpty ? "attachment" : filename
+        let destination = directory.appendingPathComponent("\(UUID().uuidString)-\(displayName)")
+        if fileManager.fileExists(atPath: destination.path) {
+            try fileManager.removeItem(at: destination)
+        }
+        try fileManager.copyItem(at: sourceURL, to: destination)
+        return (destination.path, displayName)
     }
 }
 

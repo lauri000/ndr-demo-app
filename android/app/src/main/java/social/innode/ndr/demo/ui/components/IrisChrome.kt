@@ -26,6 +26,7 @@ import androidx.compose.material.icons.automirrored.rounded.InsertDriveFile
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.AddComment
+import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Audiotrack
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ContentCopy
@@ -421,6 +422,7 @@ object IrisIcons {
     val NewGroup = Icons.Rounded.Group
     val ScanQr = Icons.Rounded.QrCodeScanner
     val Send = Icons.AutoMirrored.Rounded.Send
+    val Attach = Icons.Rounded.AttachFile
     val Copy = Icons.Rounded.ContentCopy
     val Devices = Icons.Rounded.Devices
     val Edit = Icons.Rounded.Edit

@@ -93,6 +93,12 @@ impl AppCore {
             } => self.create_group(&name, &member_inputs),
             AppAction::OpenChat { chat_id } => self.open_chat(&chat_id),
             AppAction::SendMessage { chat_id, text } => self.send_message(&chat_id, &text),
+            AppAction::SendAttachment {
+                chat_id,
+                file_path,
+                filename,
+                caption,
+            } => self.send_attachment(&chat_id, &file_path, &filename, &caption),
             AppAction::UpdateGroupName { group_id, name } => {
                 self.update_group_name(&group_id, &name)
             }
@@ -184,6 +190,9 @@ impl AppCore {
                 self.rebuild_state();
                 self.persist_best_effort();
                 self.emit_state();
+            }
+            InternalEvent::AttachmentUploadFinished { chat_id, result } => {
+                self.handle_attachment_upload_finished(chat_id, result);
             }
             InternalEvent::GroupControlPublishFinished {
                 operation_id,

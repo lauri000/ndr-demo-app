@@ -1,5 +1,11 @@
 package social.innode.ndr.demo.ui.screens
 
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -41,12 +47,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import java.io.File
+import java.util.UUID
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import social.innode.ndr.demo.core.AppManager
 import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.AppState
@@ -70,6 +81,7 @@ fun ChatScreen(
     appState: AppState,
     chatId: String,
 ) {
+    val context = LocalContext.current
     val chat = appState.currentChat?.takeIf { it.chatId == chatId }
     var draft by remember(chatId) { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -78,6 +90,24 @@ fun ChatScreen(
     var forceScrollToLatest by remember(chatId) { mutableStateOf(false) }
     var initialScrollPending by remember(chatId) { mutableStateOf(true) }
     var observedMessageCount by remember(chatId) { mutableStateOf(0) }
+    val attachmentPicker =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            uri ?: return@rememberLauncherForActivityResult
+            coroutineScope.launch {
+                val attachment = withContext(Dispatchers.IO) {
+                    copyAttachmentToCache(context, uri)
+                } ?: return@launch
+                shouldFollowLatest = true
+                forceScrollToLatest = true
+                appManager.sendAttachment(
+                    chatId = chatId,
+                    filePath = attachment.path,
+                    filename = attachment.filename,
+                    caption = draft,
+                )
+                draft = ""
+            }
+        }
     val showJumpToBottom by remember(chat?.messages?.size, listState) {
         derivedStateOf {
             val total = chat?.messages?.size ?: 0
@@ -256,7 +286,9 @@ fun ChatScreen(
                 ComposerBar(
                     draft = draft,
                     isSending = appState.busy.sendingMessage,
+                    isUploading = appState.busy.uploadingAttachment,
                     onDraftChange = { draft = it },
+                    onAttach = { attachmentPicker.launch(arrayOf("*/*")) },
                     onSend = {
                         shouldFollowLatest = true
                         forceScrollToLatest = true
@@ -388,10 +420,13 @@ private fun MessageBubble(
 private fun ComposerBar(
     draft: String,
     isSending: Boolean,
+    isUploading: Boolean,
     onDraftChange: (String) -> Unit,
+    onAttach: () -> Unit,
     onSend: () -> Unit,
 ) {
-    val canSend = draft.isNotBlank() && !isSending
+    val isBusy = isSending || isUploading
+    val canSend = draft.isNotBlank() && !isBusy
     fun submitDraft() {
         if (canSend) {
             onSend()
@@ -416,6 +451,34 @@ private fun ComposerBar(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
+            IconButton(
+                onClick = onAttach,
+                enabled = !isBusy,
+                modifier =
+                    Modifier
+                        .size(48.dp)
+                        .testTag("chatAttachButton"),
+            ) {
+                if (isUploading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = IrisTheme.palette.muted,
+                    )
+                } else {
+                    Icon(
+                        imageVector = IrisIcons.Attach,
+                        contentDescription = "Attach",
+                        tint =
+                            if (isBusy) {
+                                IrisTheme.palette.muted.copy(alpha = 0.54f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                    )
+                }
+            }
+
             Surface(
                 modifier = Modifier.weight(1f),
                 color = IrisTheme.palette.panel,
@@ -480,6 +543,50 @@ private fun ComposerBar(
     }
 }
 
+private data class PickedAttachment(
+    val path: String,
+    val filename: String,
+)
+
+private fun copyAttachmentToCache(
+    context: Context,
+    uri: Uri,
+): PickedAttachment? {
+    val resolver = context.contentResolver
+    val displayName = displayNameForUri(context, uri)
+    val outputDir = File(context.cacheDir, "attachments/outgoing").apply { mkdirs() }
+    val outputFile = File(outputDir, "${UUID.randomUUID()}-$displayName")
+
+    return runCatching {
+        resolver.openInputStream(uri)?.use { input ->
+            outputFile.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        } ?: return null
+        PickedAttachment(outputFile.absolutePath, displayName)
+    }.onFailure { error ->
+        Log.w(ChatScreenLogTag, "failed to copy attachment", error)
+    }.getOrNull()
+}
+
+private fun displayNameForUri(
+    context: Context,
+    uri: Uri,
+): String {
+    val queried =
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { cursor ->
+                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+            }
+    return safeAttachmentName(queried ?: uri.lastPathSegment ?: "attachment")
+}
+
+private fun safeAttachmentName(value: String): String {
+    val basename = value.substringAfterLast('/').substringAfterLast('\\').trim()
+    return basename.ifEmpty { "attachment" }
+}
+
 @Composable
 private fun AttachmentChip(
     attachment: MessageAttachmentSnapshot,
@@ -527,6 +634,7 @@ private fun attachmentIcon(attachment: MessageAttachmentSnapshot): ImageVector =
     }
 
 private const val MessageClusterGapSecs = 3 * 60L
+private const val ChatScreenLogTag = "IrisChat"
 
 private fun startsMessageCluster(
     previous: ChatMessageSnapshot?,
