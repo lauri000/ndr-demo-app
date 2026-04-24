@@ -36,6 +36,7 @@ import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Group
 import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.PersonRemove
@@ -431,6 +432,7 @@ object IrisIcons {
     val Edit = Icons.Rounded.Edit
     val File = Icons.AutoMirrored.Rounded.InsertDriveFile
     val Image = Icons.Rounded.Image
+    val Key = Icons.Rounded.Key
     val Movie = Icons.Rounded.Movie
     val Audio = Icons.Rounded.Audiotrack
     val Close = Icons.Rounded.Close

@@ -319,9 +319,14 @@ class AppManager(
         }
     }
 
-    suspend fun exportNsec(): String? =
+    suspend fun exportOwnerNsec(): String? =
         withContext(ioDispatcher) {
             loadPersistedBundle()?.ownerNsec
+        }
+
+    suspend fun exportDeviceNsec(): String? =
+        withContext(ioDispatcher) {
+            loadPersistedBundle()?.deviceNsec
         }
 
     suspend fun exportSupportBundleJson(): String =

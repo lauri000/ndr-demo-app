@@ -45,6 +45,11 @@ private const val IrisSourceUrl =
     "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-chat-rs"
 private const val IrisSourceLabel = "git.iris.to/iris-chat-rs"
 
+private enum class SecretExportKind {
+    Owner,
+    Device,
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MyProfileSheet(
@@ -66,6 +71,7 @@ fun MyProfileSheet(
             createQrBitmap(npub, size = 768)
         }
     var supportBusy by remember { mutableStateOf(false) }
+    var pendingSecretExport by remember { mutableStateOf<SecretExportKind?>(null) }
     var showDeleteAllConfirmation by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
@@ -177,6 +183,37 @@ fun MyProfileSheet(
                         color = IrisTheme.palette.muted,
                     )
                 }
+            }
+
+            IrisSectionCard {
+                Text(
+                    text = "Security",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                if (canManageDevices) {
+                    IrisSecondaryButton(
+                        text = "Export secret key",
+                        onClick = { pendingSecretExport = SecretExportKind.Owner },
+                        modifier = Modifier.testTag("myProfileExportOwnerKeyButton"),
+                        icon = {
+                            Icon(
+                                imageVector = IrisIcons.Key,
+                                contentDescription = null,
+                            )
+                        },
+                    )
+                }
+                IrisSecondaryButton(
+                    text = "Export device key",
+                    onClick = { pendingSecretExport = SecretExportKind.Device },
+                    modifier = Modifier.testTag("myProfileExportDeviceKeyButton"),
+                    icon = {
+                        Icon(
+                            imageVector = IrisIcons.Key,
+                            contentDescription = null,
+                        )
+                    },
+                )
             }
 
             IrisSectionCard {
@@ -332,6 +369,60 @@ fun MyProfileSheet(
                         text = "Delete Everything",
                         color = MaterialTheme.colorScheme.error,
                     )
+                }
+            },
+        )
+    }
+
+    pendingSecretExport?.let { exportKind ->
+        val isDeviceExport = exportKind == SecretExportKind.Device
+        AlertDialog(
+            onDismissRequest = { pendingSecretExport = null },
+            title = {
+                Text(if (isDeviceExport) "Export Device Key" else "Export Secret Key")
+            },
+            text = {
+                Text(
+                    if (isDeviceExport) {
+                        "This device key only unlocks this linked device. Copy it from this device?"
+                    } else {
+                        "Your secret key gives full access to your identity. Never share it with anyone. Store it securely."
+                    },
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingSecretExport = null }) {
+                    Text("Cancel")
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingSecretExport = null
+                        coroutineScope.launch {
+                            val secret =
+                                if (isDeviceExport) {
+                                    appManager.exportDeviceNsec()
+                                } else {
+                                    appManager.exportOwnerNsec()
+                                }
+                            if (secret.isNullOrBlank()) {
+                                Toast.makeText(context, "Key unavailable", Toast.LENGTH_SHORT).show()
+                            } else {
+                                clipboard.setText("Secret key", secret)
+                                Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    modifier = Modifier.testTag(
+                        if (isDeviceExport) {
+                            "myProfileConfirmExportDeviceKeyButton"
+                        } else {
+                            "myProfileConfirmExportOwnerKeyButton"
+                        },
+                    ),
+                ) {
+                    Text(if (isDeviceExport) "Copy Device Key" else "Copy")
                 }
             },
         )

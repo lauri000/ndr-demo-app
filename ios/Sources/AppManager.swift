@@ -247,6 +247,10 @@ final class AppManager: ObservableObject {
         showToast("Attachment could not be opened")
     }
 
+    func showSecretExportUnavailable() {
+        showToast("Key unavailable")
+    }
+
     func downloadAttachment(_ attachment: MessageAttachmentSnapshot) async -> Data? {
         if let cached = cachedDownloadedAttachmentData(for: attachment) {
             return cached
@@ -329,6 +333,14 @@ final class AppManager: ObservableObject {
 
     func supportBundleJson() -> String {
         rust.exportSupportBundleJson()
+    }
+
+    func exportOwnerNsec() -> String? {
+        secretStore.load()?.ownerNsec
+    }
+
+    func exportDeviceNsec() -> String? {
+        secretStore.load()?.deviceNsec
     }
 
     func resetAppState() {

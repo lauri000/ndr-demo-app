@@ -187,6 +187,42 @@ class AppManagerContractTest {
     }
 
     @Test
+    fun export_secret_keys_reads_persisted_account_bundle() {
+        val appManager = createManager()
+        persistStoredSecret(
+            StoredAccountBundle(
+                ownerNsec = "nsec1owner",
+                ownerPubkeyHex = "owner-hex",
+                deviceNsec = "nsec1device",
+            ).toJson(),
+        )
+
+        val ownerNsec = runBlocking { appManager.exportOwnerNsec() }
+        val deviceNsec = runBlocking { appManager.exportDeviceNsec() }
+
+        assertEquals("nsec1owner", ownerNsec)
+        assertEquals("nsec1device", deviceNsec)
+    }
+
+    @Test
+    fun export_owner_secret_returns_null_for_linked_device_bundle() {
+        val appManager = createManager()
+        persistStoredSecret(
+            StoredAccountBundle(
+                ownerNsec = null,
+                ownerPubkeyHex = "owner-hex",
+                deviceNsec = "nsec1device",
+            ).toJson(),
+        )
+
+        val ownerNsec = runBlocking { appManager.exportOwnerNsec() }
+        val deviceNsec = runBlocking { appManager.exportDeviceNsec() }
+
+        assertNull(ownerNsec)
+        assertEquals("nsec1device", deviceNsec)
+    }
+
+    @Test
     fun logout_clears_native_secrets_and_app_files_then_rebinds_fresh_rust_core() {
         rustFactory.initialStates += makeLoggedInState(rev = 5u)
         rustFactory.initialStates += makeAppState(rev = 0u)

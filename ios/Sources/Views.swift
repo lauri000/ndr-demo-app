@@ -4,6 +4,18 @@ import SwiftUI
 private let irisSourceURL = URL(string: "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-chat-rs")!
 private let irisSourceLabel = "git.iris.to/iris-chat-rs"
 
+private enum SecretExportKind: Identifiable {
+    case owner
+    case device
+
+    var id: String {
+        switch self {
+        case .owner: return "owner"
+        case .device: return "device"
+        }
+    }
+}
+
 struct RootView: View {
     @ObservedObject var manager: AppManager
     @State private var showingProfile = false
@@ -1638,6 +1650,7 @@ struct ProfileSheet: View {
     @ObservedObject var manager: AppManager
     @Environment(\.dismiss) private var dismiss
     @State private var shareText: String?
+    @State private var pendingSecretExport: SecretExportKind?
     @State private var showingDeleteAllConfirmation = false
     let closeSheet: () -> Void
 
@@ -1695,6 +1708,31 @@ struct ProfileSheet: View {
                                 subtitle: "This build uses a controlled relay set and is intended for trusted testing only."
                             )
                         }
+                    }
+
+                    IrisSectionCard {
+                        CardHeader(
+                            title: "Security",
+                            subtitle: "Copy keys only when you are ready to store them securely."
+                        )
+
+                        if manager.state.account?.hasOwnerSigningAuthority == true {
+                            Button {
+                                pendingSecretExport = .owner
+                            } label: {
+                                Label("Export secret key", systemImage: "key.fill")
+                            }
+                            .buttonStyle(IrisSecondaryButtonStyle())
+                            .accessibilityIdentifier("myProfileExportOwnerKeyButton")
+                        }
+
+                        Button {
+                            pendingSecretExport = .device
+                        } label: {
+                            Label("Export device key", systemImage: "key.fill")
+                        }
+                        .buttonStyle(IrisSecondaryButtonStyle())
+                        .accessibilityIdentifier("myProfileExportDeviceKeyButton")
                     }
 
                     IrisSectionCard {
@@ -1797,6 +1835,24 @@ struct ProfileSheet: View {
             set: { shareText = $0?.text }
         )) { payload in
             ShareSheet(text: payload.text)
+        }
+        .alert(item: $pendingSecretExport) { exportKind in
+            let isDeviceExport = exportKind == .device
+            return Alert(
+                title: Text(isDeviceExport ? "Export Device Key" : "Export Secret Key"),
+                message: Text(isDeviceExport
+                    ? "This device key only unlocks this linked device. Copy it from this device?"
+                    : "Your secret key gives full access to your identity. Never share it with anyone. Store it securely."),
+                primaryButton: .cancel(Text("Cancel")),
+                secondaryButton: .default(Text(isDeviceExport ? "Copy Device Key" : "Copy")) {
+                    let secret = isDeviceExport ? manager.exportDeviceNsec() : manager.exportOwnerNsec()
+                    guard let secret, !secret.isEmpty else {
+                        manager.showSecretExportUnavailable()
+                        return
+                    }
+                    manager.copyToClipboard(secret)
+                }
+            )
         }
         .alert("Delete All Data?", isPresented: $showingDeleteAllConfirmation) {
             Button("Cancel", role: .cancel) {}

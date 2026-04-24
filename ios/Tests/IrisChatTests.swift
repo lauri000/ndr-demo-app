@@ -262,6 +262,56 @@ final class IrisChatTests: XCTestCase {
     }
 
     @MainActor
+    func testAppManagerExportsPersistedOwnerAndDeviceSecrets() async {
+        let rust = MockRustApp()
+        let store = InMemorySecretStore(
+            bundle: StoredAccountBundle(
+                ownerNsec: "nsec1owner",
+                ownerPubkeyHex: "owner-hex",
+                deviceNsec: "nsec1device"
+            )
+        )
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let manager = AppManager(
+            rust: rust,
+            secretStore: store,
+            dataDir: tempDir,
+            environment: [:]
+        )
+
+        await Task.yield()
+        XCTAssertEqual(manager.exportOwnerNsec(), "nsec1owner")
+        XCTAssertEqual(manager.exportDeviceNsec(), "nsec1device")
+    }
+
+    @MainActor
+    func testAppManagerExportsDeviceSecretForLinkedDeviceBundle() async {
+        let rust = MockRustApp()
+        let store = InMemorySecretStore(
+            bundle: StoredAccountBundle(
+                ownerNsec: nil,
+                ownerPubkeyHex: "owner-hex",
+                deviceNsec: "nsec1device"
+            )
+        )
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let manager = AppManager(
+            rust: rust,
+            secretStore: store,
+            dataDir: tempDir,
+            environment: [:]
+        )
+
+        await Task.yield()
+        XCTAssertNil(manager.exportOwnerNsec())
+        XCTAssertEqual(manager.exportDeviceNsec(), "nsec1device")
+    }
+
+    @MainActor
     func testLogoutClearsSecretStoreAndLocalDataDirectory() async {
         let rust = MockRustApp(state: makeAppState(rev: 1))
         rust.onDispatch = { action in
