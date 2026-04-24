@@ -5,6 +5,9 @@ pub enum AppAction {
     CreateAccount {
         name: String,
     },
+    UpdateProfileMetadata {
+        name: String,
+    },
     RestoreSession {
         owner_nsec: String,
     },

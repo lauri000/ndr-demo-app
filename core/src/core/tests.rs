@@ -3209,6 +3209,53 @@ fn create_account_with_name_publishes_metadata_event() {
 }
 
 #[test]
+fn update_profile_metadata_changes_local_profile_and_republishes() {
+    let _guard = relay_test_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let _env = RelayEnvGuard::local_only();
+    let _relay = TestRelay::start();
+    let data_dir = TempDir::new().expect("temp dir");
+    let mut core = test_core(data_dir.path());
+    core.create_account("Alice");
+
+    core.update_profile_metadata("Alicia");
+
+    assert_eq!(
+        core.state.account.as_ref().expect("account").display_name,
+        "Alicia"
+    );
+    let owner_hex = core
+        .logged_in
+        .as_ref()
+        .expect("logged in")
+        .owner_pubkey
+        .to_string();
+    let owner_pubkey = PublicKey::parse(&owner_hex).expect("owner pubkey");
+    let deadline = Instant::now() + StdDuration::from_secs(5);
+    let metadata_event = loop {
+        let events = fetch_local_relay_events(vec![Filter::new()
+            .kind(Kind::Metadata)
+            .authors(vec![owner_pubkey])]);
+        if let Some(event) = events
+            .into_iter()
+            .find(|event| event.content.contains("Alicia"))
+        {
+            break event;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for updated metadata event"
+        );
+        thread::sleep(StdDuration::from_millis(50));
+    };
+    let metadata: NostrProfileMetadata =
+        serde_json::from_str(&metadata_event.content).expect("metadata json");
+    assert_eq!(metadata.name.as_deref(), Some("Alicia"));
+    assert_eq!(metadata.display_name.as_deref(), Some("Alicia"));
+}
+
+#[test]
 fn metadata_event_updates_direct_chat_display_name() {
     let _guard = relay_test_lock()
         .lock()

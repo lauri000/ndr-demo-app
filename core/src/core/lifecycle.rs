@@ -77,6 +77,7 @@ impl AppCore {
         self.state.toast = None;
         match action {
             AppAction::CreateAccount { name } => self.create_account(&name),
+            AppAction::UpdateProfileMetadata { name } => self.update_profile_metadata(&name),
             AppAction::RestoreSession { owner_nsec } => self.restore_primary_session(&owner_nsec),
             AppAction::RestoreAccountBundle {
                 owner_nsec,

@@ -19,6 +19,30 @@ impl AppCore {
         self.persist_best_effort();
     }
 
+    pub(super) fn update_profile_metadata(&mut self, name: &str) {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            self.state.toast = Some("Display name is required.".to_string());
+            self.emit_state();
+            return;
+        }
+        let Some(logged_in) = self.logged_in.as_ref() else {
+            self.state.toast = Some("Create or restore an account first.".to_string());
+            self.emit_state();
+            return;
+        };
+        if logged_in.owner_keys.is_none() {
+            self.state.toast = Some("Owner key is required to edit profile.".to_string());
+            self.emit_state();
+            return;
+        }
+
+        self.set_local_profile_name(trimmed);
+        self.republish_local_identity_artifacts();
+        self.rebuild_state();
+        self.emit_state();
+    }
+
     pub(super) fn apply_profile_metadata_event(&mut self, event: &Event) -> bool {
         let owner_hex = event.pubkey.to_hex();
         let Some(record) = parse_owner_profile_record(&event.content, event.created_at.as_u64())

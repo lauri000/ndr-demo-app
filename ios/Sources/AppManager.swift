@@ -206,6 +206,14 @@ final class AppManager: ObservableObject {
         rust.dispatch(action: .createAccount(name: trimmed))
     }
 
+    func updateProfileMetadata(name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return
+        }
+        rust.dispatch(action: .updateProfileMetadata(name: trimmed))
+    }
+
     func restoreSession(ownerNsec: String) {
         let trimmed = ownerNsec.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {

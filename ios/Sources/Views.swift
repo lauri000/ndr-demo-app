@@ -1724,6 +1724,7 @@ struct ProfileSheet: View {
     @State private var shareText: String?
     @State private var pendingSecretExport: SecretExportKind?
     @State private var showingDeleteAllConfirmation = false
+    @State private var profileName = ""
     let closeSheet: () -> Void
 
     var body: some View {
@@ -1747,6 +1748,29 @@ struct ProfileSheet: View {
                                         .accessibilityIdentifier("myProfileNpubValue")
                                 }
                             }
+                            .onAppear {
+                                profileName = account.displayName
+                            }
+                            .irisOnChange(of: account.displayName) { value in
+                                profileName = value
+                            }
+
+                            TextField("Display name", text: $profileName)
+                                .textFieldStyle(.roundedBorder)
+                                .disabled(!account.hasOwnerSigningAuthority)
+                                .accessibilityIdentifier("myProfileDisplayNameInput")
+
+                            Button("Save profile") {
+                                manager.updateProfileMetadata(name: profileName)
+                            }
+                            .buttonStyle(IrisSecondaryButtonStyle())
+                            .disabled(
+                                !account.hasOwnerSigningAuthority ||
+                                    profileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                                    profileName.trimmingCharacters(in: .whitespacesAndNewlines) ==
+                                    account.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+                            )
+                            .accessibilityIdentifier("myProfileSaveProfileButton")
 
                             Button {
                                 close()

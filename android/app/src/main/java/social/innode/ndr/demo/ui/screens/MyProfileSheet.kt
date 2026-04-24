@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -75,6 +76,7 @@ fun MyProfileSheet(
     var supportBusy by remember { mutableStateOf(false) }
     var pendingSecretExport by remember { mutableStateOf<SecretExportKind?>(null) }
     var showDeleteAllConfirmation by remember { mutableStateOf(false) }
+    var profileName by remember(displayName) { mutableStateOf(displayName) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -98,6 +100,22 @@ fun MyProfileSheet(
                     text = "My profile",
                     style = MaterialTheme.typography.titleMedium,
                     color = IrisTheme.palette.muted,
+                )
+                TextField(
+                    value = profileName,
+                    onValueChange = { profileName = it },
+                    label = { Text("Display name") },
+                    singleLine = true,
+                    enabled = canManageDevices,
+                    modifier = Modifier.fillMaxWidth().testTag("myProfileDisplayNameInput"),
+                )
+                IrisSecondaryButton(
+                    text = "Save profile",
+                    onClick = { appManager.updateProfileMetadata(profileName) },
+                    enabled = canManageDevices &&
+                        profileName.trim().isNotEmpty() &&
+                        profileName.trim() != displayName.trim(),
+                    modifier = Modifier.testTag("myProfileSaveProfileButton"),
                 )
                 Text(
                     text = "Scan this owner QR from a fresh device to start linking it. The primary device still controls roster approval.",
