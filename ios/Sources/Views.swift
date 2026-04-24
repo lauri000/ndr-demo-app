@@ -643,7 +643,6 @@ struct ChatListScreen: View {
 }
 
 struct NewChatScreen: View {
-    @Environment(\.irisPalette) private var palette
     @ObservedObject var manager: AppManager
     @State private var peerInput = ""
     @State private var showingScanner = false
@@ -658,50 +657,10 @@ struct NewChatScreen: View {
 
     var body: some View {
         IrisScrollScreen {
-            IrisAdaptiveColumns {
-                IrisSectionCard(accent: true) {
-                    Color.clear
-                        .frame(height: 0)
-                        .accessibilityIdentifier("newChatPrimaryCard")
-
-                    CardHeader(
-                        title: "Direct chat",
-                        subtitle: "Paste an npub, a hex key, or scan a QR code to open a one-to-one conversation."
-                    )
-
-                    TextField("npub, hex, or nostr:…", text: $peerInput)
-                        .irisIdentifierInputModifiers()
-                        .textFieldStyle(.plain)
-                        .irisInputField()
-                        .accessibilityIdentifier("newChatPeerInput")
-
-                    if !peerInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !validPeerInput {
-                        Text("Not a valid nostr public key.")
-                            .font(.system(.footnote, design: .rounded))
-                            .foregroundStyle(.red)
-                    }
-
-                    HStack(spacing: 10) {
-                        pasteButton
-                        scanButton
-                    }
-
-                    Button(manager.state.busy.creatingChat ? "Creating…" : "Open chat") {
-                        manager.dispatch(.createChat(peerInput: normalizedPeerInput))
-                    }
-                    .buttonStyle(IrisPrimaryButtonStyle())
-                    .disabled(!validPeerInput || manager.state.busy.creatingChat)
-                    .accessibilityIdentifier("newChatStartButton")
-                }
-            } trailing: {
-                IrisSectionCard {
-                    Text("Tip")
-                        .font(.system(.headline, design: .rounded, weight: .semibold))
-                        .foregroundStyle(palette.textPrimary)
-                    Text("You can paste `nostr:` links directly. The shell normalizes them before dispatching to Rust.")
-                        .font(.system(.body, design: .rounded))
-                        .foregroundStyle(palette.muted)
-                }
+            VStack(spacing: 16) {
+                joinChatSection
+                newChatSection
+                newGroupSection
             }
         }
         .sheet(isPresented: $showingScanner) {
@@ -709,6 +668,71 @@ struct NewChatScreen: View {
                 peerInput = normalizePeerInput(input: code)
                 showingScanner = false
             }
+        }
+    }
+
+    private var joinChatSection: some View {
+        IrisSectionCard {
+            CardHeader(
+                title: "Join chat",
+                subtitle: "Invite joining is not available yet."
+            )
+
+            Button("Join chat") {}
+                .buttonStyle(IrisSecondaryButtonStyle(compact: true))
+                .disabled(true)
+        }
+    }
+
+    private var newChatSection: some View {
+        IrisSectionCard(accent: true) {
+            Color.clear
+                .frame(height: 0)
+                .accessibilityIdentifier("newChatPrimaryCard")
+
+            CardHeader(
+                title: "Direct chat",
+                subtitle: "Paste an npub, a hex key, or scan a QR code to open a one-to-one conversation."
+            )
+
+            TextField("npub, hex, or nostr:…", text: $peerInput)
+                .irisIdentifierInputModifiers()
+                .textFieldStyle(.plain)
+                .irisInputField()
+                .accessibilityIdentifier("newChatPeerInput")
+
+            if !peerInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !validPeerInput {
+                Text("Not a valid nostr public key.")
+                    .font(.system(.footnote, design: .rounded))
+                    .foregroundStyle(.red)
+            }
+
+            HStack(spacing: 10) {
+                pasteButton
+                scanButton
+            }
+
+            Button(manager.state.busy.creatingChat ? "Creating…" : "Open chat") {
+                manager.dispatch(.createChat(peerInput: normalizedPeerInput))
+            }
+            .buttonStyle(IrisPrimaryButtonStyle())
+            .disabled(!validPeerInput || manager.state.busy.creatingChat)
+            .accessibilityIdentifier("newChatStartButton")
+        }
+    }
+
+    private var newGroupSection: some View {
+        IrisSectionCard {
+            CardHeader(
+                title: "New group",
+                subtitle: "Start a new group conversation."
+            )
+
+            Button("New group") {
+                manager.dispatch(.pushScreen(screen: .newGroup))
+            }
+            .buttonStyle(IrisSecondaryButtonStyle())
+            .accessibilityIdentifier("newChatNewGroupButton")
         }
     }
 

@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import social.innode.ndr.demo.core.AppManager
 import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.AppState
+import social.innode.ndr.demo.rust.Screen
 import social.innode.ndr.demo.rust.isValidPeerInput
 import social.innode.ndr.demo.rust.normalizePeerInput
 import social.innode.ndr.demo.ui.components.IrisIcons
@@ -68,17 +69,37 @@ fun NewChatScreen(
         ) {
             IrisSectionCard {
                 Text(
-                    text = "Start a direct conversation",
+                    text = "Join Chat",
                     style = MaterialTheme.typography.titleLarge,
                 )
                 Text(
-                    text = "Paste an npub, paste a 64-character hex key, or scan a QR from another device. This mirrors the lightweight start-chat flow in Iris web.",
-                    style = MaterialTheme.typography.bodyMedium,
+                    text = "Invite acceptance isn't available.",
+                    style = MaterialTheme.typography.bodySmall,
                     color = IrisTheme.palette.muted,
+                )
+                IrisSecondaryButton(
+                    text = "Join Chat",
+                    onClick = {},
+                    enabled = false,
+                    icon = {
+                        Icon(
+                            imageVector = IrisIcons.NewChat,
+                            contentDescription = null,
+                        )
+                    },
                 )
             }
 
             IrisSectionCard {
+                Text(
+                    text = "New Chat",
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                Text(
+                    text = "Paste an npub, hex key, or scan a QR.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = IrisTheme.palette.muted,
+                )
                 Text(
                     text = "Peer key",
                     style = MaterialTheme.typography.titleMedium,
@@ -157,6 +178,29 @@ fun NewChatScreen(
                     icon = {
                         Icon(
                             imageVector = IrisIcons.NewChat,
+                            contentDescription = null,
+                        )
+                    },
+                )
+            }
+
+            IrisSectionCard {
+                Text(
+                    text = "New Group",
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                Text(
+                    text = "Create a group conversation.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = IrisTheme.palette.muted,
+                )
+                IrisSecondaryButton(
+                    text = "New Group",
+                    onClick = { appManager.pushScreen(Screen.NewGroup) },
+                    modifier = Modifier.testTag("newChatNewGroupButton"),
+                    icon = {
+                        Icon(
+                            imageVector = IrisIcons.NewGroup,
                             contentDescription = null,
                         )
                     },
