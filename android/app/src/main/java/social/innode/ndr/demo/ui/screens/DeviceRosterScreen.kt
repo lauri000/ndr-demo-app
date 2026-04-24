@@ -1,5 +1,6 @@
 package social.innode.ndr.demo.ui.screens
 
+import android.os.Build
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -264,6 +265,9 @@ private fun DeviceRosterRow(
     onApprove: () -> Unit,
     onRemove: () -> Unit,
 ) {
+    val displayTitle = deviceDisplayTitle(device)
+    val displaySubtitle = deviceDisplaySubtitle(device)
+
     IrisSectionCard(
         modifier = Modifier.testTag("deviceRosterRow-${device.devicePubkeyHex.take(12)}"),
     ) {
@@ -271,18 +275,19 @@ private fun DeviceRosterRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            IrisAvatar(label = device.deviceNpub, size = 42.dp)
+            IrisAvatar(label = displayTitle, size = 42.dp)
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Text(
-                    text =
-                        when {
-                            device.isCurrentDevice -> "${device.deviceNpub} (this device)"
-                            else -> device.deviceNpub
-                        },
+                    text = displayTitle,
                     style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    text = displaySubtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = IrisTheme.palette.muted,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     DeviceStateChip(
@@ -325,6 +330,28 @@ private fun DeviceRosterRow(
             }
         }
     }
+}
+
+private fun deviceDisplayTitle(device: DeviceEntrySnapshot): String =
+    if (device.isCurrentDevice) {
+        currentDeviceLabel()
+    } else {
+        "Linked device"
+    }
+
+private fun deviceDisplaySubtitle(device: DeviceEntrySnapshot): String {
+    val clientLabel =
+        if (device.isCurrentDevice) {
+            "Iris Chat Mobile"
+        } else {
+            "Iris Chat"
+        }
+    return "$clientLabel - ${device.deviceNpub}"
+}
+
+private fun currentDeviceLabel(): String {
+    val model = Build.MODEL.trim()
+    return model.ifEmpty { "Android device" }
 }
 
 @Composable

@@ -42,7 +42,7 @@ Compared against `~/src/iris-chat-flutter` on 2026-04-24. Sources used include F
 - [ ] Device registration panel parity: registered/unregistered linked-device copy, read-only linked-device list, delete confirmation polish.
 - [x] Source-code/about rows and app version presentation.
 - [ ] Delete-all-data danger-zone flow with confirmation details.
-- [ ] Device label/client label niceties from Flutter helpers.
+- [x] Device label/client label niceties from Flutter helpers.
 
 ## Network, Notifications, And Runtime Services
 

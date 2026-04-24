@@ -132,6 +132,30 @@ enum PlatformDocumentOpener {
     }
 }
 
+enum PlatformDeviceLabels {
+    static var currentDeviceLabel: String {
+        #if canImport(UIKit)
+        let name = UIDevice.current.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "iPhone" : name
+        #elseif canImport(AppKit)
+        let name = Host.current().localizedName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (name?.isEmpty == false) ? name! : "Mac"
+        #else
+        return "This device"
+        #endif
+    }
+
+    static var currentClientLabel: String {
+        #if canImport(UIKit)
+        return "Iris Chat Mobile"
+        #elseif canImport(AppKit)
+        return "Iris Chat Desktop"
+        #else
+        return "Iris Chat"
+        #endif
+    }
+}
+
 #if canImport(UIKit)
 private final class IrisDocumentInteractionPresenter: NSObject, UIDocumentInteractionControllerDelegate {
     static let shared = IrisDocumentInteractionPresenter()

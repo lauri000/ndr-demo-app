@@ -1536,15 +1536,24 @@ private struct DeviceRosterRow: View {
     let device: DeviceEntrySnapshot
     let canManageDevices: Bool
 
+    private var displayTitle: String {
+        device.isCurrentDevice ? PlatformDeviceLabels.currentDeviceLabel : "Linked device"
+    }
+
+    private var displaySubtitle: String {
+        let client = device.isCurrentDevice ? PlatformDeviceLabels.currentClientLabel : "Iris Chat"
+        return "\(client) - \(device.deviceNpub)"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
-                IrisAvatar(label: device.deviceNpub, size: 36, emphasize: device.isCurrentDevice)
+                IrisAvatar(label: displayTitle, size: 36, emphasize: device.isCurrentDevice)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(device.isCurrentDevice ? "This device" : "Linked device")
+                    Text(displayTitle)
                         .font(.system(.headline, design: .rounded, weight: .semibold))
                         .foregroundStyle(palette.textPrimary)
-                    Text(device.deviceNpub)
+                    Text(displaySubtitle)
                         .font(.system(.footnote, design: .monospaced))
                         .foregroundStyle(palette.muted)
                         .lineLimit(2)
