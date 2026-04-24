@@ -245,6 +245,18 @@ final class AppManager: ObservableObject {
         showToast("Attachment could not be opened")
     }
 
+    func downloadAttachment(_ attachment: MessageAttachmentSnapshot) async -> Data? {
+        await Task.detached(priority: .userInitiated) {
+            let result = downloadHashtreeAttachment(
+                nhash: attachment.nhash
+            )
+            guard let encoded = result.dataBase64, !encoded.isEmpty else {
+                return nil
+            }
+            return Data(base64Encoded: encoded)
+        }.value
+    }
+
     func sendAttachment(chatId: String, fileURL: URL, caption: String) {
         let trimmedChatId = chatId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedChatId.isEmpty else {

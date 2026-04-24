@@ -42,6 +42,12 @@ pub struct OutgoingAttachment {
     pub filename: String,
 }
 
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct AttachmentDownloadResult {
+    pub data_base64: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(uniffi::Enum, Clone, Debug)]
 pub enum DeviceAuthorizationState {
     Authorized,

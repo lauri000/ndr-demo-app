@@ -115,6 +115,15 @@ extension View {
         self
         #endif
     }
+
+    @ViewBuilder
+    func irisOnExitCommand(_ action: @escaping () -> Void) -> some View {
+        #if canImport(AppKit)
+        self.onExitCommand(perform: action)
+        #else
+        self
+        #endif
+    }
 }
 
 var irisToolbarTrailingPlacement: ToolbarItemPlacement {

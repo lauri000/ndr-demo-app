@@ -35,8 +35,10 @@ import social.innode.ndr.demo.rust.AppReconciler
 import social.innode.ndr.demo.rust.AppState
 import social.innode.ndr.demo.rust.AppUpdate
 import social.innode.ndr.demo.rust.FfiApp
+import social.innode.ndr.demo.rust.MessageAttachmentSnapshot
 import social.innode.ndr.demo.rust.OutgoingAttachment
 import social.innode.ndr.demo.rust.Screen
+import social.innode.ndr.demo.rust.downloadHashtreeAttachment
 
 interface RustAppClient {
     fun state(): AppState
@@ -83,6 +85,7 @@ class AppManager(
     private val rustFactory: ((dataDir: String, appVersion: String) -> RustAppClient)? = null,
 ) {
     private val appContext = context.applicationContext
+    private val rustDataDir = appContext.filesDir.absolutePath
     private val dataStore =
         dataStore
             ?: PreferenceDataStoreFactory.create(
@@ -286,6 +289,17 @@ class AppManager(
             ),
         )
     }
+
+    suspend fun downloadAttachment(attachment: MessageAttachmentSnapshot): ByteArray? =
+        withContext(ioDispatcher) {
+            val result =
+                downloadHashtreeAttachment(
+                    nhash = attachment.nhash,
+                )
+            result.dataBase64
+                ?.takeIf(String::isNotBlank)
+                ?.let { encoded -> Base64.decode(encoded, Base64.NO_WRAP) }
+        }
 
     fun logout() {
         applicationScope.launch(ioDispatcher) {
@@ -521,9 +535,9 @@ class AppManager(
     }
 
     private fun createRustApp(): RustAppClient =
-        rustFactory?.invoke(appContext.filesDir.absolutePath, appVersion(appContext))
+        rustFactory?.invoke(rustDataDir, appVersion(appContext))
             ?: LiveRustAppClient(
-                dataDir = appContext.filesDir.absolutePath,
+                dataDir = rustDataDir,
                 appVersion = appVersion(appContext),
             )
 

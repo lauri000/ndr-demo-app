@@ -952,6 +952,7 @@ struct ChatScreen: View {
     @State private var replyTarget: ChatMessageSnapshot?
     @State private var deletedMessageIds: Set<String> = []
     @State private var localReactions: [String: [String: Int]] = [:]
+    @State private var imageViewerItem: ImageViewerItem?
 
     private var chat: CurrentChatSnapshot? {
         manager.state.currentChat?.chatId == chatId ? manager.state.currentChat : nil
@@ -1002,6 +1003,12 @@ struct ChatScreen: View {
                                                     if replyTarget?.id == message.id {
                                                         replyTarget = nil
                                                     }
+                                                },
+                                                downloadAttachment: { attachment in
+                                                    await manager.downloadAttachment(attachment)
+                                                },
+                                                onOpenImage: { image, filename in
+                                                    imageViewerItem = ImageViewerItem(image: image, filename: filename)
                                                 }
                                             )
                                             .id(message.id)
@@ -1169,6 +1176,13 @@ struct ChatScreen: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .overlay {
+            if let imageViewerItem {
+                IrisImageViewer(item: imageViewerItem) {
+                    self.imageViewerItem = nil
+                }
+            }
         }
     }
 
@@ -1879,6 +1893,8 @@ private struct ChatMessageRow: View {
     let onReply: () -> Void
     let onReact: (String) -> Void
     let onDelete: () -> Void
+    let downloadAttachment: (MessageAttachmentSnapshot) async -> Data?
+    let onOpenImage: (PlatformImage, String) -> Void
 
     @State private var isHovering = false
 
@@ -1918,7 +1934,12 @@ private struct ChatMessageRow: View {
                             .multilineTextAlignment(message.isOutgoing ? .trailing : .leading)
                         }
                         ForEach(Array(message.attachments.enumerated()), id: \.offset) { _, attachment in
-                            ChatAttachmentView(attachment: attachment, isOutgoing: message.isOutgoing)
+                            ChatAttachmentView(
+                                attachment: attachment,
+                                isOutgoing: message.isOutgoing,
+                                downloadAttachment: downloadAttachment,
+                                onOpenImage: onOpenImage
+                            )
                         }
                     }
                     .foregroundStyle(message.isOutgoing ? palette.onBubbleMine : palette.onBubbleTheirs)
@@ -2107,28 +2128,98 @@ private struct ChatAttachmentView: View {
 
     let attachment: MessageAttachmentSnapshot
     let isOutgoing: Bool
+    let downloadAttachment: (MessageAttachmentSnapshot) async -> Data?
+    let onOpenImage: (PlatformImage, String) -> Void
+
+    @State private var localImage: PlatformImage?
+    @State private var isLoadingImage = false
+    @State private var failedImageLoad = false
 
     var body: some View {
-        Button {
-            PlatformClipboard.setString(attachment.htreeUrl)
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: iconName)
-                    .font(.system(size: 15, weight: .semibold))
-                    .frame(width: 20, height: 20)
-                Text(attachment.filename)
-                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                    .lineLimit(1)
+        if attachment.isImage {
+            Button {
+                if let localImage {
+                    onOpenImage(localImage, attachment.filename)
+                } else {
+                    Task {
+                        await loadImageIfNeeded()
+                        if let localImage {
+                            onOpenImage(localImage, attachment.filename)
+                        }
+                    }
+                }
+            } label: {
+                VStack(alignment: .leading, spacing: 7) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill((isOutgoing ? palette.onBubbleMine : palette.onBubbleTheirs).opacity(0.12))
+                            .frame(width: 220, height: 150)
+                        if let localImage {
+                            Image(platformImage: localImage)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 220, height: 150)
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        } else if isLoadingImage {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: failedImageLoad ? "exclamationmark.triangle.fill" : "photo.fill")
+                                .font(.system(size: 28, weight: .semibold))
+                                .opacity(0.72)
+                        }
+                    }
+                    Text(attachment.filename)
+                        .font(.system(.caption, design: .rounded, weight: .semibold))
+                        .lineLimit(1)
+                        .frame(maxWidth: 220, alignment: .leading)
+                }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill((isOutgoing ? palette.onBubbleMine : palette.onBubbleTheirs).opacity(0.12))
-            )
+            .buttonStyle(.plain)
+            .accessibilityLabel(attachment.filename)
+            .task(id: attachment.htreeUrl) {
+                await loadImageIfNeeded()
+            }
+        } else {
+            Button {
+                PlatformClipboard.setString(attachment.htreeUrl)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: iconName)
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 20, height: 20)
+                    Text(attachment.filename)
+                        .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill((isOutgoing ? palette.onBubbleMine : palette.onBubbleTheirs).opacity(0.12))
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(attachment.filename)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(attachment.filename)
+    }
+
+    @MainActor
+    private func loadImageIfNeeded() async {
+        guard localImage == nil, !isLoadingImage else {
+            return
+        }
+        isLoadingImage = true
+        failedImageLoad = false
+        guard let data = await downloadAttachment(attachment),
+              let image = PlatformImage(data: data)
+        else {
+            isLoadingImage = false
+            failedImageLoad = true
+            return
+        }
+        localImage = image
+        isLoadingImage = false
     }
 
     private var iconName: String {
@@ -2142,6 +2233,45 @@ private struct ChatAttachmentView: View {
             return "waveform"
         }
         return "doc.fill"
+    }
+}
+
+private struct ImageViewerItem: Identifiable, Equatable {
+    let id = UUID()
+    let image: PlatformImage
+    let filename: String
+
+    static func == (lhs: ImageViewerItem, rhs: ImageViewerItem) -> Bool {
+        lhs.id == rhs.id
+    }
+}
+
+private struct IrisImageViewer: View {
+    let item: ImageViewerItem
+    let onClose: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.opacity(0.92)
+                .ignoresSafeArea()
+                .onTapGesture(perform: onClose)
+            Image(platformImage: item.image)
+                .resizable()
+                .scaledToFit()
+                .padding(22)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            Button(action: onClose) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .padding(18)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close image")
+        }
+        .irisOnExitCommand(onClose)
+        .zIndex(10)
     }
 }
 

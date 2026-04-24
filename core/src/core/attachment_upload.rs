@@ -1,12 +1,15 @@
 use super::*;
+use crate::state::AttachmentDownloadResult;
 use async_trait::async_trait;
+use base64::Engine;
 use hashtree_blossom::BlossomClient;
 use hashtree_config::Config as HashtreeConfig;
 use hashtree_core::{
-    nhash_encode_full, to_hex, Hash, HashTree, HashTreeConfig, NHashData, Store, StoreError,
+    nhash_decode, nhash_encode_full, to_hex, Cid, Hash, HashTree, HashTreeConfig, NHashData, Store,
+    StoreError,
 };
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::sync::RwLock as AsyncRwLock;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
@@ -141,6 +144,20 @@ impl AppCore {
     }
 }
 
+#[uniffi::export]
+pub fn download_hashtree_attachment(nhash: String) -> AttachmentDownloadResult {
+    match download_hashtree_attachment_blocking(&nhash) {
+        Ok(data_base64) => AttachmentDownloadResult {
+            data_base64: Some(data_base64),
+            error: None,
+        },
+        Err(error) => AttachmentDownloadResult {
+            data_base64: None,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PreparedOutgoingAttachment {
     file_path: PathBuf,
@@ -221,6 +238,42 @@ async fn upload_file_to_hashtree(secret_hex: &str, path: &Path) -> anyhow::Resul
         decrypt_key: cid.key,
     })
     .map_err(|error| anyhow::anyhow!("nhash encode failed: {error}"))
+}
+
+fn download_hashtree_attachment_blocking(nhash: &str) -> anyhow::Result<String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(download_hashtree_attachment_base64(nhash))
+}
+
+async fn download_hashtree_attachment_base64(nhash: &str) -> anyhow::Result<String> {
+    let nhash = nhash.trim();
+    if nhash.is_empty() {
+        anyhow::bail!("missing attachment hash");
+    }
+    let data = nhash_decode(nhash).map_err(|error| anyhow::anyhow!("invalid nhash: {error}"))?;
+    let cid = Cid {
+        hash: data.hash,
+        key: data.decrypt_key,
+    };
+    let keys = nostr35::Keys::generate();
+    let (read_servers, write_servers) = blossom_servers_from_config();
+    let store = Arc::new(UploadingBlossomStore::new(
+        keys,
+        merge_read_servers(read_servers, &write_servers),
+        Vec::new(),
+    ));
+    let tree = HashTree::new(HashTreeConfig::new(store));
+    let bytes = tree
+        .get(&cid)
+        .await
+        .map_err(|error| anyhow::anyhow!("hashtree download failed: {error}"))?
+        .ok_or_else(|| anyhow::anyhow!("attachment was not found"))?;
+    if bytes.len() > 64 * 1024 * 1024 {
+        anyhow::bail!("attachment is too large");
+    }
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 fn blossom_servers_from_config() -> (Vec<String>, Vec<String>) {

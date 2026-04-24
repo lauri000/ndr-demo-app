@@ -1,12 +1,14 @@
 package social.innode.ndr.demo.ui.screens
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
@@ -39,6 +41,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -51,8 +55,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -65,6 +71,8 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
@@ -108,6 +116,7 @@ fun ChatScreen(
     var replyTarget by remember(chatId) { mutableStateOf<ChatMessageSnapshot?>(null) }
     var deletedMessageIds by remember(chatId) { mutableStateOf<Set<String>>(emptySet()) }
     var localReactions by remember(chatId) { mutableStateOf<Map<String, Map<String, Int>>>(emptyMap()) }
+    var imageViewerItem by remember(chatId) { mutableStateOf<DownloadedImageAttachment?>(null) }
     val attachmentPicker =
         rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
             if (uris.isEmpty()) {
@@ -306,6 +315,12 @@ fun ChatScreen(
                                     replyTarget = null
                                 }
                             },
+                            downloadAttachment = { attachment ->
+                                appManager.downloadAttachment(attachment)
+                            },
+                            onOpenImage = { data, filename ->
+                                imageViewerItem = DownloadedImageAttachment(data = data, filename = filename)
+                            },
                         )
                     }
                 }
@@ -383,6 +398,13 @@ fun ChatScreen(
                     }
                 }
             }
+
+            imageViewerItem?.let { item ->
+                ImageViewerDialog(
+                    item = item,
+                    onDismiss = { imageViewerItem = null },
+                )
+            }
         }
     }
 }
@@ -398,6 +420,8 @@ private fun MessageBubble(
     onReply: () -> Unit,
     onReact: (String) -> Unit,
     onDelete: () -> Unit,
+    downloadAttachment: suspend (MessageAttachmentSnapshot) -> ByteArray?,
+    onOpenImage: (ByteArray, String) -> Unit,
 ) {
     val clipboard = rememberIrisClipboard()
     val parsed = remember(message.body) { parseReplyEncodedMessage(message.body) }
@@ -484,6 +508,8 @@ private fun MessageBubble(
                             AttachmentChip(
                                 attachment = attachment,
                                 isOutgoing = message.isOutgoing,
+                                downloadAttachment = downloadAttachment,
+                                onOpenImage = onOpenImage,
                             )
                         }
                         if (isLastInCluster) {
@@ -1173,14 +1199,105 @@ private fun safeAttachmentName(value: String): String {
 private fun AttachmentChip(
     attachment: MessageAttachmentSnapshot,
     isOutgoing: Boolean,
+    downloadAttachment: suspend (MessageAttachmentSnapshot) -> ByteArray?,
+    onOpenImage: (ByteArray, String) -> Unit,
 ) {
     val clipboard = rememberIrisClipboard()
+    val scope = rememberCoroutineScope()
+    var localImageData by remember(attachment.htreeUrl) { mutableStateOf<ByteArray?>(null) }
+    var imageLoadFailed by remember(attachment.htreeUrl) { mutableStateOf(false) }
+    var imageLoading by remember(attachment.htreeUrl) { mutableStateOf(false) }
     val foreground =
         if (isOutgoing) {
             MaterialTheme.colorScheme.onPrimary
         } else {
             MaterialTheme.colorScheme.onSurface
         }
+
+    suspend fun loadImageIfNeeded(): ByteArray? {
+        localImageData?.let { return it }
+        if (!attachment.isImage || imageLoading) {
+            return null
+        }
+        imageLoading = true
+        imageLoadFailed = false
+        val data = downloadAttachment(attachment)
+        imageLoading = false
+        if (data == null) {
+            imageLoadFailed = true
+            return null
+        }
+        localImageData = data
+        return data
+    }
+
+    if (attachment.isImage) {
+        LaunchedEffect(attachment.htreeUrl) {
+            loadImageIfNeeded()
+        }
+        val bitmap = remember(localImageData) {
+            localImageData?.let { data -> BitmapFactory.decodeByteArray(data, 0, data.size) }
+        }
+        Column(
+            modifier =
+                Modifier
+                    .clip(RoundedCornerShape(16.dp))
+                    .clickable {
+                        val data = localImageData
+                        if (data != null) {
+                            onOpenImage(data, attachment.filename)
+                        } else {
+                            scope.launch {
+                                loadImageIfNeeded()?.let { loadedData ->
+                                    onOpenImage(loadedData, attachment.filename)
+                                }
+                            }
+                        }
+                    },
+            verticalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Box(
+                modifier =
+                    Modifier
+                        .size(width = 220.dp, height = 150.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(foreground.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = attachment.filename,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                    )
+                } else if (imageLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(22.dp),
+                        strokeWidth = 2.dp,
+                        color = foreground,
+                    )
+                } else {
+                    Icon(
+                        imageVector = if (imageLoadFailed) Icons.Rounded.Warning else IrisIcons.Image,
+                        contentDescription = null,
+                        tint = foreground.copy(alpha = 0.72f),
+                        modifier = Modifier.size(30.dp),
+                    )
+                }
+            }
+            Text(
+                text = attachment.filename,
+                modifier = Modifier.widthIn(max = 220.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = foreground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        return
+    }
+
     Row(
         modifier =
             Modifier
@@ -1204,6 +1321,58 @@ private fun AttachmentChip(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+    }
+}
+
+private data class DownloadedImageAttachment(
+    val data: ByteArray,
+    val filename: String,
+)
+
+@Composable
+private fun ImageViewerDialog(
+    item: DownloadedImageAttachment,
+    onDismiss: () -> Unit,
+) {
+    val bitmap = remember(item.data) {
+        BitmapFactory.decodeByteArray(item.data, 0, item.data.size)
+    }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.92f))
+                    .clickable(onClick = onDismiss),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = item.filename,
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .padding(18.dp),
+                    contentScale = ContentScale.Fit,
+                )
+            } else {
+                CircularProgressIndicator(color = Color.White)
+            }
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier.align(Alignment.TopEnd),
+            ) {
+                Icon(
+                    imageVector = IrisIcons.Close,
+                    contentDescription = "Close image",
+                    tint = Color.White,
+                )
+            }
+        }
     }
 }
 
