@@ -1,6 +1,7 @@
 package social.innode.ndr.demo.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,8 +40,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -49,6 +52,7 @@ import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.AppState
 import social.innode.ndr.demo.rust.ChatKind
 import social.innode.ndr.demo.rust.ChatMessageSnapshot
+import social.innode.ndr.demo.rust.MessageAttachmentSnapshot
 import social.innode.ndr.demo.rust.Screen
 import social.innode.ndr.demo.ui.components.DeliveryGlyph
 import social.innode.ndr.demo.ui.components.IrisIcons
@@ -57,6 +61,7 @@ import social.innode.ndr.demo.ui.components.formatMessageClock
 import social.innode.ndr.demo.ui.components.formatTimelineDay
 import social.innode.ndr.demo.ui.components.isSameTimelineDay
 import social.innode.ndr.demo.ui.components.messageBubbleShape
+import social.innode.ndr.demo.ui.components.rememberIrisClipboard
 import social.innode.ndr.demo.ui.theme.IrisTheme
 
 @Composable
@@ -214,10 +219,8 @@ fun ChatScreen(
                                     previous.createdAtSecs.toLong(),
                                     message.createdAtSecs.toLong(),
                                 )
-                        val isFirstInCluster =
-                            previous == null || previous.isOutgoing != message.isOutgoing
-                        val isLastInCluster =
-                            next == null || next.isOutgoing != message.isOutgoing
+                        val isFirstInCluster = startsMessageCluster(previous, message)
+                        val isLastInCluster = next == null || startsMessageCluster(message, next)
 
                         if (showDayChip) {
                             Box(
@@ -228,7 +231,7 @@ fun ChatScreen(
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Surface(
-                                    color = IrisTheme.palette.panel.copy(alpha = 0.85f),
+                                    color = IrisTheme.palette.panel.copy(alpha = 0.58f),
                                     shape = RoundedCornerShape(100.dp),
                                 ) {
                                     Text(
@@ -331,39 +334,49 @@ private fun MessageBubble(
                         .testTag("chatMessage-${message.id}"),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                if (!message.isOutgoing && chatKind == ChatKind.GROUP) {
+                if (!message.isOutgoing && chatKind == ChatKind.GROUP && isFirstInCluster) {
                     Text(
                         text = message.author,
                         style = MaterialTheme.typography.labelMedium,
                         color = IrisTheme.palette.muted,
                     )
                 }
-                Text(
-                    text = message.body,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color =
-                        if (message.isOutgoing) {
-                            MaterialTheme.colorScheme.onPrimary
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
-                )
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+                if (message.body.isNotBlank()) {
                     Text(
-                        text = formatMessageClock(message.createdAtSecs.toLong()),
-                        style = MaterialTheme.typography.labelSmall,
+                        text = message.body,
+                        style = MaterialTheme.typography.bodyLarge,
                         color =
                             if (message.isOutgoing) {
-                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.72f)
+                                MaterialTheme.colorScheme.onPrimary
                             } else {
-                                IrisTheme.palette.muted
+                                MaterialTheme.colorScheme.onSurface
                             },
                     )
-                    if (message.isOutgoing) {
-                        DeliveryGlyph(message.delivery)
+                }
+                message.attachments.forEach { attachment ->
+                    AttachmentChip(
+                        attachment = attachment,
+                        isOutgoing = message.isOutgoing,
+                    )
+                }
+                if (isLastInCluster) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = formatMessageClock(message.createdAtSecs.toLong()),
+                            style = MaterialTheme.typography.labelSmall,
+                            color =
+                                if (message.isOutgoing) {
+                                    MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.72f)
+                                } else {
+                                    IrisTheme.palette.muted
+                                },
+                        )
+                        if (message.isOutgoing) {
+                            DeliveryGlyph(message.delivery)
+                        }
                     }
                 }
             }
@@ -399,7 +412,7 @@ private fun ComposerBar(
             modifier =
                 Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
@@ -465,4 +478,77 @@ private fun ComposerBar(
             }
         }
     }
+}
+
+@Composable
+private fun AttachmentChip(
+    attachment: MessageAttachmentSnapshot,
+    isOutgoing: Boolean,
+) {
+    val clipboard = rememberIrisClipboard()
+    val foreground =
+        if (isOutgoing) {
+            MaterialTheme.colorScheme.onPrimary
+        } else {
+            MaterialTheme.colorScheme.onSurface
+        }
+    Row(
+        modifier =
+            Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(foreground.copy(alpha = 0.12f))
+                .clickable { clipboard.setText(attachment.filename, attachment.htreeUrl) }
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = attachmentIcon(attachment),
+            contentDescription = null,
+            tint = foreground,
+            modifier = Modifier.size(20.dp),
+        )
+        Text(
+            text = attachment.filename,
+            style = MaterialTheme.typography.labelLarge,
+            color = foreground,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+private fun attachmentIcon(attachment: MessageAttachmentSnapshot): ImageVector =
+    when {
+        attachment.isImage -> IrisIcons.Image
+        attachment.isVideo -> IrisIcons.Movie
+        attachment.isAudio -> IrisIcons.Audio
+        else -> IrisIcons.File
+    }
+
+private const val MessageClusterGapSecs = 3 * 60L
+
+private fun startsMessageCluster(
+    previous: ChatMessageSnapshot?,
+    message: ChatMessageSnapshot,
+): Boolean {
+    if (previous == null) {
+        return true
+    }
+    val previousSecs = previous.createdAtSecs.toLong()
+    val messageSecs = message.createdAtSecs.toLong()
+    if (!isSameTimelineDay(previousSecs, messageSecs)) {
+        return true
+    }
+    val gap = if (messageSecs >= previousSecs) messageSecs - previousSecs else 0
+    if (gap > MessageClusterGapSecs) {
+        return true
+    }
+    if (previous.isOutgoing != message.isOutgoing) {
+        return true
+    }
+    if (!message.isOutgoing && previous.author != message.author) {
+        return true
+    }
+    return false
 }

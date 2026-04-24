@@ -2,7 +2,8 @@ use crate::actions::AppAction;
 use crate::state::{
     AccountSnapshot, AppState, ChatKind, ChatMessageSnapshot, ChatThreadSnapshot,
     CurrentChatSnapshot, DeliveryState, DeviceAuthorizationState, DeviceEntrySnapshot,
-    DeviceRosterSnapshot, GroupDetailsSnapshot, GroupMemberSnapshot, Router, Screen,
+    DeviceRosterSnapshot, GroupDetailsSnapshot, GroupMemberSnapshot, MessageAttachmentSnapshot,
+    Router, Screen,
 };
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 use flume::Sender;
@@ -27,6 +28,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, Duration};
 
 mod account;
+mod attachments;
 mod chats;
 mod config;
 mod groups;
@@ -48,6 +50,7 @@ mod support;
 #[cfg(test)]
 mod tests;
 
+use attachments::*;
 use config::*;
 pub(crate) use config::{build_summary, relay_set_id, trusted_test_build_flag};
 use identity::*;

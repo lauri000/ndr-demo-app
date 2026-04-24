@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 #[derive(uniffi::Enum, Clone, Debug)]
 pub enum Screen {
     Welcome,
@@ -86,12 +88,24 @@ pub enum ChatKind {
     Group,
 }
 
+#[derive(uniffi::Record, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageAttachmentSnapshot {
+    pub nhash: String,
+    pub filename: String,
+    pub filename_encoded: String,
+    pub htree_url: String,
+    pub is_image: bool,
+    pub is_video: bool,
+    pub is_audio: bool,
+}
+
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct ChatMessageSnapshot {
     pub id: String,
     pub chat_id: String,
     pub author: String,
     pub body: String,
+    pub attachments: Vec<MessageAttachmentSnapshot>,
     pub is_outgoing: bool,
     pub created_at_secs: u64,
     pub delivery: DeliveryState,

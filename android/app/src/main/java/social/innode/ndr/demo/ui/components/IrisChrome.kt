@@ -22,15 +22,19 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.InsertDriveFile
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.AddComment
+import androidx.compose.material.icons.rounded.Audiotrack
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Group
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.PersonRemove
 import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Schedule
@@ -61,7 +65,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val ToolbarShape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp)
 private val CardShape = RoundedCornerShape(24.dp)
 private val PillShape = RoundedCornerShape(100.dp)
 
@@ -78,11 +81,8 @@ fun IrisTopBar(
         modifier =
             modifier
                 .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(top = 4.dp),
+                .statusBarsPadding(),
         color = palette.toolbar,
-        shape = ToolbarShape,
-        border = BorderStroke(1.dp, palette.border),
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,
     ) {
@@ -90,7 +90,7 @@ fun IrisTopBar(
             modifier =
                 Modifier
                     .fillMaxWidth()
-                    .padding(start = 18.dp, end = 14.dp, top = 10.dp, bottom = 10.dp),
+                    .padding(start = 14.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
@@ -424,6 +424,10 @@ object IrisIcons {
     val Copy = Icons.Rounded.ContentCopy
     val Devices = Icons.Rounded.Devices
     val Edit = Icons.Rounded.Edit
+    val File = Icons.AutoMirrored.Rounded.InsertDriveFile
+    val Image = Icons.Rounded.Image
+    val Movie = Icons.Rounded.Movie
+    val Audio = Icons.Rounded.Audiotrack
     val RemoveMember = Icons.Rounded.PersonRemove
     val Logout = Icons.AutoMirrored.Rounded.Logout
 }

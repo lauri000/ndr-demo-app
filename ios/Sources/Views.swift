@@ -965,8 +965,8 @@ struct ChatScreen: View {
                                             let previous = index > 0 ? chat.messages[index - 1] : nil
                                             let next = index + 1 < chat.messages.count ? chat.messages[index + 1] : nil
                                             let showDayChip = previous == nil || !irisSameTimelineDay(previous!.createdAtSecs, message.createdAtSecs)
-                                            let isFirstInCluster = previous == nil || previous!.isOutgoing != message.isOutgoing
-                                            let isLastInCluster = next == nil || next!.isOutgoing != message.isOutgoing
+                                            let isFirstInCluster = irisStartsMessageCluster(previous: previous, message: message)
+                                            let isLastInCluster = next.map { irisStartsMessageCluster(previous: message, message: $0) } ?? true
 
                                             ChatMessageRow(
                                                 message: message,
@@ -991,8 +991,8 @@ struct ChatScreen: View {
                                             )
                                             .accessibilityHidden(true)
                                     }
-                                    .padding(.horizontal, IrisLayout.usesDesktopChrome ? 24 : 16)
-                                    .padding(.vertical, 12)
+                                    .padding(.horizontal, IrisLayout.usesDesktopChrome ? 18 : 14)
+                                    .padding(.vertical, 10)
                                     .accessibilityIdentifier("chatTimeline")
                                 }
                                 .coordinateSpace(name: ChatTimelineCoordinateSpace.name)
@@ -1076,10 +1076,6 @@ struct ChatScreen: View {
                                             .background(
                                                 Circle()
                                                     .fill(palette.accent)
-                                                    .overlay(
-                                                        Circle()
-                                                            .stroke(palette.border.opacity(0.25), lineWidth: 1)
-                                                    )
                                             )
                                     }
                                     .padding(.trailing, 18)
@@ -1117,22 +1113,7 @@ struct ChatScreen: View {
                     }
                 }
             }
-            .frame(maxWidth: IrisLayout.chatMaxWidth)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(
-                Group {
-                    if IrisLayout.usesDesktopChrome {
-                        RoundedRectangle(cornerRadius: IrisLayout.sectionCornerRadius, style: .continuous)
-                            .fill(palette.panel.opacity(0.82))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: IrisLayout.sectionCornerRadius, style: .continuous)
-                                    .stroke(palette.border, lineWidth: 1)
-                            )
-                    }
-                }
-            )
-            .padding(.horizontal, IrisLayout.usesDesktopChrome ? 18 : 0)
-            .padding(.bottom, IrisLayout.usesDesktopChrome ? 18 : 0)
         }
     }
 
@@ -1147,6 +1128,33 @@ struct ChatScreen: View {
             }
         }
     }
+}
+
+private let irisMessageClusterGapSecs: UInt64 = 3 * 60
+
+private func irisStartsMessageCluster(
+    previous: ChatMessageSnapshot?,
+    message: ChatMessageSnapshot
+) -> Bool {
+    guard let previous else {
+        return true
+    }
+    if !irisSameTimelineDay(previous.createdAtSecs, message.createdAtSecs) {
+        return true
+    }
+    let gap = message.createdAtSecs >= previous.createdAtSecs
+        ? message.createdAtSecs - previous.createdAtSecs
+        : 0
+    if gap > irisMessageClusterGapSecs {
+        return true
+    }
+    if previous.isOutgoing != message.isOutgoing {
+        return true
+    }
+    if !message.isOutgoing && previous.author != message.author {
+        return true
+    }
+    return false
 }
 
 private enum ChatTimelineCoordinateSpace {
@@ -1812,31 +1820,85 @@ private struct ChatMessageRow: View {
                         .foregroundStyle(palette.muted)
                 }
 
-                Text(message.body)
-                    .font(.system(.body, design: .rounded))
-                    .foregroundStyle(message.isOutgoing ? palette.onBubbleMine : palette.onBubbleTheirs)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
-                    .background(
-                        RoundedRectangle(cornerRadius: 22, style: .continuous)
-                            .fill(message.isOutgoing ? palette.bubbleMine : palette.bubbleTheirs)
-                    )
-                    .accessibilityIdentifier("chatMessage-\(message.id)")
-
-                HStack(spacing: 6) {
-                    Text(irisMessageClock(message.createdAtSecs))
-                        .font(.system(.caption2, design: .rounded, weight: .medium))
-                    if message.isOutgoing {
-                        Text(irisDeliveryLabel(message.delivery))
-                            .font(.system(.caption2, design: .rounded, weight: .medium))
+                VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 8) {
+                    if !message.body.isEmpty {
+                        Text(message.body)
+                            .font(.system(.body, design: .rounded))
+                            .multilineTextAlignment(message.isOutgoing ? .trailing : .leading)
+                    }
+                    ForEach(Array(message.attachments.enumerated()), id: \.offset) { _, attachment in
+                        ChatAttachmentView(attachment: attachment, isOutgoing: message.isOutgoing)
                     }
                 }
-                .foregroundStyle(palette.muted)
+                .foregroundStyle(message.isOutgoing ? palette.onBubbleMine : palette.onBubbleTheirs)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .background(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(message.isOutgoing ? palette.bubbleMine : palette.bubbleTheirs)
+                )
+                .accessibilityIdentifier("chatMessage-\(message.id)")
+
+                if isLastInCluster {
+                    HStack(spacing: 6) {
+                        Text(irisMessageClock(message.createdAtSecs))
+                            .font(.system(.caption2, design: .rounded, weight: .medium))
+                        if message.isOutgoing {
+                            Text(irisDeliveryLabel(message.delivery))
+                                .font(.system(.caption2, design: .rounded, weight: .medium))
+                        }
+                    }
+                    .foregroundStyle(palette.muted)
+                    .padding(.top, 1)
+                }
             }
             .frame(maxWidth: .infinity, alignment: message.isOutgoing ? .trailing : .leading)
             .padding(.top, isFirstInCluster ? 10 : 4)
             .padding(.bottom, isLastInCluster ? 10 : 0)
         }
+    }
+}
+
+private struct ChatAttachmentView: View {
+    @Environment(\.irisPalette) private var palette
+
+    let attachment: MessageAttachmentSnapshot
+    let isOutgoing: Bool
+
+    var body: some View {
+        Button {
+            PlatformClipboard.setString(attachment.htreeUrl)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: iconName)
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 20, height: 20)
+                Text(attachment.filename)
+                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill((isOutgoing ? palette.onBubbleMine : palette.onBubbleTheirs).opacity(0.12))
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(attachment.filename)
+    }
+
+    private var iconName: String {
+        if attachment.isImage {
+            return "photo.fill"
+        }
+        if attachment.isVideo {
+            return "play.rectangle.fill"
+        }
+        if attachment.isAudio {
+            return "waveform"
+        }
+        return "doc.fill"
     }
 }
 

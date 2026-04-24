@@ -361,6 +361,8 @@ pub(super) struct PersistedMessage {
     pub(super) chat_id: String,
     pub(super) author: String,
     pub(super) body: String,
+    #[serde(default)]
+    pub(super) attachments: Vec<MessageAttachmentSnapshot>,
     pub(super) is_outgoing: bool,
     pub(super) created_at_secs: u64,
     pub(super) delivery: PersistedDeliveryState,

@@ -819,6 +819,7 @@ impl AppCore {
         created_at_secs: u64,
         delivery: DeliveryState,
     ) -> ChatMessageSnapshot {
+        let (body, attachments) = extract_message_attachments(&body);
         let message = ChatMessageSnapshot {
             id: self.allocate_message_id(),
             chat_id: chat_id.to_string(),
@@ -829,6 +830,7 @@ impl AppCore {
                 .map(|account| account.display_name.clone())
                 .unwrap_or_else(|| "me".to_string()),
             body,
+            attachments,
             is_outgoing: true,
             created_at_secs,
             delivery,
@@ -871,11 +873,13 @@ impl AppCore {
             thread.unread_count = thread.unread_count.saturating_add(1);
         }
         thread.updated_at_secs = created_at_secs;
+        let (body, attachments) = extract_message_attachments(&body);
         thread.messages.push(ChatMessageSnapshot {
             id: message_id,
             chat_id: chat_id.to_string(),
             author,
             body,
+            attachments,
             is_outgoing: false,
             created_at_secs,
             delivery: DeliveryState::Received,

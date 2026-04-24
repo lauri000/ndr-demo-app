@@ -144,17 +144,24 @@ struct IrisTopBar: View {
     }
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Color.clear
                 .frame(width: 0, height: 0)
                 .accessibilityIdentifier("navigationTopBar")
 
             if canGoBack {
                 Button(action: onBack) {
-                    Label("Back", systemImage: "chevron.left")
-                        .font(.system(.body, design: .rounded, weight: .semibold))
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(palette.textPrimary)
+                        .frame(width: 44, height: 44)
+                        .background(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(palette.panel.opacity(0.64))
+                        )
                 }
-                .buttonStyle(IrisSecondaryButtonStyle(compact: true))
+                .buttonStyle(.plain)
+                .accessibilityLabel("Back")
                 .accessibilityIdentifier("navigationBackButton")
             } else {
                 leading
@@ -170,21 +177,17 @@ struct IrisTopBar: View {
             trailing
                 .frame(minWidth: 44, alignment: .trailing)
         }
-        .padding(.horizontal, IrisLayout.usesDesktopChrome ? 18 : 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, IrisLayout.usesDesktopChrome ? 12 : 14)
+        .padding(.vertical, IrisLayout.usesDesktopChrome ? 6 : 8)
         .background(
-            RoundedRectangle(cornerRadius: IrisLayout.topBarCornerRadius, style: .continuous)
+            Rectangle()
                 .fill(palette.toolbar)
-                .overlay(
-                    RoundedRectangle(cornerRadius: IrisLayout.topBarCornerRadius, style: .continuous)
-                        .stroke(palette.border, lineWidth: 1)
-                )
         )
         .frame(maxWidth: IrisLayout.chromeMaxWidth)
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, IrisLayout.usesDesktopChrome ? 18 : 12)
-        .padding(.top, 8)
-        .padding(.bottom, 10)
+        .padding(.horizontal, 0)
+        .padding(.top, IrisLayout.usesDesktopChrome ? 0 : 4)
+        .padding(.bottom, 0)
     }
 }
 
@@ -361,21 +364,10 @@ struct IrisSecondaryButtonStyle: ButtonStyle {
                             cornerRadius: compact ? IrisLayout.compactButtonCornerRadius : IrisLayout.buttonCornerRadius,
                             style: .continuous
                         )
-                        .fill(palette.panel)
-                        .overlay(
-                            RoundedRectangle(
-                                cornerRadius: compact ? IrisLayout.compactButtonCornerRadius : IrisLayout.buttonCornerRadius,
-                                style: .continuous
-                            )
-                            .stroke(palette.border, lineWidth: 1)
-                        )
+                        .fill(palette.panel.opacity(0.72))
                     } else {
                         Capsule(style: .continuous)
                             .fill(palette.panel)
-                            .overlay(
-                                Capsule(style: .continuous)
-                                    .stroke(palette.border, lineWidth: 1)
-                            )
                     }
                 }
             )
@@ -388,16 +380,13 @@ struct IrisInputFieldModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            .textFieldStyle(.plain)
             .font(.system(.body, design: .rounded))
             .padding(.horizontal, 14)
             .padding(.vertical, 13)
             .background(
                 RoundedRectangle(cornerRadius: IrisLayout.inputCornerRadius, style: .continuous)
-                    .fill(palette.background)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: IrisLayout.inputCornerRadius, style: .continuous)
-                            .stroke(palette.border, lineWidth: 1)
-                    )
+                    .fill(palette.panel.opacity(IrisLayout.usesDesktopChrome ? 0.62 : 1))
             )
     }
 }
@@ -505,11 +494,7 @@ struct IrisDayChip: View {
             .padding(.vertical, 7)
             .background(
                 RoundedRectangle(cornerRadius: IrisLayout.pillCornerRadius, style: .continuous)
-                    .fill(palette.panel)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: IrisLayout.pillCornerRadius, style: .continuous)
-                            .stroke(palette.border, lineWidth: 1)
-                    )
+                    .fill(palette.panel.opacity(0.64))
             )
     }
 }
@@ -547,17 +532,13 @@ struct IrisComposerBar: View {
             .disabled(!canSend)
             .accessibilityIdentifier("chatSendButton")
         }
-        .padding(.horizontal, IrisLayout.contentHorizontalPadding)
-        .padding(.top, 14)
+        .padding(.horizontal, IrisLayout.usesDesktopChrome ? 16 : IrisLayout.contentHorizontalPadding)
+        .padding(.top, 10)
         .padding(.bottom, 12)
         .background(
             Rectangle()
                 .fill(palette.toolbar)
-                .overlay(alignment: .top) {
-                    Divider().overlay(palette.border)
-                }
         )
-        .frame(maxWidth: IrisLayout.chatMaxWidth)
         .frame(maxWidth: .infinity)
     }
 

@@ -445,14 +445,23 @@ impl AppCore {
                             messages: thread
                                 .messages
                                 .iter()
-                                .map(|message| ChatMessageSnapshot {
-                                    id: message.id.clone(),
-                                    chat_id: message.chat_id.clone(),
-                                    author: message.author.clone(),
-                                    body: message.body.clone(),
-                                    is_outgoing: message.is_outgoing,
-                                    created_at_secs: message.created_at_secs,
-                                    delivery: message.delivery.clone().into(),
+                                .map(|message| {
+                                    let (body, parsed_attachments) =
+                                        extract_message_attachments(&message.body);
+                                    ChatMessageSnapshot {
+                                        id: message.id.clone(),
+                                        chat_id: message.chat_id.clone(),
+                                        author: message.author.clone(),
+                                        body,
+                                        attachments: if message.attachments.is_empty() {
+                                            parsed_attachments
+                                        } else {
+                                            message.attachments.clone()
+                                        },
+                                        is_outgoing: message.is_outgoing,
+                                        created_at_secs: message.created_at_secs,
+                                        delivery: message.delivery.clone().into(),
+                                    }
                                 })
                                 .collect(),
                         },
