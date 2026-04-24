@@ -4,6 +4,7 @@ impl AppCore {
     pub(super) fn rebuild_state(&mut self) {
         self.state.account = self.build_account_snapshot();
         self.state.device_roster = self.build_device_roster_snapshot();
+        self.state.network_status = Some(self.build_network_status_snapshot());
 
         let default_screen = match self
             .logged_in
@@ -200,6 +201,27 @@ impl AppCore {
             authorization_state: public_authorization_state(logged_in.authorization_state),
             devices,
         })
+    }
+
+    pub(super) fn build_network_status_snapshot(&self) -> NetworkStatusSnapshot {
+        let recent_event_count = self.debug_event_counters.roster_events
+            + self.debug_event_counters.invite_events
+            + self.debug_event_counters.invite_response_events
+            + self.debug_event_counters.message_events
+            + self.debug_event_counters.other_events;
+        let last_debug = self.debug_log.back();
+
+        NetworkStatusSnapshot {
+            relay_set_id: RELAY_SET_ID.to_string(),
+            relay_urls: configured_relays(),
+            syncing: self.state.busy.syncing_network,
+            pending_outbound_count: self.pending_outbound.len() as u64,
+            pending_group_control_count: self.pending_group_controls.len() as u64,
+            recent_event_count,
+            recent_log_count: self.debug_log.len() as u64,
+            last_debug_category: last_debug.map(|entry| entry.category.clone()),
+            last_debug_detail: last_debug.map(|entry| entry.detail.clone()),
+        }
     }
 
     pub(super) fn group_snapshot_for_chat_id(&self, chat_id: &str) -> Option<GroupSnapshot> {

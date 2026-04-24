@@ -179,6 +179,19 @@ pub struct GroupDetailsSnapshot {
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
+pub struct NetworkStatusSnapshot {
+    pub relay_set_id: String,
+    pub relay_urls: Vec<String>,
+    pub syncing: bool,
+    pub pending_outbound_count: u64,
+    pub pending_group_control_count: u64,
+    pub recent_event_count: u64,
+    pub recent_log_count: u64,
+    pub last_debug_category: Option<String>,
+    pub last_debug_detail: Option<String>,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
 pub struct AppState {
     pub rev: u64,
     pub router: Router,
@@ -188,6 +201,7 @@ pub struct AppState {
     pub chat_list: Vec<ChatThreadSnapshot>,
     pub current_chat: Option<CurrentChatSnapshot>,
     pub group_details: Option<GroupDetailsSnapshot>,
+    pub network_status: Option<NetworkStatusSnapshot>,
     pub toast: Option<String>,
 }
 
@@ -205,6 +219,7 @@ impl AppState {
             chat_list: Vec::new(),
             current_chat: None,
             group_details: None,
+            network_status: None,
             toast: None,
         }
     }

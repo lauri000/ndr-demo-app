@@ -3,7 +3,7 @@ use crate::state::{
     AccountSnapshot, AppState, ChatKind, ChatMessageSnapshot, ChatThreadSnapshot,
     CurrentChatSnapshot, DeliveryState, DeviceAuthorizationState, DeviceEntrySnapshot,
     DeviceRosterSnapshot, GroupDetailsSnapshot, GroupMemberSnapshot, MessageAttachmentSnapshot,
-    MessageReactionSnapshot, OutgoingAttachment, Router, Screen,
+    MessageReactionSnapshot, NetworkStatusSnapshot, OutgoingAttachment, Router, Screen,
 };
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 use flume::Sender;

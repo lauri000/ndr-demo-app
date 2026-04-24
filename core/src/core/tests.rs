@@ -3034,6 +3034,24 @@ fn support_bundle_export_is_redacted_and_contains_build_metadata() {
 }
 
 #[test]
+fn network_status_snapshot_exposes_relay_and_debug_state() {
+    let data_dir = TempDir::new().expect("temp dir");
+    let mut core = test_core(data_dir.path());
+
+    core.state.busy.syncing_network = true;
+    core.push_debug_log("protocol.test", "visible status");
+    core.rebuild_state();
+
+    let status = core.state.network_status.as_ref().expect("network status");
+    assert_eq!(status.relay_set_id, RELAY_SET_ID);
+    assert_eq!(status.relay_urls, configured_relays());
+    assert!(status.syncing);
+    assert_eq!(status.recent_log_count, 1);
+    assert_eq!(status.last_debug_category.as_deref(), Some("protocol.test"));
+    assert_eq!(status.last_debug_detail.as_deref(), Some("visible status"));
+}
+
+#[test]
 fn create_account_with_name_publishes_metadata_event() {
     let _guard = relay_test_lock()
         .lock()

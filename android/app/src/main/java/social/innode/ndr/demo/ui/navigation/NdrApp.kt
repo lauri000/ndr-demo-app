@@ -2,16 +2,29 @@ package social.innode.ndr.demo.ui.navigation
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import social.innode.ndr.demo.account.AccountBootstrapState
 import social.innode.ndr.demo.core.AppContainer
 import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.Screen
+import social.innode.ndr.demo.ui.theme.IrisTheme
 import social.innode.ndr.demo.ui.screens.ChatListScreen
 import social.innode.ndr.demo.ui.screens.ChatScreen
 import social.innode.ndr.demo.ui.screens.CreateAccountScreen
@@ -47,83 +60,122 @@ fun NdrApp(container: AppContainer) {
         appManager.dispatch(AppAction.UpdateScreenStack(router.screenStack.dropLast(1)))
     }
 
-    when (bootstrapState) {
-        AccountBootstrapState.Loading -> {
-            SplashScreen(
-                bootstrapState = bootstrapState,
-                onNeedsLogin = {},
-                onLoggedIn = {},
+    Box {
+        when (bootstrapState) {
+            AccountBootstrapState.Loading -> {
+                SplashScreen(
+                    bootstrapState = bootstrapState,
+                    onNeedsLogin = {},
+                    onLoggedIn = {},
+                )
+            }
+
+            AccountBootstrapState.NeedsLogin -> {
+                when (activeScreen) {
+                    Screen.Welcome -> WelcomeScreen(appManager = appManager)
+                    Screen.CreateAccount -> CreateAccountScreen(appManager = appManager, appState = appState)
+                    Screen.RestoreAccount -> RestoreAccountScreen(appManager = appManager, appState = appState)
+                    Screen.AddDevice -> AddDeviceScreen(appManager = appManager, appState = appState, awaitingApproval = false)
+                    else -> WelcomeScreen(appManager = appManager)
+                }
+            }
+
+            is AccountBootstrapState.LoggedIn -> {
+                when (val screen = activeScreen) {
+                    Screen.Welcome -> {
+                        WelcomeScreen(appManager = appManager)
+                    }
+
+                    Screen.CreateAccount -> {
+                        CreateAccountScreen(appManager = appManager, appState = appState)
+                    }
+
+                    Screen.RestoreAccount -> {
+                        RestoreAccountScreen(appManager = appManager, appState = appState)
+                    }
+
+                    Screen.AddDevice -> {
+                        AddDeviceScreen(appManager = appManager, appState = appState, awaitingApproval = false)
+                    }
+
+                    Screen.ChatList -> {
+                        ChatListScreen(appManager = appManager, appState = appState)
+                    }
+
+                    Screen.NewChat -> {
+                        NewChatScreen(appManager = appManager, appState = appState)
+                    }
+
+                    Screen.NewGroup -> {
+                        NewGroupScreen(appManager = appManager, appState = appState)
+                    }
+
+                    Screen.DeviceRoster -> {
+                        DeviceRosterScreen(appManager = appManager, appState = appState)
+                    }
+
+                    Screen.AwaitingDeviceApproval -> {
+                        AwaitingDeviceApprovalScreen(appManager = appManager, appState = appState)
+                    }
+
+                    Screen.DeviceRevoked -> {
+                        DeviceRevokedScreen(appManager = appManager, appState = appState)
+                    }
+
+                    is Screen.Chat -> {
+                        ChatScreen(
+                            appManager = appManager,
+                            appState = appState,
+                            chatId = screen.chatId,
+                        )
+                    }
+
+                    is Screen.GroupDetails -> {
+                        GroupDetailsScreen(
+                            appManager = appManager,
+                            appState = appState,
+                            groupId = screen.groupId,
+                        )
+                    }
+                }
+            }
+        }
+
+        if (appState.networkStatus?.syncing == true) {
+            NetworkSyncPill(
+                modifier =
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 74.dp)
+                        .testTag("networkSyncPill"),
             )
         }
+    }
+}
 
-        AccountBootstrapState.NeedsLogin -> {
-            when (activeScreen) {
-                Screen.Welcome -> WelcomeScreen(appManager = appManager)
-                Screen.CreateAccount -> CreateAccountScreen(appManager = appManager, appState = appState)
-                Screen.RestoreAccount -> RestoreAccountScreen(appManager = appManager, appState = appState)
-                Screen.AddDevice -> AddDeviceScreen(appManager = appManager, appState = appState, awaitingApproval = false)
-                else -> WelcomeScreen(appManager = appManager)
-            }
-        }
-
-        is AccountBootstrapState.LoggedIn -> {
-            when (val screen = activeScreen) {
-                Screen.Welcome -> {
-                    WelcomeScreen(appManager = appManager)
-                }
-
-                Screen.CreateAccount -> {
-                    CreateAccountScreen(appManager = appManager, appState = appState)
-                }
-
-                Screen.RestoreAccount -> {
-                    RestoreAccountScreen(appManager = appManager, appState = appState)
-                }
-
-                Screen.AddDevice -> {
-                    AddDeviceScreen(appManager = appManager, appState = appState, awaitingApproval = false)
-                }
-
-                Screen.ChatList -> {
-                    ChatListScreen(appManager = appManager, appState = appState)
-                }
-
-                Screen.NewChat -> {
-                    NewChatScreen(appManager = appManager, appState = appState)
-                }
-
-                Screen.NewGroup -> {
-                    NewGroupScreen(appManager = appManager, appState = appState)
-                }
-
-                Screen.DeviceRoster -> {
-                    DeviceRosterScreen(appManager = appManager, appState = appState)
-                }
-
-                Screen.AwaitingDeviceApproval -> {
-                    AwaitingDeviceApprovalScreen(appManager = appManager, appState = appState)
-                }
-
-                Screen.DeviceRevoked -> {
-                    DeviceRevokedScreen(appManager = appManager, appState = appState)
-                }
-
-                is Screen.Chat -> {
-                    ChatScreen(
-                        appManager = appManager,
-                        appState = appState,
-                        chatId = screen.chatId,
-                    )
-                }
-
-                is Screen.GroupDetails -> {
-                    GroupDetailsScreen(
-                        appManager = appManager,
-                        appState = appState,
-                        groupId = screen.groupId,
-                    )
-                }
-            }
+@Composable
+private fun NetworkSyncPill(modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        color = IrisTheme.palette.panel,
+        shape = MaterialTheme.shapes.extraLarge,
+        shadowElevation = 0.dp,
+    ) {
+        androidx.compose.foundation.layout.Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Sync,
+                contentDescription = null,
+                tint = IrisTheme.palette.accent,
+            )
+            Text(
+                text = "Syncing network",
+                modifier = Modifier.padding(start = 8.dp),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
         }
     }
 }

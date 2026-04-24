@@ -375,6 +375,7 @@ class AppManagerContractTest {
             chatList = emptyList(),
             currentChat = null,
             groupDetails = null,
+            networkStatus = null,
             toast = toast,
         )
 
@@ -474,6 +475,7 @@ private object AppManagerContractDefaults {
             chatList = emptyList(),
             currentChat = null,
             groupDetails = null,
+            networkStatus = null,
             toast = null,
         )
 }

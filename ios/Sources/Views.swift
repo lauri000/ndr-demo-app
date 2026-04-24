@@ -29,6 +29,7 @@ struct RootView: View {
                     title: screenTitle(manager.activeScreen),
                     canGoBack: manager.canNavigateBack,
                     onBack: manager.navigateBack,
+                    networkStatus: manager.state.networkStatus,
                     leading: topBarLeadingItem,
                     trailing: topBarTrailingItem
                 ) {
@@ -166,6 +167,7 @@ struct NavigationShell<Content: View>: View {
     let title: String
     let canGoBack: Bool
     let onBack: () -> Void
+    let networkStatus: NetworkStatusSnapshot?
     let leading: AnyView
     let trailing: AnyView
     let content: () -> Content
@@ -174,6 +176,7 @@ struct NavigationShell<Content: View>: View {
         title: String,
         canGoBack: Bool,
         onBack: @escaping () -> Void,
+        networkStatus: NetworkStatusSnapshot? = nil,
         leading: AnyView = AnyView(EmptyView()),
         trailing: AnyView = AnyView(EmptyView()),
         @ViewBuilder content: @escaping () -> Content
@@ -181,6 +184,7 @@ struct NavigationShell<Content: View>: View {
         self.title = title
         self.canGoBack = canGoBack
         self.onBack = onBack
+        self.networkStatus = networkStatus
         self.leading = leading
         self.trailing = trailing
         self.content = content
@@ -196,9 +200,37 @@ struct NavigationShell<Content: View>: View {
                 trailing: trailing
             )
 
+            if networkStatus?.syncing == true {
+                NetworkSyncPill()
+                    .padding(.top, 8)
+                    .transition(.opacity)
+                    .accessibilityIdentifier("networkSyncPill")
+            }
+
             content()
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
+    }
+}
+
+private struct NetworkSyncPill: View {
+    @Environment(\.irisPalette) private var palette
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(palette.accent)
+            Text("Syncing network")
+                .font(.system(.caption, design: .rounded, weight: .semibold))
+                .foregroundStyle(palette.textPrimary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(
+            Capsule(style: .continuous)
+                .fill(palette.panel)
+        )
     }
 }
 
@@ -1825,6 +1857,28 @@ struct ProfileSheet: View {
                         Text("Relay set \(manager.relaySetIdText())")
                             .font(.system(.body, design: .rounded))
                             .foregroundStyle(palette.muted)
+
+                        if let networkStatus = manager.state.networkStatus {
+                            Text(
+                                "Network \(networkStatus.syncing ? "syncing" : "idle") · " +
+                                    "\(networkStatus.relayUrls.count) relays · " +
+                                    "\(networkStatus.recentEventCount) events"
+                            )
+                            .font(.system(.body, design: .rounded))
+                            .foregroundStyle(palette.muted)
+                            .accessibilityIdentifier("myProfileNetworkStatusValue")
+
+                            Text(networkStatus.relayUrls.joined(separator: ", "))
+                                .font(.system(.caption, design: .rounded))
+                                .foregroundStyle(palette.muted)
+                                .accessibilityIdentifier("myProfileRelayUrlsValue")
+
+                            if let category = networkStatus.lastDebugCategory {
+                                Text("Last debug \(category)")
+                                    .font(.system(.caption, design: .rounded))
+                                    .foregroundStyle(palette.muted)
+                            }
+                        }
 
                         Button("Share support bundle") {
                             shareText = manager.supportBundleJson()

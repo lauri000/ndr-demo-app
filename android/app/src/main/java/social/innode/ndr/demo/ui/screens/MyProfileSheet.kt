@@ -33,6 +33,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import social.innode.ndr.demo.core.AppManager
+import social.innode.ndr.demo.rust.NetworkStatusSnapshot
 import social.innode.ndr.demo.ui.components.IrisIcons
 import social.innode.ndr.demo.ui.components.IrisInlineAction
 import social.innode.ndr.demo.ui.components.IrisPrimaryButton
@@ -59,6 +60,7 @@ fun MyProfileSheet(
     publicKeyHex: String,
     deviceNpub: String,
     canManageDevices: Boolean,
+    networkStatus: NetworkStatusSnapshot?,
     onManageDevices: () -> Unit,
     onLogout: () -> Unit,
     onDismiss: () -> Unit,
@@ -260,6 +262,29 @@ fun MyProfileSheet(
                     style = MaterialTheme.typography.bodySmall,
                     color = IrisTheme.palette.muted,
                 )
+                networkStatus?.let { status ->
+                    Text(
+                        text =
+                            "Network ${if (status.syncing) "syncing" else "idle"} · " +
+                                "${status.relayUrls.size} relays · ${status.recentEventCount} events",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = IrisTheme.palette.muted,
+                        modifier = Modifier.testTag("myProfileNetworkStatusValue"),
+                    )
+                    Text(
+                        text = status.relayUrls.joinToString(", "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = IrisTheme.palette.muted,
+                        modifier = Modifier.testTag("myProfileRelayUrlsValue"),
+                    )
+                    status.lastDebugCategory?.let { category ->
+                        Text(
+                            text = "Last debug $category",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = IrisTheme.palette.muted,
+                        )
+                    }
+                }
                 IrisPrimaryButton(
                     text = if (supportBusy) "Preparing…" else "Share support bundle",
                     onClick = {

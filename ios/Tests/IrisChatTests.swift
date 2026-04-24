@@ -48,6 +48,7 @@ private final class MockRustApp: RustAppClient {
         chatList: [],
         currentChat: nil,
         groupDetails: nil,
+        networkStatus: nil,
         toast: nil
     )) {
         self.currentState = state
@@ -104,6 +105,7 @@ private func makeAppState(
         chatList: [],
         currentChat: nil,
         groupDetails: nil,
+        networkStatus: nil,
         toast: toast
     )
 }

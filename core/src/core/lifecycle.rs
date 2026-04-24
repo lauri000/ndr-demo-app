@@ -263,6 +263,7 @@ impl AppCore {
             }
             InternalEvent::SyncComplete => {
                 self.state.busy.syncing_network = false;
+                self.rebuild_state();
                 self.emit_state();
             }
             InternalEvent::Toast(message) => {
