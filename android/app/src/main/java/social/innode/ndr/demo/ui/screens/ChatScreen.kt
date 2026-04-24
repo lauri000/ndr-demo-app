@@ -1,12 +1,14 @@
 package social.innode.ndr.demo.ui.screens
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
 import android.util.Log
 import android.webkit.WebView
+import android.webkit.MimeTypeMap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -91,6 +93,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.FileProvider
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
@@ -1285,6 +1288,7 @@ private fun safeAttachmentName(value: String): String {
     return basename.ifEmpty { "attachment" }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AttachmentChip(
     attachment: MessageAttachmentSnapshot,
@@ -1292,11 +1296,13 @@ private fun AttachmentChip(
     downloadAttachment: suspend (MessageAttachmentSnapshot) -> ByteArray?,
     onOpenImage: (ByteArray, String) -> Unit,
 ) {
+    val context = LocalContext.current
     val clipboard = rememberIrisClipboard()
     val scope = rememberCoroutineScope()
     var localImageData by remember(attachment.htreeUrl) { mutableStateOf<ByteArray?>(null) }
     var imageLoadFailed by remember(attachment.htreeUrl) { mutableStateOf(false) }
     var imageLoading by remember(attachment.htreeUrl) { mutableStateOf(false) }
+    var attachmentOpening by remember(attachment.htreeUrl) { mutableStateOf(false) }
     val foreground =
         if (isOutgoing) {
             MaterialTheme.colorScheme.onPrimary
@@ -1405,17 +1411,45 @@ private fun AttachmentChip(
                 .semantics { contentDescription = "${type.label}, ${attachment.filename}" }
                 .clip(RoundedCornerShape(12.dp))
                 .background(foreground.copy(alpha = 0.12f))
-                .clickable { clipboard.setText(attachment.filename, attachment.htreeUrl) }
+                .combinedClickable(
+                    onClick = {
+                        if (attachmentOpening) {
+                            return@combinedClickable
+                        }
+                        scope.launch {
+                            attachmentOpening = true
+                            val data = downloadAttachment(attachment)
+                            val opened = data?.let {
+                                openDownloadedAttachment(context, attachment.filename, it)
+                            } ?: false
+                            attachmentOpening = false
+                            if (!opened) {
+                                clipboard.setText(attachment.filename, attachment.htreeUrl)
+                            }
+                        }
+                    },
+                    onLongClick = {
+                        clipboard.setText(attachment.filename, attachment.htreeUrl)
+                    },
+                )
                 .padding(horizontal = 10.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector = type.icon,
-            contentDescription = null,
-            tint = foreground,
-            modifier = Modifier.size(20.dp),
-        )
+        if (attachmentOpening) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+                color = foreground,
+            )
+        } else {
+            Icon(
+                imageVector = type.icon,
+                contentDescription = null,
+                tint = foreground,
+                modifier = Modifier.size(20.dp),
+            )
+        }
         Column(
             modifier = Modifier.widthIn(max = 220.dp),
             verticalArrangement = Arrangement.spacedBy(1.dp),
@@ -1436,6 +1470,40 @@ private fun AttachmentChip(
             )
         }
     }
+}
+
+private fun openDownloadedAttachment(
+    context: Context,
+    filename: String,
+    data: ByteArray,
+): Boolean =
+    runCatching {
+        val outputDir = File(context.cacheDir, "attachments/downloaded").apply { mkdirs() }
+        val outputFile = File(outputDir, safeAttachmentName(filename))
+        outputFile.writeBytes(data)
+        val uri =
+            FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                outputFile,
+            )
+        val intent =
+            Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, mimeTypeForFilename(filename))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        context.startActivity(Intent.createChooser(intent, filename))
+        true
+    }.onFailure { error ->
+        Log.w(ChatScreenLogTag, "failed to open attachment", error)
+    }.getOrDefault(false)
+
+private fun mimeTypeForFilename(filename: String): String {
+    val extension = filename.substringAfterLast('.', "").lowercase()
+    return extension
+        .takeIf { it.isNotBlank() }
+        ?.let { MimeTypeMap.getSingleton().getMimeTypeFromExtension(it) }
+        ?: "application/octet-stream"
 }
 
 private data class DownloadedImageAttachment(

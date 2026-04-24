@@ -257,6 +257,23 @@ final class AppManager: ObservableObject {
         }.value
     }
 
+    func openAttachment(_ attachment: MessageAttachmentSnapshot) async {
+        guard let data = await downloadAttachment(attachment) else {
+            showAttachmentOpenError()
+            return
+        }
+
+        do {
+            let url = try cachedDownloadedAttachmentURL(filename: attachment.filename, data: data)
+            guard PlatformDocumentOpener.open(url) else {
+                showAttachmentOpenError()
+                return
+            }
+        } catch {
+            showAttachmentOpenError()
+        }
+    }
+
     func sendAttachment(chatId: String, fileURL: URL, caption: String) {
         let trimmedChatId = chatId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedChatId.isEmpty else {
@@ -404,6 +421,30 @@ final class AppManager: ObservableObject {
         }
         try fileManager.copyItem(at: sourceURL, to: destination)
         return (destination.path, displayName)
+    }
+
+    private func cachedDownloadedAttachmentURL(filename: String, data: Data) throws -> URL {
+        let directory = dataDir
+            .appendingPathComponent("attachments", isDirectory: true)
+            .appendingPathComponent("downloaded", isDirectory: true)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let safeName = safeAttachmentFilename(filename)
+        let destination = directory.appendingPathComponent(safeName)
+        if fileManager.fileExists(atPath: destination.path) {
+            try fileManager.removeItem(at: destination)
+        }
+        try data.write(to: destination, options: [.atomic])
+        return destination
+    }
+
+    private func safeAttachmentFilename(_ value: String) -> String {
+        let separators = CharacterSet(charactersIn: "/\\:")
+        let pieces = value
+            .components(separatedBy: separators)
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return pieces.isEmpty ? "attachment" : pieces
     }
 }
 

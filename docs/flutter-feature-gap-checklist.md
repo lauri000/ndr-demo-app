@@ -57,7 +57,7 @@ Compared against `~/src/iris-chat-flutter` on 2026-04-24. Sources used include F
 ## Media And Hashtree
 
 - [x] Light Rust hashtree upload integration without pulling in Flutter's `hashtree_ffi`.
-- [ ] Hashtree download path for opening attachments locally.
+- [x] Hashtree download path for opening attachments locally.
 - [ ] Image proxy settings and URL rewrite controls. Flutter coverage: `test/unit/core/services/imgproxy_service_test.dart`, `test/widget/settings_screen_test.dart`.
 - [ ] Attachment cache management for downloaded media.
 - [x] Multiple attachments per composer send.

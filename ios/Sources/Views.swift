@@ -1037,6 +1037,9 @@ struct ChatScreen: View {
                                                 downloadAttachment: { attachment in
                                                     await manager.downloadAttachment(attachment)
                                                 },
+                                                openAttachment: { attachment in
+                                                    await manager.openAttachment(attachment)
+                                                },
                                                 onOpenImage: { data, filename in
                                                     imageViewerItem = ImageViewerItem(data: data, filename: filename)
                                                 }
@@ -1911,6 +1914,7 @@ private struct ChatMessageRow: View {
     let onReact: (String) -> Void
     let onDelete: () -> Void
     let downloadAttachment: (MessageAttachmentSnapshot) async -> Data?
+    let openAttachment: (MessageAttachmentSnapshot) async -> Void
     let onOpenImage: (Data, String) -> Void
 
     @State private var isHovering = false
@@ -1960,6 +1964,7 @@ private struct ChatMessageRow: View {
                                 attachment: attachment,
                                 isOutgoing: message.isOutgoing,
                                 downloadAttachment: downloadAttachment,
+                                openAttachment: openAttachment,
                                 onOpenImage: onOpenImage
                             )
                         }
@@ -2224,11 +2229,13 @@ private struct ChatAttachmentView: View {
     let attachment: MessageAttachmentSnapshot
     let isOutgoing: Bool
     let downloadAttachment: (MessageAttachmentSnapshot) async -> Data?
+    let openAttachment: (MessageAttachmentSnapshot) async -> Void
     let onOpenImage: (Data, String) -> Void
 
     @State private var localImageData: Data?
     @State private var isLoadingImage = false
     @State private var failedImageLoad = false
+    @State private var isOpeningAttachment = false
 
     private var localImage: PlatformImage? {
         guard let localImageData, !isAnimatedImage(data: localImageData, filename: attachment.filename) else {
@@ -2291,12 +2298,23 @@ private struct ChatAttachmentView: View {
             let category = chatAttachmentCategory(for: attachment)
 
             Button {
-                PlatformClipboard.setString(attachment.htreeUrl)
+                Task {
+                    guard !isOpeningAttachment else { return }
+                    isOpeningAttachment = true
+                    await openAttachment(attachment)
+                    isOpeningAttachment = false
+                }
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: category.systemIcon)
-                        .font(.system(size: 15, weight: .semibold))
-                        .frame(width: 20, height: 20)
+                    if isOpeningAttachment {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 20, height: 20)
+                    } else {
+                        Image(systemName: category.systemIcon)
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 20, height: 20)
+                    }
                     VStack(alignment: .leading, spacing: 2) {
                         Text(attachment.filename)
                             .font(.system(.subheadline, design: .rounded, weight: .semibold))
@@ -2315,6 +2333,12 @@ private struct ChatAttachmentView: View {
                 )
             }
             .buttonStyle(.plain)
+            .disabled(isOpeningAttachment)
+            .contextMenu {
+                Button("Copy link") {
+                    PlatformClipboard.setString(attachment.htreeUrl)
+                }
+            }
             .accessibilityLabel("\(category.rawValue), \(attachment.filename)")
         }
     }

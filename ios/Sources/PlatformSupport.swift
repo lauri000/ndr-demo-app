@@ -120,6 +120,55 @@ enum PlatformClipboard {
     }
 }
 
+enum PlatformDocumentOpener {
+    static func open(_ url: URL) -> Bool {
+        #if canImport(UIKit)
+        return IrisDocumentInteractionPresenter.shared.present(url)
+        #elseif canImport(AppKit)
+        return NSWorkspace.shared.open(url)
+        #else
+        return false
+        #endif
+    }
+}
+
+#if canImport(UIKit)
+private final class IrisDocumentInteractionPresenter: NSObject, UIDocumentInteractionControllerDelegate {
+    static let shared = IrisDocumentInteractionPresenter()
+
+    private var controller: UIDocumentInteractionController?
+
+    func present(_ url: URL) -> Bool {
+        guard let source = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .rootViewController
+        else {
+            return false
+        }
+
+        let controller = UIDocumentInteractionController(url: url)
+        controller.delegate = self
+        self.controller = controller
+        if controller.presentPreview(animated: true) {
+            return true
+        }
+        return controller.presentOpenInMenu(from: source.view.bounds, in: source.view, animated: true)
+    }
+
+    func documentInteractionControllerViewControllerForPreview(
+        _ controller: UIDocumentInteractionController
+    ) -> UIViewController {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .rootViewController ?? UIViewController()
+    }
+}
+#endif
+
 var irisSupportsQrScanning: Bool {
     #if canImport(UIKit)
     true
