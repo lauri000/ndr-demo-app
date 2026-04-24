@@ -1013,8 +1013,8 @@ struct ChatScreen: View {
                                                 downloadAttachment: { attachment in
                                                     await manager.downloadAttachment(attachment)
                                                 },
-                                                onOpenImage: { image, filename in
-                                                    imageViewerItem = ImageViewerItem(image: image, filename: filename)
+                                                onOpenImage: { data, filename in
+                                                    imageViewerItem = ImageViewerItem(data: data, filename: filename)
                                                 }
                                             )
                                             .id(message.id)
@@ -1887,7 +1887,7 @@ private struct ChatMessageRow: View {
     let onReact: (String) -> Void
     let onDelete: () -> Void
     let downloadAttachment: (MessageAttachmentSnapshot) async -> Data?
-    let onOpenImage: (PlatformImage, String) -> Void
+    let onOpenImage: (Data, String) -> Void
 
     @State private var isHovering = false
 
@@ -2127,22 +2127,29 @@ private struct ChatAttachmentView: View {
     let attachment: MessageAttachmentSnapshot
     let isOutgoing: Bool
     let downloadAttachment: (MessageAttachmentSnapshot) async -> Data?
-    let onOpenImage: (PlatformImage, String) -> Void
+    let onOpenImage: (Data, String) -> Void
 
-    @State private var localImage: PlatformImage?
+    @State private var localImageData: Data?
     @State private var isLoadingImage = false
     @State private var failedImageLoad = false
+
+    private var localImage: PlatformImage? {
+        guard let localImageData, !isAnimatedImage(data: localImageData, filename: attachment.filename) else {
+            return nil
+        }
+        return PlatformImage(data: localImageData)
+    }
 
     var body: some View {
         if attachment.isImage {
             Button {
-                if let localImage {
-                    onOpenImage(localImage, attachment.filename)
+                if let localImageData {
+                    onOpenImage(localImageData, attachment.filename)
                 } else {
                     Task {
                         await loadImageIfNeeded()
-                        if let localImage {
-                            onOpenImage(localImage, attachment.filename)
+                        if let localImageData {
+                            onOpenImage(localImageData, attachment.filename)
                         }
                     }
                 }
@@ -2158,6 +2165,11 @@ private struct ChatAttachmentView: View {
                                 .scaledToFill()
                                 .frame(width: 220, height: 150)
                                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        } else if let localImageData, isAnimatedImage(data: localImageData, filename: attachment.filename) {
+                            IrisAnimatedImageDataView(data: localImageData)
+                                .frame(width: 220, height: 150)
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                .allowsHitTesting(false)
                         } else if isLoadingImage {
                             ProgressView()
                                 .controlSize(.small)
@@ -2204,19 +2216,22 @@ private struct ChatAttachmentView: View {
 
     @MainActor
     private func loadImageIfNeeded() async {
-        guard localImage == nil, !isLoadingImage else {
+        guard localImageData == nil, !isLoadingImage else {
             return
         }
         isLoadingImage = true
         failedImageLoad = false
-        guard let data = await downloadAttachment(attachment),
-              let image = PlatformImage(data: data)
-        else {
+        guard let data = await downloadAttachment(attachment) else {
             isLoadingImage = false
             failedImageLoad = true
             return
         }
-        localImage = image
+        if !isAnimatedImage(data: data, filename: attachment.filename), PlatformImage(data: data) == nil {
+            isLoadingImage = false
+            failedImageLoad = true
+            return
+        }
+        localImageData = data
         isLoadingImage = false
     }
 
@@ -2236,8 +2251,19 @@ private struct ChatAttachmentView: View {
 
 private struct ImageViewerItem: Identifiable, Equatable {
     let id = UUID()
-    let image: PlatformImage
+    let data: Data
     let filename: String
+
+    var isAnimated: Bool {
+        isAnimatedImage(data: data, filename: filename)
+    }
+
+    var image: PlatformImage? {
+        guard !isAnimated else {
+            return nil
+        }
+        return PlatformImage(data: data)
+    }
 
     static func == (lhs: ImageViewerItem, rhs: ImageViewerItem) -> Bool {
         lhs.id == rhs.id
@@ -2253,11 +2279,21 @@ private struct IrisImageViewer: View {
             Color.black.opacity(0.92)
                 .ignoresSafeArea()
                 .onTapGesture(perform: onClose)
-            Image(platformImage: item.image)
-                .resizable()
-                .scaledToFit()
-                .padding(22)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if item.isAnimated {
+                IrisAnimatedImageDataView(data: item.data)
+                    .padding(22)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .allowsHitTesting(false)
+            } else if let image = item.image {
+                Image(platformImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(22)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ProgressView()
+                    .tint(.white)
+            }
 
             Button(action: onClose) {
                 Image(systemName: "xmark.circle.fill")
@@ -2269,8 +2305,17 @@ private struct IrisImageViewer: View {
             .accessibilityLabel("Close image")
         }
         .irisOnExitCommand(onClose)
+        .irisOnEscapeKey(onClose)
         .zIndex(10)
     }
+}
+
+private func isAnimatedImage(data: Data, filename: String) -> Bool {
+    if filename.lowercased().hasSuffix(".gif") {
+        return true
+    }
+    let gifHeader = [UInt8](data.prefix(6))
+    return gifHeader == Array("GIF87a".utf8) || gifHeader == Array("GIF89a".utf8)
 }
 
 private struct ReplyPreview {

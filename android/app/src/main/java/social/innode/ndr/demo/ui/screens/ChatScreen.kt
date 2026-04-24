@@ -4,7 +4,9 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Base64
 import android.util.Log
+import android.webkit.WebView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -12,6 +14,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -55,9 +58,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -71,6 +81,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import java.io.File
@@ -1230,8 +1241,13 @@ private fun AttachmentChip(
         LaunchedEffect(attachment.htreeUrl) {
             loadImageIfNeeded()
         }
+        val isAnimated = remember(localImageData, attachment.filename) {
+            localImageData?.let { data -> isAnimatedImage(data, attachment.filename) } ?: isLikelyGif(attachment.filename)
+        }
         val bitmap = remember(localImageData) {
-            localImageData?.let { data -> BitmapFactory.decodeByteArray(data, 0, data.size) }
+            localImageData
+                ?.takeUnless { data -> isAnimatedImage(data, attachment.filename) }
+                ?.let { data -> BitmapFactory.decodeByteArray(data, 0, data.size) }
         }
         Column(
             modifier =
@@ -1265,6 +1281,11 @@ private fun AttachmentChip(
                         contentDescription = attachment.filename,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop,
+                    )
+                } else if (isAnimated && localImageData != null) {
+                    AnimatedImageDataView(
+                        data = localImageData!!,
+                        modifier = Modifier.fillMaxSize(),
                     )
                 } else if (imageLoading) {
                     CircularProgressIndicator(
@@ -1329,8 +1350,17 @@ private fun ImageViewerDialog(
     item: DownloadedImageAttachment,
     onDismiss: () -> Unit,
 ) {
+    val focusRequester = remember { FocusRequester() }
     val bitmap = remember(item.data) {
-        BitmapFactory.decodeByteArray(item.data, 0, item.data.size)
+        item.data
+            .takeUnless { data -> isAnimatedImage(data, item.filename) }
+            ?.let { data -> BitmapFactory.decodeByteArray(data, 0, data.size) }
+    }
+    val isAnimated = remember(item.data, item.filename) {
+        isAnimatedImage(item.data, item.filename)
+    }
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
     }
     Dialog(
         onDismissRequest = onDismiss,
@@ -1341,10 +1371,28 @@ private fun ImageViewerDialog(
                 Modifier
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.92f))
-                    .clickable(onClick = onDismiss),
+                    .clickable(onClick = onDismiss)
+                    .focusRequester(focusRequester)
+                    .focusable()
+                    .onPreviewKeyEvent { event ->
+                        if (event.key == Key.Escape && event.type == KeyEventType.KeyUp) {
+                            onDismiss()
+                            true
+                        } else {
+                            false
+                        }
+                    },
             contentAlignment = Alignment.Center,
         ) {
-            if (bitmap != null) {
+            if (isAnimated) {
+                AnimatedImageDataView(
+                    data = item.data,
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .padding(18.dp),
+                )
+            } else if (bitmap != null) {
                 Image(
                     bitmap = bitmap.asImageBitmap(),
                     contentDescription = item.filename,
@@ -1370,6 +1418,72 @@ private fun ImageViewerDialog(
         }
     }
 }
+
+@Composable
+private fun AnimatedImageDataView(
+    data: ByteArray,
+    modifier: Modifier = Modifier,
+) {
+    val html = remember(data) { animatedImageHtml(data) }
+    AndroidView(
+        modifier = modifier,
+        factory = { context ->
+            WebView(context).apply {
+                setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                settings.javaScriptEnabled = false
+                isVerticalScrollBarEnabled = false
+                isHorizontalScrollBarEnabled = false
+                loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+            }
+        },
+        update = { webView ->
+            webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+        },
+    )
+}
+
+private fun animatedImageHtml(data: ByteArray): String {
+    val encoded = Base64.encodeToString(data, Base64.NO_WRAP)
+    return """
+        <!doctype html>
+        <html>
+        <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+        <style>
+        html, body {
+          margin: 0;
+          width: 100%;
+          height: 100%;
+          overflow: hidden;
+          background: transparent;
+        }
+        body {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        img {
+          width: 100%;
+          height: 100%;
+          object-fit: contain;
+        }
+        </style>
+        </head>
+        <body><img src="data:image/gif;base64,$encoded" alt=""></body>
+        </html>
+    """.trimIndent()
+}
+
+private fun isLikelyGif(filename: String): Boolean =
+    filename.endsWith(".gif", ignoreCase = true)
+
+private fun isAnimatedImage(
+    data: ByteArray,
+    filename: String,
+): Boolean =
+    isLikelyGif(filename) ||
+        data.take(6).toByteArray().contentEquals("GIF87a".toByteArray()) ||
+        data.take(6).toByteArray().contentEquals("GIF89a".toByteArray())
 
 private fun attachmentIcon(attachment: MessageAttachmentSnapshot): ImageVector =
     when {
