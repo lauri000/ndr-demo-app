@@ -1420,7 +1420,7 @@ private fun AttachmentChip(
                             attachmentOpening = true
                             val data = downloadAttachment(attachment)
                             val opened = data?.let {
-                                openDownloadedAttachment(context, attachment.filename, it)
+                                openDownloadedAttachment(context, attachment, it)
                             } ?: false
                             attachmentOpening = false
                             if (!opened) {
@@ -1474,12 +1474,12 @@ private fun AttachmentChip(
 
 private fun openDownloadedAttachment(
     context: Context,
-    filename: String,
+    attachment: MessageAttachmentSnapshot,
     data: ByteArray,
 ): Boolean =
     runCatching {
         val outputDir = File(context.cacheDir, "attachments/downloaded").apply { mkdirs() }
-        val outputFile = File(outputDir, safeAttachmentName(filename))
+        val outputFile = File(outputDir, attachmentCacheName(attachment.nhash, attachment.filename))
         outputFile.writeBytes(data)
         val uri =
             FileProvider.getUriForFile(
@@ -1489,14 +1489,26 @@ private fun openDownloadedAttachment(
             )
         val intent =
             Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, mimeTypeForFilename(filename))
+                setDataAndType(uri, mimeTypeForFilename(attachment.filename))
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-        context.startActivity(Intent.createChooser(intent, filename))
+        context.startActivity(Intent.createChooser(intent, attachment.filename))
         true
     }.onFailure { error ->
         Log.w(ChatScreenLogTag, "failed to open attachment", error)
     }.getOrDefault(false)
+
+private fun attachmentCacheName(
+    nhash: String,
+    filename: String,
+): String = "${safeAttachmentCacheComponent(nhash)}-${safeAttachmentCacheComponent(filename)}"
+
+private fun safeAttachmentCacheComponent(value: String): String =
+    value
+        .split('/', '\\', ':')
+        .joinToString("-")
+        .trim()
+        .ifEmpty { "attachment" }
 
 private fun mimeTypeForFilename(filename: String): String {
     val extension = filename.substringAfterLast('.', "").lowercase()

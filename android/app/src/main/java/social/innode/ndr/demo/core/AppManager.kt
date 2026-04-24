@@ -292,13 +292,20 @@ class AppManager(
 
     suspend fun downloadAttachment(attachment: MessageAttachmentSnapshot): ByteArray? =
         withContext(ioDispatcher) {
+            cachedDownloadedAttachment(attachment)?.let { return@withContext it }
+
             val result =
                 downloadHashtreeAttachment(
                     nhash = attachment.nhash,
                 )
-            result.dataBase64
+            val data =
+                result.dataBase64
                 ?.takeIf(String::isNotBlank)
                 ?.let { encoded -> Base64.decode(encoded, Base64.NO_WRAP) }
+            if (data != null) {
+                cacheDownloadedAttachment(attachment, data)
+            }
+            data
         }
 
     fun logout() {
@@ -490,6 +497,59 @@ class AppManager(
         }
     }
 
+    private fun downloadedAttachmentDirectory(): File =
+        File(appContext.cacheDir, "attachments/downloaded").apply { mkdirs() }
+
+    private fun downloadedAttachmentFile(attachment: MessageAttachmentSnapshot): File =
+        File(downloadedAttachmentDirectory(), attachmentCacheName(attachment.nhash, attachment.filename))
+
+    private fun cachedDownloadedAttachment(attachment: MessageAttachmentSnapshot): ByteArray? {
+        val file = downloadedAttachmentFile(attachment)
+        if (!file.isFile) {
+            return null
+        }
+        file.setLastModified(System.currentTimeMillis())
+        return runCatching { file.readBytes() }.getOrNull()
+    }
+
+    private fun cacheDownloadedAttachment(
+        attachment: MessageAttachmentSnapshot,
+        data: ByteArray,
+    ) {
+        val file = downloadedAttachmentFile(attachment)
+        runCatching {
+            file.writeBytes(data)
+            pruneDownloadedAttachmentCache(protectedFile = file)
+        }.onFailure { error ->
+            Log.w(TAG, "failed to cache attachment", error)
+        }
+    }
+
+    private fun pruneDownloadedAttachmentCache(protectedFile: File) {
+        val files =
+            downloadedAttachmentDirectory()
+                .listFiles()
+                ?.filter { it.isFile }
+                ?: return
+        var totalSize = files.sumOf { it.length() }
+        if (totalSize <= DOWNLOADED_ATTACHMENT_CACHE_LIMIT_BYTES) {
+            return
+        }
+
+        val protectedPath = protectedFile.canonicalPath
+        files
+            .sortedBy { it.lastModified() }
+            .forEach { file ->
+                if (totalSize <= DOWNLOADED_ATTACHMENT_CACHE_LIMIT_BYTES || file.canonicalPath == protectedPath) {
+                    return@forEach
+                }
+                val size = file.length()
+                if (file.delete()) {
+                    totalSize -= size
+                }
+            }
+    }
+
     private fun publishState(snapshot: AppState) {
         mutableState.value = snapshot
         if (!restoreCheckComplete) {
@@ -524,8 +584,21 @@ class AppManager(
     private companion object {
         const val TAG = "NdrDebug"
         const val DATASTORE_NAME = "ndr_demo_secure_store.preferences_pb"
+        const val DOWNLOADED_ATTACHMENT_CACHE_LIMIT_BYTES = 128L * 1024L * 1024L
         val SECRET_CIPHERTEXT = stringPreferencesKey("secret_ciphertext")
         val SECRET_IV = stringPreferencesKey("secret_iv")
+
+        fun attachmentCacheName(
+            nhash: String,
+            filename: String,
+        ): String = "${safeAttachmentCacheComponent(nhash)}-${safeAttachmentCacheComponent(filename)}"
+
+        private fun safeAttachmentCacheComponent(value: String): String =
+            value
+                .split('/', '\\', ':')
+                .joinToString("-")
+                .trim()
+                .ifEmpty { "attachment" }
 
         fun appVersion(context: Context): String =
             runCatching {

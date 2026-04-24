@@ -130,6 +130,8 @@ private enum AppPaths {
 
 @MainActor
 final class AppManager: ObservableObject {
+    private static let downloadedAttachmentCacheLimitBytes = 128 * 1024 * 1024
+
     @Published private(set) var state: AppState
     @Published private(set) var bootstrapInFlight = true
     @Published var toastMessage: String?
@@ -246,7 +248,11 @@ final class AppManager: ObservableObject {
     }
 
     func downloadAttachment(_ attachment: MessageAttachmentSnapshot) async -> Data? {
-        await Task.detached(priority: .userInitiated) {
+        if let cached = cachedDownloadedAttachmentData(for: attachment) {
+            return cached
+        }
+
+        return await Task.detached(priority: .userInitiated) { () -> Data? in
             let result = downloadHashtreeAttachment(
                 nhash: attachment.nhash
             )
@@ -254,7 +260,10 @@ final class AppManager: ObservableObject {
                 return nil
             }
             return Data(base64Encoded: encoded)
-        }.value
+        }.value.flatMap { data in
+            _ = try? cachedDownloadedAttachmentURL(for: attachment, data: data)
+            return data
+        }
     }
 
     func openAttachment(_ attachment: MessageAttachmentSnapshot) async {
@@ -264,7 +273,7 @@ final class AppManager: ObservableObject {
         }
 
         do {
-            let url = try cachedDownloadedAttachmentURL(filename: attachment.filename, data: data)
+            let url = try cachedDownloadedAttachmentURL(for: attachment, data: data)
             guard PlatformDocumentOpener.open(url) else {
                 showAttachmentOpenError()
                 return
@@ -423,19 +432,42 @@ final class AppManager: ObservableObject {
         return (destination.path, displayName)
     }
 
-    private func cachedDownloadedAttachmentURL(filename: String, data: Data) throws -> URL {
-        let directory = dataDir
+    private func downloadedAttachmentDirectory() -> URL {
+        dataDir
             .appendingPathComponent("attachments", isDirectory: true)
             .appendingPathComponent("downloaded", isDirectory: true)
+    }
+
+    private func downloadedAttachmentURL(for attachment: MessageAttachmentSnapshot) -> URL {
+        downloadedAttachmentDirectory()
+            .appendingPathComponent(safeAttachmentCacheFilename(for: attachment))
+    }
+
+    private func cachedDownloadedAttachmentData(for attachment: MessageAttachmentSnapshot) -> Data? {
+        let url = downloadedAttachmentURL(for: attachment)
+        guard fileManager.fileExists(atPath: url.path) else {
+            return nil
+        }
+        try? fileManager.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+        return try? Data(contentsOf: url)
+    }
+
+    @discardableResult
+    private func cachedDownloadedAttachmentURL(for attachment: MessageAttachmentSnapshot, data: Data) throws -> URL {
+        let directory = downloadedAttachmentDirectory()
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        let safeName = safeAttachmentFilename(filename)
-        let destination = directory.appendingPathComponent(safeName)
+        let destination = downloadedAttachmentURL(for: attachment)
         if fileManager.fileExists(atPath: destination.path) {
             try fileManager.removeItem(at: destination)
         }
         try data.write(to: destination, options: [.atomic])
+        try pruneDownloadedAttachmentCache(protecting: destination)
         return destination
+    }
+
+    private func safeAttachmentCacheFilename(for attachment: MessageAttachmentSnapshot) -> String {
+        "\(safeAttachmentFilename(attachment.nhash))-\(safeAttachmentFilename(attachment.filename))"
     }
 
     private func safeAttachmentFilename(_ value: String) -> String {
@@ -445,6 +477,44 @@ final class AppManager: ObservableObject {
             .joined(separator: "-")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return pieces.isEmpty ? "attachment" : pieces
+    }
+
+    private func pruneDownloadedAttachmentCache(protecting protectedURL: URL) throws {
+        let directory = downloadedAttachmentDirectory()
+        let resourceKeys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey]
+        let files = try fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: Array(resourceKeys),
+            options: [.skipsHiddenFiles]
+        )
+        var cachedFiles: [(url: URL, modified: Date, size: Int)] = []
+        var totalSize = 0
+
+        for file in files {
+            let values = try file.resourceValues(forKeys: resourceKeys)
+            guard values.isRegularFile == true else {
+                continue
+            }
+            let size = values.fileSize ?? 0
+            totalSize += size
+            cachedFiles.append((file, values.contentModificationDate ?? .distantPast, size))
+        }
+
+        guard totalSize > Self.downloadedAttachmentCacheLimitBytes else {
+            return
+        }
+
+        let protectedPath = protectedURL.standardizedFileURL.path
+        for file in cachedFiles.sorted(by: { $0.modified < $1.modified }) {
+            guard file.url.standardizedFileURL.path != protectedPath else {
+                continue
+            }
+            try? fileManager.removeItem(at: file.url)
+            totalSize -= file.size
+            if totalSize <= Self.downloadedAttachmentCacheLimitBytes {
+                break
+            }
+        }
     }
 }
 
