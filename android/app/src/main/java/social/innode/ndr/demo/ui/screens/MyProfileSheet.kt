@@ -1,6 +1,7 @@
 package social.innode.ndr.demo.ui.screens
 
 import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
@@ -37,6 +38,10 @@ import social.innode.ndr.demo.ui.components.IrisSectionCard
 import social.innode.ndr.demo.ui.components.IrisSecondaryButton
 import social.innode.ndr.demo.ui.components.rememberIrisClipboard
 import social.innode.ndr.demo.ui.theme.IrisTheme
+
+private const val IrisSourceUrl =
+    "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-chat-rs"
+private const val IrisSourceLabel = "git.iris.to/iris-chat-rs"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -122,6 +127,39 @@ fun MyProfileSheet(
                 ) {
                     Icon(imageVector = IrisIcons.Copy, contentDescription = null)
                 }
+            }
+
+            IrisSectionCard {
+                Text(
+                    text = "About",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    text = "Version",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = appManager.buildSummary(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.testTag("myProfileVersionValue"),
+                )
+                IrisInlineAction(
+                    text = "Source code",
+                    onClick = {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(IrisSourceUrl)),
+                        )
+                    },
+                    modifier = Modifier.testTag("myProfileSourceCodeButton"),
+                ) {
+                    Icon(imageVector = IrisIcons.File, contentDescription = null)
+                }
+                Text(
+                    text = IrisSourceLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = IrisTheme.palette.muted,
+                    modifier = Modifier.testTag("myProfileSourceCodeValue"),
+                )
             }
 
             if (appManager.isTrustedTestBuild()) {

@@ -1,6 +1,9 @@
 import Foundation
 import SwiftUI
 
+private let irisSourceURL = URL(string: "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-chat-rs")!
+private let irisSourceLabel = "git.iris.to/iris-chat-rs"
+
 struct RootView: View {
     @ObservedObject var manager: AppManager
     @State private var showingProfile = false
@@ -1682,6 +1685,45 @@ struct ProfileSheet: View {
                                 subtitle: "This build uses a controlled relay set and is intended for trusted testing only."
                             )
                         }
+                    }
+
+                    IrisSectionCard {
+                        CardHeader(
+                            title: "About",
+                            subtitle: "Version and source details for this build."
+                        )
+                        HStack(spacing: 10) {
+                            Image(systemName: "info.circle.fill")
+                                .foregroundStyle(palette.accent)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Version")
+                                    .font(.system(.headline, design: .rounded, weight: .semibold))
+                                    .foregroundStyle(palette.textPrimary)
+                                Text(manager.buildSummaryText())
+                                    .font(.system(.body, design: .rounded))
+                                    .foregroundStyle(palette.muted)
+                                    .accessibilityIdentifier("myProfileVersionValue")
+                            }
+                            Spacer()
+                        }
+
+                        Link(destination: irisSourceURL) {
+                            HStack(spacing: 10) {
+                                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                                    .foregroundStyle(palette.accent)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Source code")
+                                        .font(.system(.headline, design: .rounded, weight: .semibold))
+                                        .foregroundStyle(palette.textPrimary)
+                                    Text(irisSourceLabel)
+                                        .font(.system(.body, design: .rounded))
+                                        .foregroundStyle(palette.muted)
+                                        .accessibilityIdentifier("myProfileSourceCodeValue")
+                                }
+                                Spacer()
+                            }
+                        }
+                        .accessibilityIdentifier("myProfileSourceCodeButton")
                     }
 
                     IrisSectionCard {
