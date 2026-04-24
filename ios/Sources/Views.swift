@@ -949,6 +949,9 @@ struct ChatScreen: View {
     @State private var timelineBottomMaxY: CGFloat = .greatestFiniteMagnitude
     @State private var initialScrollPending = true
     @State private var renderedMessageCount = 0
+    @State private var replyTarget: ChatMessageSnapshot?
+    @State private var deletedMessageIds: Set<String> = []
+    @State private var localReactions: [String: [String: Int]] = [:]
 
     private var chat: CurrentChatSnapshot? {
         manager.state.currentChat?.chatId == chatId ? manager.state.currentChat : nil
@@ -962,10 +965,11 @@ struct ChatScreen: View {
                         ScrollViewReader { proxy in
                             ZStack(alignment: .bottomTrailing) {
                                 ScrollView {
+                                    let visibleMessages = chat.messages.filter { !deletedMessageIds.contains($0.id) }
                                     LazyVStack(spacing: 0) {
-                                        ForEach(Array(chat.messages.enumerated()), id: \.element.id) { index, message in
-                                            let previous = index > 0 ? chat.messages[index - 1] : nil
-                                            let next = index + 1 < chat.messages.count ? chat.messages[index + 1] : nil
+                                        ForEach(Array(visibleMessages.enumerated()), id: \.element.id) { index, message in
+                                            let previous = index > 0 ? visibleMessages[index - 1] : nil
+                                            let next = index + 1 < visibleMessages.count ? visibleMessages[index + 1] : nil
                                             let showDayChip = previous == nil || !irisSameTimelineDay(previous!.createdAtSecs, message.createdAtSecs)
                                             let isFirstInCluster = irisStartsMessageCluster(
                                                 previous: previous,
@@ -985,7 +989,20 @@ struct ChatScreen: View {
                                                 chatKind: chat.kind,
                                                 showDayChip: showDayChip,
                                                 isFirstInCluster: isFirstInCluster,
-                                                isLastInCluster: isLastInCluster
+                                                isLastInCluster: isLastInCluster,
+                                                reactions: localReactions[message.id] ?? [:],
+                                                onReply: {
+                                                    replyTarget = message
+                                                },
+                                                onReact: { emoji in
+                                                    toggleLocalReaction(messageId: message.id, emoji: emoji)
+                                                },
+                                                onDelete: {
+                                                    deletedMessageIds.insert(message.id)
+                                                    if replyTarget?.id == message.id {
+                                                        replyTarget = nil
+                                                    }
+                                                }
                                             )
                                             .id(message.id)
                                         }
@@ -1099,6 +1116,12 @@ struct ChatScreen: View {
                             }
                         }
 
+                        if let replyTarget {
+                            IrisReplyComposerStrip(message: replyTarget) {
+                                self.replyTarget = nil
+                            }
+                        }
+
                         IrisComposerBar(
                             draft: $draft,
                             attachments: $selectedAttachments,
@@ -1119,14 +1142,16 @@ struct ChatScreen: View {
                             guard !text.isEmpty || !selectedAttachments.isEmpty else { return }
                             shouldFollowLatest = true
                             forceScrollToLatest = true
+                            let outgoingText = replyEncodedMessage(reply: replyTarget, text: text)
+                            replyTarget = nil
                             if selectedAttachments.isEmpty {
                                 draft = ""
-                                manager.dispatch(.sendMessage(chatId: chatId, text: text))
+                                manager.dispatch(.sendMessage(chatId: chatId, text: outgoingText))
                             } else {
                                 let attachments = selectedAttachments
                                 selectedAttachments = []
                                 draft = ""
-                                manager.sendAttachments(chatId: chatId, attachments: attachments, caption: text)
+                                manager.sendAttachments(chatId: chatId, attachments: attachments, caption: outgoingText)
                             }
                         }
                     }
@@ -1156,6 +1181,20 @@ struct ChatScreen: View {
             } else {
                 proxy.scrollTo(ChatTimelineAnchor.bottom, anchor: .bottom)
             }
+        }
+    }
+
+    private func toggleLocalReaction(messageId: String, emoji: String) {
+        var reactions = localReactions[messageId] ?? [:]
+        if reactions[emoji] == nil {
+            reactions[emoji] = 1
+        } else {
+            reactions.removeValue(forKey: emoji)
+        }
+        if reactions.isEmpty {
+            localReactions.removeValue(forKey: messageId)
+        } else {
+            localReactions[messageId] = reactions
         }
     }
 }
@@ -1836,6 +1875,16 @@ private struct ChatMessageRow: View {
     let showDayChip: Bool
     let isFirstInCluster: Bool
     let isLastInCluster: Bool
+    let reactions: [String: Int]
+    let onReply: () -> Void
+    let onReact: (String) -> Void
+    let onDelete: () -> Void
+
+    @State private var isHovering = false
+
+    private var bodyParts: ReplyParsedMessage {
+        parseReplyEncodedMessage(message.body)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1858,29 +1907,53 @@ private struct ChatMessageRow: View {
                         .foregroundStyle(palette.muted)
                 }
 
-                VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 8) {
-                    if !message.body.isEmpty {
-                        Text(linkedMessageAttributedString(message.body))
+                ZStack(alignment: message.isOutgoing ? .topLeading : .topTrailing) {
+                    VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 8) {
+                        if let reply = bodyParts.reply {
+                            ReplyPreviewView(reply: reply, isOutgoing: message.isOutgoing)
+                        }
+                        if !bodyParts.body.isEmpty {
+                            Text(linkedMessageAttributedString(bodyParts.body))
                             .font(.system(.body, design: .rounded))
                             .multilineTextAlignment(message.isOutgoing ? .trailing : .leading)
+                        }
+                        ForEach(Array(message.attachments.enumerated()), id: \.offset) { _, attachment in
+                            ChatAttachmentView(attachment: attachment, isOutgoing: message.isOutgoing)
+                        }
                     }
-                    ForEach(Array(message.attachments.enumerated()), id: \.offset) { _, attachment in
-                        ChatAttachmentView(attachment: attachment, isOutgoing: message.isOutgoing)
+                    .foregroundStyle(message.isOutgoing ? palette.onBubbleMine : palette.onBubbleTheirs)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
+                    .background(
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .fill(message.isOutgoing ? palette.bubbleMine : palette.bubbleTheirs)
+                    )
+                    .contextMenu {
+                        Button("Reply", action: onReply)
+                        Button("React 👍") { onReact("👍") }
+                        Button("React ❤️") { onReact("❤️") }
+                        Button("Copy") {
+                            PlatformClipboard.setString(copyableMessageText(message))
+                        }
+                        Button("Delete locally", role: .destructive, action: onDelete)
+                    }
+                    .accessibilityIdentifier("chatMessage-\(message.id)")
+
+                    if IrisLayout.usesDesktopChrome && isHovering {
+                        ChatMessageActionDock(
+                            onReply: onReply,
+                            onHeart: { onReact("❤️") },
+                            onThumb: { onReact("👍") },
+                            onDelete: onDelete
+                        )
+                        .offset(x: message.isOutgoing ? -10 : 10, y: -18)
                     }
                 }
-                .foregroundStyle(message.isOutgoing ? palette.onBubbleMine : palette.onBubbleTheirs)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 11)
-                .background(
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(message.isOutgoing ? palette.bubbleMine : palette.bubbleTheirs)
-                )
-                .contextMenu {
-                    Button("Copy") {
-                        PlatformClipboard.setString(copyableMessageText(message))
-                    }
+                .onHover { isHovering = $0 }
+
+                if !reactions.isEmpty {
+                    ReactionRow(reactions: reactions, isOutgoing: message.isOutgoing)
                 }
-                .accessibilityIdentifier("chatMessage-\(message.id)")
 
                 if isLastInCluster {
                     HStack(spacing: 6) {
@@ -1899,6 +1972,133 @@ private struct ChatMessageRow: View {
             .padding(.top, isFirstInCluster ? 10 : 4)
             .padding(.bottom, isLastInCluster ? 10 : 0)
         }
+    }
+}
+
+private struct ChatMessageActionDock: View {
+    @Environment(\.irisPalette) private var palette
+    let onReply: () -> Void
+    let onHeart: () -> Void
+    let onThumb: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: 2) {
+            dockButton("arrowshape.turn.up.left.fill", action: onReply)
+            dockTextButton("❤️", action: onHeart)
+            dockTextButton("👍", action: onThumb)
+            dockButton("trash.fill", action: onDelete)
+        }
+        .padding(5)
+        .background(
+            Capsule(style: .continuous)
+                .fill(palette.toolbar.opacity(0.96))
+        )
+    }
+
+    private func dockButton(_ systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12, weight: .semibold))
+                .frame(width: 26, height: 24)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func dockTextButton(_ text: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(text)
+                .font(.system(size: 14))
+                .frame(width: 26, height: 24)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct ReactionRow: View {
+    @Environment(\.irisPalette) private var palette
+    let reactions: [String: Int]
+    let isOutgoing: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            ForEach(reactions.keys.sorted(), id: \.self) { emoji in
+                Text("\(emoji) \(reactions[emoji] ?? 0)")
+                    .font(.system(.caption, design: .rounded, weight: .semibold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(palette.panel)
+                    )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: isOutgoing ? .trailing : .leading)
+    }
+}
+
+private struct IrisReplyComposerStrip: View {
+    @Environment(\.irisPalette) private var palette
+    let message: ChatMessageSnapshot
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Rectangle()
+                .fill(palette.accent)
+                .frame(width: 3)
+                .clipShape(Capsule())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(message.author)
+                    .font(.system(.caption, design: .rounded, weight: .bold))
+                    .foregroundStyle(palette.textPrimary)
+                Text(replySnippet(for: message))
+                    .font(.system(.caption, design: .rounded, weight: .medium))
+                    .foregroundStyle(palette.muted)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button(action: onCancel) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(palette.muted)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, IrisLayout.usesDesktopChrome ? 18 : 16)
+        .padding(.vertical, 8)
+        .background(palette.toolbar)
+        .accessibilityIdentifier("chatReplyComposer")
+    }
+}
+
+private struct ReplyPreviewView: View {
+    @Environment(\.irisPalette) private var palette
+    let reply: ReplyPreview
+    let isOutgoing: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Rectangle()
+                .fill(isOutgoing ? palette.onBubbleMine.opacity(0.6) : palette.accent)
+                .frame(width: 3)
+                .clipShape(Capsule())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(reply.author)
+                    .font(.system(.caption, design: .rounded, weight: .bold))
+                Text(reply.body)
+                    .font(.system(.caption, design: .rounded, weight: .medium))
+                    .lineLimit(2)
+                    .opacity(0.82)
+            }
+        }
+        .frame(maxWidth: 280, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill((isOutgoing ? palette.onBubbleMine : palette.onBubbleTheirs).opacity(0.12))
+        )
     }
 }
 
@@ -1944,6 +2144,61 @@ private struct ChatAttachmentView: View {
         return "doc.fill"
     }
 }
+
+private struct ReplyPreview {
+    let author: String
+    let body: String
+}
+
+private struct ReplyParsedMessage {
+    let reply: ReplyPreview?
+    let body: String
+}
+
+private func replyEncodedMessage(reply: ChatMessageSnapshot?, text: String) -> String {
+    guard let reply else {
+        return text
+    }
+    let snippet = replySnippet(for: reply)
+    return "\(replyMessagePrefix)\(reply.author): \(snippet)\n\n\(text)"
+}
+
+private func parseReplyEncodedMessage(_ text: String) -> ReplyParsedMessage {
+    guard text.hasPrefix(replyMessagePrefix) else {
+        return ReplyParsedMessage(reply: nil, body: text)
+    }
+    let remaining = text.dropFirst(replyMessagePrefix.count)
+    guard let separator = remaining.range(of: "\n\n") else {
+        return ReplyParsedMessage(reply: nil, body: text)
+    }
+    let header = String(remaining[..<separator.lowerBound])
+    let body = String(remaining[separator.upperBound...])
+    let pieces = header.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+    guard pieces.count == 2 else {
+        return ReplyParsedMessage(reply: nil, body: text)
+    }
+    return ReplyParsedMessage(
+        reply: ReplyPreview(
+            author: String(pieces[0]).trimmingCharacters(in: .whitespacesAndNewlines),
+            body: String(pieces[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+        ),
+        body: body
+    )
+}
+
+private func replySnippet(for message: ChatMessageSnapshot) -> String {
+    let parsed = parseReplyEncodedMessage(message.body)
+    let source = parsed.body.isEmpty ? copyableMessageText(message) : parsed.body
+    let normalized = source
+        .replacingOccurrences(of: "\n", with: " ")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    if normalized.isEmpty {
+        return message.attachments.first?.filename ?? "Attachment"
+    }
+    return String(normalized.prefix(96))
+}
+
+private let replyMessagePrefix = "↩ "
 
 private func linkedMessageAttributedString(_ text: String) -> AttributedString {
     var attributed = AttributedString()

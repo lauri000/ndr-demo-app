@@ -105,6 +105,9 @@ fun ChatScreen(
     var forceScrollToLatest by remember(chatId) { mutableStateOf(false) }
     var initialScrollPending by remember(chatId) { mutableStateOf(true) }
     var observedMessageCount by remember(chatId) { mutableStateOf(0) }
+    var replyTarget by remember(chatId) { mutableStateOf<ChatMessageSnapshot?>(null) }
+    var deletedMessageIds by remember(chatId) { mutableStateOf<Set<String>>(emptySet()) }
+    var localReactions by remember(chatId) { mutableStateOf<Map<String, Map<String, Int>>>(emptyMap()) }
     val attachmentPicker =
         rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
             if (uris.isEmpty()) {
@@ -233,6 +236,7 @@ fun ChatScreen(
             }
             return@Scaffold
         }
+        val visibleMessages = chat.messages.filterNot { message -> message.id in deletedMessageIds }
 
         Box(
             modifier =
@@ -252,9 +256,9 @@ fun ChatScreen(
                             .padding(horizontal = 14.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    itemsIndexed(chat.messages, key = { _, message -> message.id }) { index, message ->
-                        val previous = chat.messages.getOrNull(index - 1)
-                        val next = chat.messages.getOrNull(index + 1)
+                    itemsIndexed(visibleMessages, key = { _, message -> message.id }) { index, message ->
+                        val previous = visibleMessages.getOrNull(index - 1)
+                        val next = visibleMessages.getOrNull(index + 1)
                         val showDayChip =
                             previous == null ||
                                 !isSameTimelineDay(
@@ -291,8 +295,26 @@ fun ChatScreen(
                             chatKind = chat.kind,
                             isFirstInCluster = isFirstInCluster,
                             isLastInCluster = isLastInCluster,
+                            reactions = localReactions[message.id].orEmpty(),
+                            onReply = { replyTarget = message },
+                            onReact = { emoji ->
+                                localReactions = toggleLocalReaction(localReactions, message.id, emoji)
+                            },
+                            onDelete = {
+                                deletedMessageIds = deletedMessageIds + message.id
+                                if (replyTarget?.id == message.id) {
+                                    replyTarget = null
+                                }
+                            },
                         )
                     }
+                }
+
+                replyTarget?.let { reply ->
+                    ReplyComposerStrip(
+                        message = reply,
+                        onCancel = { replyTarget = null },
+                    )
                 }
 
                 ComposerBar(
@@ -308,8 +330,10 @@ fun ChatScreen(
                     onSend = {
                         shouldFollowLatest = true
                         forceScrollToLatest = true
+                        val outgoingDraft = replyEncodedMessage(replyTarget, draft.trim())
+                        replyTarget = null
                         if (selectedAttachments.isEmpty()) {
-                            appManager.sendText(chatId, draft)
+                            appManager.sendText(chatId, outgoingDraft)
                         } else {
                             appManager.sendAttachments(
                                 chatId = chatId,
@@ -320,7 +344,7 @@ fun ChatScreen(
                                             filename = attachment.filename,
                                         )
                                     },
-                                caption = draft,
+                                caption = outgoingDraft,
                             )
                             selectedAttachments = emptyList()
                         }
@@ -370,97 +394,374 @@ private fun MessageBubble(
     chatKind: ChatKind,
     isFirstInCluster: Boolean,
     isLastInCluster: Boolean,
+    reactions: Map<String, Int>,
+    onReply: () -> Unit,
+    onReact: (String) -> Unit,
+    onDelete: () -> Unit,
 ) {
     val clipboard = rememberIrisClipboard()
+    val parsed = remember(message.body) { parseReplyEncodedMessage(message.body) }
+    val showActionDock = LocalConfiguration.current.screenWidthDp >= 600
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (message.isOutgoing) Arrangement.End else Arrangement.Start,
     ) {
-        Surface(
-            modifier =
-                Modifier.combinedClickable(
-                    onClick = {},
-                    onLongClick = {
-                        clipboard.setText("Message", copyableMessageText(message))
-                    },
-                ),
-            color =
-                if (message.isOutgoing) {
-                    IrisTheme.palette.bubbleMine
-                } else {
-                    IrisTheme.palette.bubbleTheirs
-                },
-            shape =
-                messageBubbleShape(
-                    isOutgoing = message.isOutgoing,
-                    isFirstInCluster = isFirstInCluster,
-                    isLastInCluster = isLastInCluster,
-                ),
-            tonalElevation = 0.dp,
-            shadowElevation = 0.dp,
+        Column(
+            horizontalAlignment = if (message.isOutgoing) Alignment.End else Alignment.Start,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Column(
-                modifier =
-                    Modifier
-                        .padding(horizontal = 14.dp, vertical = 10.dp)
-                        .testTag("chatMessage-${message.id}"),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.Top,
             ) {
-                if (!message.isOutgoing && chatKind == ChatKind.GROUP && isFirstInCluster) {
-                    Text(
-                        text = message.author,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = IrisTheme.palette.muted,
+                if (showActionDock && message.isOutgoing) {
+                    MessageActionDock(
+                        onReply = onReply,
+                        onHeart = { onReact("❤️") },
+                        onThumb = { onReact("👍") },
+                        onDelete = onDelete,
                     )
                 }
-                if (message.body.isNotBlank()) {
-                    LinkedMessageText(
-                        text = message.body,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color =
-                            if (message.isOutgoing) {
-                                MaterialTheme.colorScheme.onPrimary
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
+                Surface(
+                    modifier =
+                        Modifier.combinedClickable(
+                            onClick = {},
+                            onLongClick = {
+                                clipboard.setText("Message", copyableMessageText(message))
                             },
-                        linkColor =
-                            if (message.isOutgoing) {
-                                MaterialTheme.colorScheme.onPrimary
-                            } else {
-                                IrisTheme.palette.accent
-                            },
-                    )
-                }
-                message.attachments.forEach { attachment ->
-                    AttachmentChip(
-                        attachment = attachment,
-                        isOutgoing = message.isOutgoing,
-                    )
-                }
-                if (isLastInCluster) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = formatMessageClock(message.createdAtSecs.toLong()),
-                            style = MaterialTheme.typography.labelSmall,
-                            color =
-                                if (message.isOutgoing) {
-                                    MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.72f)
-                                } else {
-                                    IrisTheme.palette.muted
-                                },
-                        )
+                        ),
+                    color =
                         if (message.isOutgoing) {
-                            DeliveryGlyph(message.delivery)
+                            IrisTheme.palette.bubbleMine
+                        } else {
+                            IrisTheme.palette.bubbleTheirs
+                        },
+                    shape =
+                        messageBubbleShape(
+                            isOutgoing = message.isOutgoing,
+                            isFirstInCluster = isFirstInCluster,
+                            isLastInCluster = isLastInCluster,
+                        ),
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp,
+                ) {
+                    Column(
+                        modifier =
+                            Modifier
+                                .padding(horizontal = 14.dp, vertical = 10.dp)
+                                .testTag("chatMessage-${message.id}"),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        if (!message.isOutgoing && chatKind == ChatKind.GROUP && isFirstInCluster) {
+                            Text(
+                                text = message.author,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = IrisTheme.palette.muted,
+                            )
+                        }
+                        parsed.reply?.let { reply ->
+                            ReplyPreview(reply = reply, isOutgoing = message.isOutgoing)
+                        }
+                        if (parsed.body.isNotBlank()) {
+                            LinkedMessageText(
+                                text = parsed.body,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color =
+                                    if (message.isOutgoing) {
+                                        MaterialTheme.colorScheme.onPrimary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    },
+                                linkColor =
+                                    if (message.isOutgoing) {
+                                        MaterialTheme.colorScheme.onPrimary
+                                    } else {
+                                        IrisTheme.palette.accent
+                                    },
+                            )
+                        }
+                        message.attachments.forEach { attachment ->
+                            AttachmentChip(
+                                attachment = attachment,
+                                isOutgoing = message.isOutgoing,
+                            )
+                        }
+                        if (isLastInCluster) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = formatMessageClock(message.createdAtSecs.toLong()),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color =
+                                        if (message.isOutgoing) {
+                                            MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.72f)
+                                        } else {
+                                            IrisTheme.palette.muted
+                                        },
+                                )
+                                if (message.isOutgoing) {
+                                    DeliveryGlyph(message.delivery)
+                                }
+                            }
                         }
                     }
                 }
+                if (showActionDock && !message.isOutgoing) {
+                    MessageActionDock(
+                        onReply = onReply,
+                        onHeart = { onReact("❤️") },
+                        onThumb = { onReact("👍") },
+                        onDelete = onDelete,
+                    )
+                }
+            }
+            if (reactions.isNotEmpty()) {
+                ReactionRow(reactions = reactions)
             }
         }
     }
 }
+
+@Composable
+private fun MessageActionDock(
+    onReply: () -> Unit,
+    onHeart: () -> Unit,
+    onThumb: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Surface(
+        color = IrisTheme.palette.toolbar,
+        shape = RoundedCornerShape(100.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 3.dp),
+            horizontalArrangement = Arrangement.spacedBy(1.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ActionDockButton("↩", onReply)
+            ActionDockButton("❤️", onHeart)
+            ActionDockButton("👍", onThumb)
+            ActionDockButton("×", onDelete)
+        }
+    }
+}
+
+@Composable
+private fun ActionDockButton(
+    label: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier =
+            Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+@Composable
+private fun ReplyPreview(
+    reply: ReplyPreviewData,
+    isOutgoing: Boolean,
+) {
+    Surface(
+        color =
+            if (isOutgoing) {
+                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.12f)
+            } else {
+                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+            },
+        shape = RoundedCornerShape(10.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                modifier =
+                    Modifier
+                        .size(width = 3.dp, height = 34.dp)
+                        .clip(CircleShape)
+                        .background(if (isOutgoing) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.6f) else IrisTheme.palette.accent),
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = reply.author,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = reply.body,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReactionRow(reactions: Map<String, Int>) {
+    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        reactions.keys.sorted().forEach { emoji ->
+            Surface(
+                color = IrisTheme.palette.panel,
+                shape = RoundedCornerShape(100.dp),
+            ) {
+                Text(
+                    text = "$emoji ${reactions[emoji] ?: 0}",
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReplyComposerStrip(
+    message: ChatMessageSnapshot,
+    onCancel: () -> Unit,
+) {
+    Surface(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .testTag("chatReplyComposer"),
+        color = IrisTheme.palette.toolbar,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier =
+                    Modifier
+                        .size(width = 3.dp, height = 38.dp)
+                        .clip(CircleShape)
+                        .background(IrisTheme.palette.accent),
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = message.author,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = replySnippet(message),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = IrisTheme.palette.muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            IconButton(onClick = onCancel) {
+                Icon(
+                    imageVector = IrisIcons.Close,
+                    contentDescription = "Cancel reply",
+                    tint = IrisTheme.palette.muted,
+                )
+            }
+        }
+    }
+}
+
+private data class ReplyPreviewData(
+    val author: String,
+    val body: String,
+)
+
+private data class ParsedReplyMessage(
+    val reply: ReplyPreviewData?,
+    val body: String,
+)
+
+private fun replyEncodedMessage(
+    reply: ChatMessageSnapshot?,
+    text: String,
+): String {
+    if (reply == null) {
+        return text
+    }
+    return "$ReplyMessagePrefix${reply.author}: ${replySnippet(reply)}\n\n$text"
+}
+
+private fun parseReplyEncodedMessage(text: String): ParsedReplyMessage {
+    if (!text.startsWith(ReplyMessagePrefix)) {
+        return ParsedReplyMessage(reply = null, body = text)
+    }
+    val remaining = text.removePrefix(ReplyMessagePrefix)
+    val separator = remaining.indexOf("\n\n")
+    if (separator < 0) {
+        return ParsedReplyMessage(reply = null, body = text)
+    }
+    val header = remaining.substring(0, separator)
+    val body = remaining.substring(separator + 2)
+    val splitAt = header.indexOf(':')
+    if (splitAt <= 0) {
+        return ParsedReplyMessage(reply = null, body = text)
+    }
+    return ParsedReplyMessage(
+        reply =
+            ReplyPreviewData(
+                author = header.substring(0, splitAt).trim(),
+                body = header.substring(splitAt + 1).trim(),
+            ),
+        body = body,
+    )
+}
+
+private fun replySnippet(message: ChatMessageSnapshot): String {
+    val parsed = parseReplyEncodedMessage(message.body)
+    val source = parsed.body.ifBlank { copyableMessageText(message) }
+    val normalized = source.replace('\n', ' ').trim()
+    if (normalized.isBlank()) {
+        return message.attachments.firstOrNull()?.filename ?: "Attachment"
+    }
+    return normalized.take(96)
+}
+
+private fun toggleLocalReaction(
+    reactionsByMessage: Map<String, Map<String, Int>>,
+    messageId: String,
+    emoji: String,
+): Map<String, Map<String, Int>> {
+    val messageReactions = reactionsByMessage[messageId].orEmpty().toMutableMap()
+    if (messageReactions.containsKey(emoji)) {
+        messageReactions.remove(emoji)
+    } else {
+        messageReactions[emoji] = 1
+    }
+    val next = reactionsByMessage.toMutableMap()
+    if (messageReactions.isEmpty()) {
+        next.remove(messageId)
+    } else {
+        next[messageId] = messageReactions
+    }
+    return next
+}
+
+private const val ReplyMessagePrefix = "↩ "
 
 @Composable
 private fun LinkedMessageText(
