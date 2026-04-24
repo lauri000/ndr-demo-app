@@ -1,0 +1,95 @@
+use super::*;
+
+impl AppCore {
+    pub(super) fn persistence_path(&self) -> PathBuf {
+        self.data_dir.join("ndr_demo_core_state.json")
+    }
+
+    pub(super) fn debug_snapshot_path(&self) -> PathBuf {
+        self.data_dir.join(DEBUG_SNAPSHOT_FILENAME)
+    }
+
+    pub(super) fn load_persisted(&self) -> anyhow::Result<Option<PersistedState>> {
+        let path = self.persistence_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = fs::read(path)?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if value.get("version").and_then(serde_json::Value::as_u64)
+            != Some(PERSISTED_STATE_VERSION as u64)
+        {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::from_value(value)?))
+    }
+
+    pub(super) fn persist_best_effort(&self) {
+        let Some(logged_in) = self.logged_in.as_ref() else {
+            return;
+        };
+
+        let persisted = PersistedState {
+            version: PERSISTED_STATE_VERSION,
+            active_chat_id: self.active_chat_id.clone(),
+            next_message_id: self.next_message_id,
+            session_manager: Some(logged_in.session_manager.snapshot()),
+            group_manager: Some(logged_in.group_manager.snapshot()),
+            owner_profiles: self.owner_profiles.clone(),
+            threads: self
+                .threads
+                .values()
+                .map(|thread| PersistedThread {
+                    chat_id: thread.chat_id.clone(),
+                    unread_count: thread.unread_count,
+                    updated_at_secs: thread.updated_at_secs,
+                    messages: thread
+                        .messages
+                        .iter()
+                        .map(|message| PersistedMessage {
+                            id: message.id.clone(),
+                            chat_id: message.chat_id.clone(),
+                            author: message.author.clone(),
+                            body: message.body.clone(),
+                            is_outgoing: message.is_outgoing,
+                            created_at_secs: message.created_at_secs,
+                            delivery: (&message.delivery).into(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            pending_inbound: self.pending_inbound.clone(),
+            pending_outbound: self.pending_outbound.clone(),
+            pending_group_controls: self.pending_group_controls.clone(),
+            seen_event_ids: self.seen_event_order.iter().cloned().collect(),
+            authorization_state: Some(logged_in.authorization_state.into()),
+        };
+
+        if let Ok(bytes) = serde_json::to_vec_pretty(&persisted) {
+            let _ = fs::create_dir_all(&self.data_dir);
+            let _ = fs::write(self.persistence_path(), bytes);
+        }
+        self.persist_debug_snapshot_best_effort();
+    }
+
+    pub(super) fn clear_persistence_best_effort(&self) {
+        let path = self.persistence_path();
+        if path.exists() {
+            let _ = fs::remove_file(path);
+        }
+        let debug_path = self.debug_snapshot_path();
+        if debug_path.exists() {
+            let _ = fs::remove_file(debug_path);
+        }
+    }
+
+    pub(super) fn persist_debug_snapshot_best_effort(&self) {
+        if self.logged_in.is_none() {
+            return;
+        }
+        if let Ok(bytes) = serde_json::to_vec_pretty(&self.build_runtime_debug_snapshot()) {
+            let _ = fs::create_dir_all(&self.data_dir);
+            let _ = fs::write(self.debug_snapshot_path(), bytes);
+        }
+    }
+}

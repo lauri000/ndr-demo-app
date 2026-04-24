@@ -1,0 +1,424 @@
+use super::*;
+
+pub(super) struct LoggedInState {
+    pub(super) owner_pubkey: OwnerPubkey,
+    pub(super) owner_keys: Option<Keys>,
+    pub(super) device_keys: Keys,
+    pub(super) client: Client,
+    pub(super) relay_urls: Vec<RelayUrl>,
+    pub(super) session_manager: SessionManager,
+    pub(super) group_manager: GroupManager,
+    pub(super) authorization_state: LocalAuthorizationState,
+}
+
+#[derive(Clone)]
+pub(super) struct ThreadRecord {
+    pub(super) chat_id: String,
+    pub(super) unread_count: u64,
+    pub(super) updated_at_secs: u64,
+    pub(super) messages: Vec<ChatMessageSnapshot>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub(super) enum PendingInbound {
+    Envelope {
+        envelope: MessageEnvelope,
+    },
+    Decrypted {
+        sender_owner_hex: String,
+        payload: Vec<u8>,
+        created_at_secs: u64,
+    },
+}
+
+impl PendingInbound {
+    pub(super) fn envelope(envelope: MessageEnvelope) -> Self {
+        Self::Envelope { envelope }
+    }
+
+    pub(super) fn decrypted(
+        sender_owner: OwnerPubkey,
+        payload: Vec<u8>,
+        created_at_secs: u64,
+    ) -> Self {
+        Self::Decrypted {
+            sender_owner_hex: sender_owner.to_string(),
+            payload,
+            created_at_secs,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct PreparedPublishBatch {
+    #[serde(default)]
+    pub(super) invite_events: Vec<Event>,
+    #[serde(default)]
+    pub(super) message_events: Vec<Event>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) enum OutboundPublishMode {
+    FirstContactStaged,
+    OrdinaryFirstAck,
+    #[default]
+    WaitForPeer,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct PendingOutbound {
+    pub(super) message_id: String,
+    pub(super) chat_id: String,
+    pub(super) body: String,
+    #[serde(default)]
+    pub(super) prepared_publish: Option<PreparedPublishBatch>,
+    #[serde(default)]
+    pub(super) publish_mode: OutboundPublishMode,
+    #[serde(default)]
+    pub(super) reason: PendingSendReason,
+    #[serde(default)]
+    pub(super) next_retry_at_secs: u64,
+    #[serde(default)]
+    pub(super) in_flight: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) enum PendingGroupControlKind {
+    Create {
+        name: String,
+        member_owner_hexes: Vec<String>,
+    },
+    Rename {
+        name: String,
+    },
+    AddMembers {
+        member_owner_hexes: Vec<String>,
+    },
+    RemoveMember {
+        owner_pubkey_hex: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct PendingGroupControl {
+    pub(super) operation_id: String,
+    pub(super) group_id: String,
+    pub(super) target_owner_hexes: Vec<String>,
+    #[serde(default)]
+    pub(super) prepared_publish: Option<PreparedPublishBatch>,
+    #[serde(default)]
+    pub(super) reason: PendingSendReason,
+    #[serde(default)]
+    pub(super) next_retry_at_secs: u64,
+    #[serde(default)]
+    pub(super) in_flight: bool,
+    pub(super) kind: PendingGroupControlKind,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct AppDirectMessagePayload {
+    pub(super) version: u8,
+    pub(super) chat_id: String,
+    pub(super) body: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct AppGroupMessagePayload {
+    pub(super) version: u8,
+    pub(super) body: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct OwnerProfileRecord {
+    #[serde(default)]
+    pub(super) name: Option<String>,
+    #[serde(default)]
+    pub(super) display_name: Option<String>,
+    #[serde(default)]
+    pub(super) updated_at_secs: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct NostrProfileMetadata {
+    #[serde(default)]
+    pub(super) name: Option<String>,
+    #[serde(default)]
+    pub(super) display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RoutedChatMessage {
+    pub(super) chat_id: String,
+    pub(super) body: String,
+    pub(super) is_outgoing: bool,
+    pub(super) author: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct RecentHandshakePeer {
+    pub(super) owner_hex: String,
+    pub(super) device_hex: String,
+    pub(super) observed_at_secs: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LocalAuthorizationState {
+    Authorized,
+    AwaitingApproval,
+    Revoked,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) enum PendingSendReason {
+    #[default]
+    MissingRoster,
+    MissingDeviceInvite,
+    PublishingFirstContact,
+    PublishRetry,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct StagedOutboundSend {
+    pub(super) message_id: String,
+    pub(super) chat_id: String,
+    pub(super) invite_events: Vec<Event>,
+    pub(super) message_events: Vec<Event>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProtocolSubscriptionPlan {
+    pub(crate) roster_authors: Vec<String>,
+    pub(crate) invite_authors: Vec<String>,
+    pub(crate) invite_response_recipient: Option<String>,
+    pub(crate) message_authors: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct ProtocolSubscriptionRuntime {
+    pub(super) current_plan: Option<ProtocolSubscriptionPlan>,
+    pub(super) applying_plan: Option<ProtocolSubscriptionPlan>,
+    pub(super) refresh_in_flight: bool,
+    pub(super) refresh_dirty: bool,
+    pub(super) force_refresh_dirty: bool,
+    pub(super) refresh_token: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub(super) struct DebugEventCounters {
+    pub(super) roster_events: u64,
+    pub(super) invite_events: u64,
+    pub(super) invite_response_events: u64,
+    pub(super) message_events: u64,
+    pub(super) other_events: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct DebugLogEntry {
+    pub(super) timestamp_secs: u64,
+    pub(super) category: String,
+    pub(super) detail: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct RuntimeDebugSnapshot {
+    pub(super) generated_at_secs: u64,
+    pub(super) local_owner_pubkey_hex: Option<String>,
+    pub(super) local_device_pubkey_hex: Option<String>,
+    pub(super) authorization_state: Option<String>,
+    pub(super) active_chat_id: Option<String>,
+    pub(super) current_protocol_plan: Option<RuntimeProtocolPlanDebug>,
+    pub(super) tracked_owner_hexes: Vec<String>,
+    pub(super) known_users: Vec<RuntimeKnownUserDebug>,
+    pub(super) pending_outbound: Vec<RuntimePendingOutboundDebug>,
+    pub(super) pending_group_controls: Vec<RuntimePendingGroupControlDebug>,
+    pub(super) recent_handshake_peers: Vec<RuntimeRecentHandshakeDebug>,
+    pub(super) event_counts: DebugEventCounters,
+    pub(super) recent_log: Vec<DebugLogEntry>,
+    pub(super) toast: Option<String>,
+    pub(super) current_chat_list: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct SupportBuildMetadata {
+    pub(super) app_version: String,
+    pub(super) build_channel: String,
+    pub(super) git_sha: String,
+    pub(super) build_timestamp_utc: String,
+    pub(super) relay_set_id: String,
+    pub(super) trusted_test_build: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct SupportBundle {
+    pub(super) generated_at_secs: u64,
+    pub(super) build: SupportBuildMetadata,
+    pub(super) relay_urls: Vec<String>,
+    pub(super) authorization_state: Option<String>,
+    pub(super) active_chat_id: Option<String>,
+    pub(super) current_screen: String,
+    pub(super) chat_count: usize,
+    pub(super) direct_chat_count: usize,
+    pub(super) group_chat_count: usize,
+    pub(super) unread_chat_count: usize,
+    pub(super) pending_outbound: Vec<RuntimePendingOutboundDebug>,
+    pub(super) pending_group_controls: Vec<RuntimePendingGroupControlDebug>,
+    pub(super) protocol: Option<RuntimeProtocolPlanDebug>,
+    pub(super) tracked_owner_hexes: Vec<String>,
+    pub(super) known_users: Vec<RuntimeKnownUserDebug>,
+    pub(super) recent_handshake_peers: Vec<RuntimeRecentHandshakeDebug>,
+    pub(super) event_counts: DebugEventCounters,
+    pub(super) recent_log: Vec<DebugLogEntry>,
+    pub(super) current_chat_list: Vec<String>,
+    pub(super) latest_toast: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct RuntimeProtocolPlanDebug {
+    pub(super) roster_authors: Vec<String>,
+    pub(super) invite_authors: Vec<String>,
+    pub(super) invite_response_recipient: Option<String>,
+    pub(super) message_authors: Vec<String>,
+    pub(super) refresh_in_flight: bool,
+    pub(super) refresh_dirty: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct RuntimeKnownUserDebug {
+    pub(super) owner_pubkey_hex: String,
+    pub(super) has_roster: bool,
+    pub(super) roster_device_count: usize,
+    pub(super) device_count: usize,
+    pub(super) authorized_device_count: usize,
+    pub(super) active_session_device_count: usize,
+    pub(super) inactive_session_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct RuntimePendingOutboundDebug {
+    pub(super) message_id: String,
+    pub(super) chat_id: String,
+    pub(super) reason: String,
+    pub(super) publish_mode: String,
+    pub(super) in_flight: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct RuntimePendingGroupControlDebug {
+    pub(super) operation_id: String,
+    pub(super) group_id: String,
+    pub(super) target_owner_hexes: Vec<String>,
+    pub(super) reason: String,
+    pub(super) in_flight: bool,
+    pub(super) kind: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct RuntimeRecentHandshakeDebug {
+    pub(super) owner_hex: String,
+    pub(super) device_hex: String,
+    pub(super) observed_at_secs: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct PersistedState {
+    pub(super) version: u32,
+    #[serde(alias = "active_peer_hex")]
+    pub(super) active_chat_id: Option<String>,
+    pub(super) next_message_id: u64,
+    pub(super) session_manager: Option<SessionManagerSnapshot>,
+    #[serde(default)]
+    pub(super) group_manager: Option<GroupManagerSnapshot>,
+    #[serde(default)]
+    pub(super) owner_profiles: BTreeMap<String, OwnerProfileRecord>,
+    pub(super) threads: Vec<PersistedThread>,
+    #[serde(default)]
+    pub(super) pending_inbound: Vec<PendingInbound>,
+    #[serde(default)]
+    pub(super) pending_outbound: Vec<PendingOutbound>,
+    #[serde(default)]
+    pub(super) pending_group_controls: Vec<PendingGroupControl>,
+    #[serde(default)]
+    pub(super) seen_event_ids: Vec<String>,
+    #[serde(default)]
+    pub(super) authorization_state: Option<PersistedAuthorizationState>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct PersistedThread {
+    #[serde(alias = "peer_hex")]
+    pub(super) chat_id: String,
+    pub(super) unread_count: u64,
+    #[serde(default)]
+    pub(super) updated_at_secs: u64,
+    pub(super) messages: Vec<PersistedMessage>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct PersistedMessage {
+    pub(super) id: String,
+    #[serde(alias = "peer_input")]
+    pub(super) chat_id: String,
+    pub(super) author: String,
+    pub(super) body: String,
+    pub(super) is_outgoing: bool,
+    pub(super) created_at_secs: u64,
+    pub(super) delivery: PersistedDeliveryState,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) enum PersistedDeliveryState {
+    Pending,
+    Sent,
+    Received,
+    Failed,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) enum PersistedAuthorizationState {
+    Authorized,
+    AwaitingApproval,
+    Revoked,
+}
+
+impl From<PersistedDeliveryState> for DeliveryState {
+    fn from(value: PersistedDeliveryState) -> Self {
+        match value {
+            PersistedDeliveryState::Pending => DeliveryState::Pending,
+            PersistedDeliveryState::Sent => DeliveryState::Sent,
+            PersistedDeliveryState::Received => DeliveryState::Received,
+            PersistedDeliveryState::Failed => DeliveryState::Failed,
+        }
+    }
+}
+
+impl From<&DeliveryState> for PersistedDeliveryState {
+    fn from(value: &DeliveryState) -> Self {
+        match value {
+            DeliveryState::Pending => Self::Pending,
+            DeliveryState::Sent => Self::Sent,
+            DeliveryState::Received => Self::Received,
+            DeliveryState::Failed => Self::Failed,
+        }
+    }
+}
+
+impl From<LocalAuthorizationState> for PersistedAuthorizationState {
+    fn from(value: LocalAuthorizationState) -> Self {
+        match value {
+            LocalAuthorizationState::Authorized => Self::Authorized,
+            LocalAuthorizationState::AwaitingApproval => Self::AwaitingApproval,
+            LocalAuthorizationState::Revoked => Self::Revoked,
+        }
+    }
+}
+
+impl From<PersistedAuthorizationState> for LocalAuthorizationState {
+    fn from(value: PersistedAuthorizationState) -> Self {
+        match value {
+            PersistedAuthorizationState::Authorized => Self::Authorized,
+            PersistedAuthorizationState::AwaitingApproval => Self::AwaitingApproval,
+            PersistedAuthorizationState::Revoked => Self::Revoked,
+        }
+    }
+}
