@@ -804,6 +804,70 @@ fn startup_at_login_preference_updates_state_and_persists() {
 }
 
 #[test]
+fn nostr_relay_settings_validate_update_state_and_persist() {
+    let data_dir = TempDir::new().expect("temp dir");
+    let mut core = test_core(data_dir.path());
+    start_primary_test_session(&mut core, 24, true, true).expect("start session");
+
+    core.handle_action(AppAction::AddNostrRelay {
+        relay_url: " WSS://Relay.Example/ ".to_string(),
+    });
+    assert!(core
+        .state
+        .preferences
+        .nostr_relay_urls
+        .contains(&"wss://relay.example".to_string()));
+
+    core.handle_action(AppAction::UpdateNostrRelay {
+        old_relay_url: "wss://relay.example".to_string(),
+        new_relay_url: "ws://LOCALHOST:4848/path".to_string(),
+    });
+    assert!(core
+        .state
+        .preferences
+        .nostr_relay_urls
+        .contains(&"ws://localhost:4848/path".to_string()));
+    assert!(core
+        .state
+        .network_status
+        .as_ref()
+        .expect("network")
+        .relay_urls
+        .contains(&"ws://localhost:4848/path".to_string()));
+
+    core.handle_action(AppAction::AddNostrRelay {
+        relay_url: "https://relay.invalid".to_string(),
+    });
+    assert_eq!(
+        core.state.toast.as_deref(),
+        Some("Relay URL must use ws:// or wss://.")
+    );
+
+    let persisted = persisted_state(data_dir.path());
+    assert!(persisted
+        .preferences
+        .nostr_relay_urls
+        .contains(&"ws://localhost:4848/path".to_string()));
+
+    let mut restored = test_core(data_dir.path());
+    start_primary_test_session(&mut restored, 24, true, true).expect("restore session");
+    assert!(restored
+        .state
+        .preferences
+        .nostr_relay_urls
+        .contains(&"ws://localhost:4848/path".to_string()));
+
+    restored.handle_action(AppAction::RemoveNostrRelay {
+        relay_url: "ws://localhost:4848/path".to_string(),
+    });
+    assert!(!restored
+        .state
+        .preferences
+        .nostr_relay_urls
+        .contains(&"ws://localhost:4848/path".to_string()));
+}
+
+#[test]
 fn image_proxy_preferences_update_state_and_persist() {
     let data_dir = TempDir::new().expect("temp dir");
     let mut core = test_core(data_dir.path());

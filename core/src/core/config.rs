@@ -32,7 +32,7 @@ pub(super) const DEBUG_SNAPSHOT_FILENAME: &str = "ndr_demo_runtime_debug.json";
 pub(super) const MAX_DEBUG_LOG_ENTRIES: usize = 128;
 pub(super) const PERSISTED_STATE_VERSION: u32 = 11;
 
-pub(super) fn configured_relays() -> Vec<String> {
+pub(crate) fn configured_relays() -> Vec<String> {
     let compiled_defaults = compiled_default_relays();
     match std::env::var("NDR_DEMO_RELAYS") {
         Ok(value) => {
@@ -52,9 +52,14 @@ pub(super) fn configured_relays() -> Vec<String> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn configured_relay_urls() -> Vec<RelayUrl> {
-    let parsed: Vec<RelayUrl> = configured_relays()
-        .into_iter()
+    relay_urls_from_strings(&configured_relays())
+}
+
+pub(super) fn relay_urls_from_strings(relays: &[String]) -> Vec<RelayUrl> {
+    let parsed: Vec<RelayUrl> = relays
+        .iter()
         .filter_map(|relay| RelayUrl::parse(relay).ok())
         .collect();
     if parsed.is_empty() {
@@ -64,6 +69,56 @@ pub(super) fn configured_relay_urls() -> Vec<RelayUrl> {
             .collect()
     } else {
         parsed
+    }
+}
+
+pub(super) fn normalize_nostr_relay_url(raw_url: &str) -> Result<String, String> {
+    let candidate = raw_url.trim();
+    if candidate.is_empty() {
+        return Err("Relay URL is required.".to_string());
+    }
+
+    let mut url = url::Url::parse(candidate)
+        .map_err(|_| "Relay URL must be an absolute ws:// or wss:// URL.".to_string())?;
+    let scheme = url.scheme().to_ascii_lowercase();
+    if scheme != "ws" && scheme != "wss" {
+        return Err("Relay URL must use ws:// or wss://.".to_string());
+    }
+    if url.host_str().is_none() {
+        return Err("Relay URL must include a host.".to_string());
+    }
+
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    url.set_scheme(&scheme)
+        .map_err(|_| "Relay URL must use ws:// or wss://.".to_string())?;
+    url.set_host(Some(&host))
+        .map_err(|_| "Relay URL must include a host.".to_string())?;
+
+    let mut normalized = url.to_string();
+    if normalized.ends_with('/')
+        && url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none()
+    {
+        normalized.pop();
+    }
+    Ok(normalized)
+}
+
+pub(super) fn normalize_nostr_relay_urls(relays: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    let mut seen = HashSet::new();
+    for relay in relays {
+        if let Ok(url) = normalize_nostr_relay_url(relay) {
+            if seen.insert(url.clone()) {
+                normalized.push(url);
+            }
+        }
+    }
+    if normalized.is_empty() {
+        configured_relays()
+    } else {
+        normalized
     }
 }
 

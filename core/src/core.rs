@@ -54,7 +54,7 @@ mod tests;
 
 use attachments::*;
 use config::*;
-pub(crate) use config::{build_summary, relay_set_id, trusted_test_build_flag};
+pub(crate) use config::{build_summary, configured_relays, relay_set_id, trusted_test_build_flag};
 use identity::*;
 pub(crate) use identity::{normalize_peer_input_for_display, parse_peer_input};
 pub(crate) use model::ProtocolSubscriptionPlan;

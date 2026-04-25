@@ -47,7 +47,7 @@ Compared against `~/src/iris-chat-flutter` on 2026-04-24. Sources used include F
 
 ## Network, Notifications, And Runtime Services
 
-- [ ] User-editable Nostr relay settings with add/edit/delete validation. Flutter coverage: `test/unit/core/services/nostr_relay_settings_service_test.dart`, `test/widget/settings_screen_test.dart`.
+- [x] User-editable Nostr relay settings with add/edit/delete validation. Flutter coverage: `test/unit/core/services/nostr_relay_settings_service_test.dart`, `test/widget/settings_screen_test.dart`.
 - [ ] Offline queue service and queued message state. Flutter README lists offline support; Flutter model has `MessageStatus.queued`.
 - [x] Desktop notifications and notification preference.
 - [ ] Mobile push subscription/runtime/filtering, including suppression for typing indicators. Flutter coverage: `test/unit/core/services/mobile_push_*`, `integration_test/mobile_push_device_delivery_test.dart`.

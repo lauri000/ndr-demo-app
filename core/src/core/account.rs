@@ -398,6 +398,8 @@ impl AppCore {
                 persisted.preferences.desktop_notifications_enabled;
             self.preferences.startup_at_login_enabled =
                 persisted.preferences.startup_at_login_enabled;
+            self.preferences.nostr_relay_urls =
+                normalize_nostr_relay_urls(&persisted.preferences.nostr_relay_urls);
             self.preferences.image_proxy_enabled = persisted.preferences.image_proxy_enabled;
             self.preferences.image_proxy_url = persisted.preferences.image_proxy_url.clone();
             self.preferences.image_proxy_key_hex =
@@ -550,7 +552,7 @@ impl AppCore {
         }
 
         let client = Client::new(device_keys.clone());
-        let relay_urls = configured_relay_urls();
+        let relay_urls = relay_urls_from_strings(&self.preferences.nostr_relay_urls);
         self.runtime
             .block_on(ensure_session_relays_configured(&client, &relay_urls));
         self.start_notifications_loop(client.clone());

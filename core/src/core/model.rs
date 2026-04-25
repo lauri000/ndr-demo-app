@@ -427,6 +427,8 @@ pub(super) struct PersistedPreferences {
     pub(super) desktop_notifications_enabled: bool,
     #[serde(default)]
     pub(super) startup_at_login_enabled: bool,
+    #[serde(default = "default_nostr_relay_urls")]
+    pub(super) nostr_relay_urls: Vec<String>,
     #[serde(default = "default_true")]
     pub(super) image_proxy_enabled: bool,
     #[serde(default = "default_image_proxy_url")]
@@ -444,6 +446,7 @@ impl Default for PersistedPreferences {
             send_read_receipts: true,
             desktop_notifications_enabled: true,
             startup_at_login_enabled: false,
+            nostr_relay_urls: default_nostr_relay_urls(),
             image_proxy_enabled: true,
             image_proxy_url: default_image_proxy_url(),
             image_proxy_key_hex: default_image_proxy_key_hex(),
@@ -454,6 +457,10 @@ impl Default for PersistedPreferences {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_nostr_relay_urls() -> Vec<String> {
+    configured_relays()
 }
 
 fn default_image_proxy_url() -> String {

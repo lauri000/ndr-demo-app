@@ -1802,6 +1802,9 @@ struct ProfileSheet: View {
     @State private var profileName = ""
     @State private var profilePictureURL = ""
     @State private var profilePictureViewerURL: URL?
+    @State private var newRelayURL = ""
+    @State private var editingRelayURL: String?
+    @State private var editingRelayDraft = ""
     let closeSheet: () -> Void
 
     var body: some View {
@@ -1873,6 +1876,13 @@ struct ProfileSheet: View {
                         .accessibilityIdentifier("myProfileDesktopNotificationsToggle")
 
                         ImageProxySettingsSection(manager: manager)
+
+                        NostrRelaySettingsSection(
+                            manager: manager,
+                            newRelayURL: $newRelayURL,
+                            editingRelayURL: $editingRelayURL,
+                            editingRelayDraft: $editingRelayDraft
+                        )
 
                         if PlatformStartupAtLogin.isSupported {
                             Toggle(
@@ -2149,6 +2159,111 @@ private struct ImageProxySettingsSection: View {
             .textFieldStyle(.roundedBorder)
             .autocorrectionDisabled()
             .accessibilityIdentifier(identifier)
+    }
+}
+
+private struct NostrRelaySettingsSection: View {
+    @ObservedObject var manager: AppManager
+    @Binding var newRelayURL: String
+    @Binding var editingRelayURL: String?
+    @Binding var editingRelayDraft: String
+
+    private var relayURLs: [String] {
+        manager.state.networkStatus?.relayUrls ?? manager.state.preferences.nostrRelayUrls
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Nostr relays")
+                .font(.system(.headline, design: .rounded, weight: .semibold))
+
+            ForEach(relayURLs, id: \.self) { relayURL in
+                relayRow(relayURL)
+            }
+
+            HStack(spacing: 8) {
+                TextField("wss://relay.example", text: $newRelayURL)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    .accessibilityIdentifier("myProfileNewRelayInput")
+
+                Button {
+                    manager.dispatch(.addNostrRelay(relayUrl: newRelayURL))
+                    newRelayURL = ""
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(IrisSecondaryButtonStyle())
+                .accessibilityLabel("Add relay")
+                .accessibilityIdentifier("myProfileAddRelayButton")
+            }
+
+            Button("Reset relays") {
+                manager.dispatch(.resetNostrRelays)
+            }
+            .buttonStyle(IrisSecondaryButtonStyle())
+            .accessibilityIdentifier("myProfileResetRelaysButton")
+        }
+    }
+
+    @ViewBuilder
+    private func relayRow(_ relayURL: String) -> some View {
+        if editingRelayURL == relayURL {
+            HStack(spacing: 8) {
+                TextField("Relay URL", text: $editingRelayDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    .accessibilityIdentifier("myProfileEditRelayInput-\(relayIdentifier(relayURL))")
+
+                Button("Save") {
+                    manager.dispatch(.updateNostrRelay(oldRelayUrl: relayURL, newRelayUrl: editingRelayDraft))
+                    editingRelayURL = nil
+                    editingRelayDraft = ""
+                }
+                .buttonStyle(IrisPrimaryButtonStyle())
+
+                Button("Cancel") {
+                    editingRelayURL = nil
+                    editingRelayDraft = ""
+                }
+                .buttonStyle(IrisSecondaryButtonStyle())
+            }
+        } else {
+            HStack(spacing: 8) {
+                Text(relayURL)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .accessibilityIdentifier("myProfileRelayRow-\(relayIdentifier(relayURL))")
+
+                Spacer(minLength: 8)
+
+                Button {
+                    editingRelayURL = relayURL
+                    editingRelayDraft = relayURL
+                } label: {
+                    Image(systemName: "pencil")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Edit relay")
+
+                Button(role: .destructive) {
+                    manager.dispatch(.removeNostrRelay(relayUrl: relayURL))
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Delete relay")
+            }
+        }
+    }
+
+    private func relayIdentifier(_ relayURL: String) -> String {
+        relayURL
+            .replacingOccurrences(of: "://", with: "-")
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ".", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
     }
 }
 

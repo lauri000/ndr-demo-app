@@ -67,6 +67,17 @@ pub enum AppAction {
     SetStartupAtLoginEnabled {
         enabled: bool,
     },
+    AddNostrRelay {
+        relay_url: String,
+    },
+    UpdateNostrRelay {
+        old_relay_url: String,
+        new_relay_url: String,
+    },
+    RemoveNostrRelay {
+        relay_url: String,
+    },
+    ResetNostrRelays,
     SetImageProxyEnabled {
         enabled: bool,
     },

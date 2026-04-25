@@ -127,6 +127,13 @@ impl AppCore {
             AppAction::SetStartupAtLoginEnabled { enabled } => {
                 self.set_startup_at_login_enabled(enabled)
             }
+            AppAction::AddNostrRelay { relay_url } => self.add_nostr_relay(&relay_url),
+            AppAction::UpdateNostrRelay {
+                old_relay_url,
+                new_relay_url,
+            } => self.update_nostr_relay(&old_relay_url, &new_relay_url),
+            AppAction::RemoveNostrRelay { relay_url } => self.remove_nostr_relay(&relay_url),
+            AppAction::ResetNostrRelays => self.reset_nostr_relays(),
             AppAction::SetImageProxyEnabled { enabled } => self.set_image_proxy_enabled(enabled),
             AppAction::SetImageProxyUrl { url } => self.set_image_proxy_url(&url),
             AppAction::SetImageProxyKeyHex { key_hex } => self.set_image_proxy_key_hex(&key_hex),

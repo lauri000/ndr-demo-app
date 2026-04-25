@@ -108,7 +108,11 @@ fun MyProfileSheet(
     var profileName by remember(displayName) { mutableStateOf(displayName) }
     var profilePictureUrl by remember(pictureUrl) { mutableStateOf(pictureUrl.orEmpty()) }
     var showProfilePicture by remember { mutableStateOf(false) }
+    var newRelayUrl by remember { mutableStateOf("") }
+    var editingRelayUrl by remember { mutableStateOf<String?>(null) }
+    var editingRelayDraft by remember { mutableStateOf("") }
     val trimmedPictureUrl = pictureUrl?.trim().orEmpty()
+    val relayUrls = networkStatus?.relayUrls ?: preferences.nostrRelayUrls
     val proxiedAvatarUrl =
         trimmedPictureUrl.ifEmpty { null }?.let { url ->
             proxiedImageUrl(
@@ -465,6 +469,107 @@ fun MyProfileSheet(
                     text = publicKeyHex,
                     style = MaterialTheme.typography.bodySmall,
                     color = IrisTheme.palette.muted,
+                )
+            }
+
+            IrisSectionCard {
+                Text(
+                    text = "Nostr relays",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                relayUrls.forEach { relayUrl ->
+                    if (editingRelayUrl == relayUrl) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            TextField(
+                                value = editingRelayDraft,
+                                onValueChange = { editingRelayDraft = it },
+                                singleLine = true,
+                                modifier =
+                                    Modifier
+                                        .weight(1f)
+                                        .testTag("myProfileEditRelayInput"),
+                            )
+                            TextButton(
+                                onClick = {
+                                    appManager.dispatch(
+                                        AppAction.UpdateNostrRelay(relayUrl, editingRelayDraft),
+                                    )
+                                    editingRelayUrl = null
+                                    editingRelayDraft = ""
+                                },
+                            ) {
+                                Text("Save")
+                            }
+                            TextButton(
+                                onClick = {
+                                    editingRelayUrl = null
+                                    editingRelayDraft = ""
+                                },
+                            ) {
+                                Text("Cancel")
+                            }
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = relayUrl,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier =
+                                    Modifier
+                                        .weight(1f)
+                                        .testTag("myProfileRelayRow"),
+                            )
+                            IconButton(
+                                onClick = {
+                                    editingRelayUrl = relayUrl
+                                    editingRelayDraft = relayUrl
+                                },
+                            ) {
+                                Icon(IrisIcons.Edit, contentDescription = "Edit relay")
+                            }
+                            IconButton(
+                                onClick = {
+                                    appManager.dispatch(AppAction.RemoveNostrRelay(relayUrl))
+                                },
+                            ) {
+                                Icon(IrisIcons.DeleteForever, contentDescription = "Delete relay")
+                            }
+                        }
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextField(
+                        value = newRelayUrl,
+                        onValueChange = { newRelayUrl = it },
+                        label = { Text("Relay URL") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f).testTag("myProfileNewRelayInput"),
+                    )
+                    IrisSecondaryButton(
+                        text = "Add",
+                        onClick = {
+                            appManager.dispatch(AppAction.AddNostrRelay(newRelayUrl))
+                            newRelayUrl = ""
+                        },
+                        modifier = Modifier.testTag("myProfileAddRelayButton"),
+                    )
+                }
+                IrisSecondaryButton(
+                    text = "Reset relays",
+                    onClick = { appManager.dispatch(AppAction.ResetNostrRelays) },
+                    modifier = Modifier.testTag("myProfileResetRelaysButton"),
                 )
             }
 

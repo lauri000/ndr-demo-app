@@ -251,7 +251,7 @@ impl AppCore {
 
         NetworkStatusSnapshot {
             relay_set_id: RELAY_SET_ID.to_string(),
-            relay_urls: configured_relays(),
+            relay_urls: self.preferences.nostr_relay_urls.clone(),
             syncing: self.state.busy.syncing_network,
             pending_outbound_count: self.pending_outbound.len() as u64,
             pending_group_control_count: self.pending_group_controls.len() as u64,

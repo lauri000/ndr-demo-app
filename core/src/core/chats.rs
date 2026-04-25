@@ -1078,6 +1078,74 @@ impl AppCore {
         self.emit_state();
     }
 
+    pub(super) fn add_nostr_relay(&mut self, relay_url: &str) {
+        let normalized = match normalize_nostr_relay_url(relay_url) {
+            Ok(url) => url,
+            Err(message) => return self.reject_relay_setting(message),
+        };
+        if self.preferences.nostr_relay_urls.contains(&normalized) {
+            return self.reject_relay_setting("Relay already exists.".to_string());
+        }
+
+        let mut next = self.preferences.nostr_relay_urls.clone();
+        next.push(normalized);
+        self.apply_nostr_relay_urls(next);
+    }
+
+    pub(super) fn update_nostr_relay(&mut self, old_relay_url: &str, new_relay_url: &str) {
+        let old_normalized = match normalize_nostr_relay_url(old_relay_url) {
+            Ok(url) => url,
+            Err(message) => return self.reject_relay_setting(message),
+        };
+        let new_normalized = match normalize_nostr_relay_url(new_relay_url) {
+            Ok(url) => url,
+            Err(message) => return self.reject_relay_setting(message),
+        };
+        let Some(index) = self
+            .preferences
+            .nostr_relay_urls
+            .iter()
+            .position(|relay| relay == &old_normalized)
+        else {
+            return self.reject_relay_setting("Relay not found.".to_string());
+        };
+        if old_normalized != new_normalized
+            && self.preferences.nostr_relay_urls.contains(&new_normalized)
+        {
+            return self.reject_relay_setting("Relay already exists.".to_string());
+        }
+
+        let mut next = self.preferences.nostr_relay_urls.clone();
+        next[index] = new_normalized;
+        self.apply_nostr_relay_urls(next);
+    }
+
+    pub(super) fn remove_nostr_relay(&mut self, relay_url: &str) {
+        let normalized = match normalize_nostr_relay_url(relay_url) {
+            Ok(url) => url,
+            Err(message) => return self.reject_relay_setting(message),
+        };
+        if self.preferences.nostr_relay_urls.len() <= 1 {
+            return self.reject_relay_setting("At least one relay is required.".to_string());
+        }
+        let Some(index) = self
+            .preferences
+            .nostr_relay_urls
+            .iter()
+            .position(|relay| relay == &normalized)
+        else {
+            return self.reject_relay_setting("Relay not found.".to_string());
+        };
+
+        let mut next = self.preferences.nostr_relay_urls.clone();
+        next.remove(index);
+        self.apply_nostr_relay_urls(next);
+    }
+
+    pub(super) fn reset_nostr_relays(&mut self) {
+        self.apply_nostr_relay_urls(configured_relays());
+    }
+
     pub(super) fn set_image_proxy_enabled(&mut self, enabled: bool) {
         if self.preferences.image_proxy_enabled == enabled {
             return;
@@ -1136,6 +1204,43 @@ impl AppCore {
             crate::image_proxy::DEFAULT_IMAGE_PROXY_SALT_HEX.to_string();
         self.rebuild_state();
         self.persist_best_effort();
+        self.emit_state();
+    }
+
+    fn apply_nostr_relay_urls(&mut self, relay_urls: Vec<String>) {
+        let normalized = normalize_nostr_relay_urls(&relay_urls);
+        if self.preferences.nostr_relay_urls == normalized {
+            return;
+        }
+
+        self.preferences.nostr_relay_urls = normalized;
+        let next_relay_urls = relay_urls_from_strings(&self.preferences.nostr_relay_urls);
+        let should_refresh = if let Some(logged_in) = self.logged_in.as_mut() {
+            let client = logged_in.client.clone();
+            let previous_relay_urls = logged_in.relay_urls.clone();
+            self.runtime.block_on(sync_session_relays(
+                &client,
+                &previous_relay_urls,
+                &next_relay_urls,
+            ));
+            logged_in.relay_urls = next_relay_urls;
+            true
+        } else {
+            false
+        };
+
+        if should_refresh {
+            self.schedule_session_connect();
+            self.request_protocol_subscription_refresh_forced();
+            self.fetch_recent_protocol_state();
+        }
+        self.rebuild_state();
+        self.persist_best_effort();
+        self.emit_state();
+    }
+
+    fn reject_relay_setting(&mut self, message: String) {
+        self.state.toast = Some(message);
         self.emit_state();
     }
 
@@ -1721,6 +1826,16 @@ fn normalized_setting(value: &str, fallback: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+async fn sync_session_relays(client: &Client, previous: &[RelayUrl], next: &[RelayUrl]) {
+    let next_set = next.iter().cloned().collect::<HashSet<_>>();
+    for relay in previous {
+        if !next_set.contains(relay) {
+            let _ = client.force_remove_relay(relay.clone()).await;
+        }
+    }
+    ensure_session_relays_configured(client, next).await;
 }
 
 pub(super) fn should_advance_delivery(current: &DeliveryState, next: &DeliveryState) -> bool {
