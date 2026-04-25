@@ -37,6 +37,11 @@ pub struct BusyState {
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
+pub struct PreferencesSnapshot {
+    pub send_typing_indicators: bool,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
 pub struct OutgoingAttachment {
     pub file_path: String,
     pub filename: String,
@@ -214,6 +219,7 @@ pub struct AppState {
     pub current_chat: Option<CurrentChatSnapshot>,
     pub group_details: Option<GroupDetailsSnapshot>,
     pub network_status: Option<NetworkStatusSnapshot>,
+    pub preferences: PreferencesSnapshot,
     pub toast: Option<String>,
 }
 
@@ -232,6 +238,9 @@ impl AppState {
             current_chat: None,
             group_details: None,
             network_status: None,
+            preferences: PreferencesSnapshot {
+                send_typing_indicators: true,
+            },
             toast: None,
         }
     }

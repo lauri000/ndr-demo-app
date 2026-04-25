@@ -54,6 +54,9 @@ pub enum AppAction {
     SendTyping {
         chat_id: String,
     },
+    SetTypingIndicatorsEnabled {
+        enabled: bool,
+    },
     MarkMessagesSeen {
         chat_id: String,
         message_ids: Vec<String>,

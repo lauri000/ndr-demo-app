@@ -24,7 +24,7 @@ impl AppCore {
             shared_state,
             runtime,
             data_dir: PathBuf::from(data_dir),
-            state,
+            state: state.clone(),
             logged_in: None,
             threads: BTreeMap::new(),
             active_chat_id: None,
@@ -35,6 +35,7 @@ impl AppCore {
             pending_group_controls: Vec::new(),
             owner_profiles: BTreeMap::new(),
             typing_indicators: BTreeMap::new(),
+            preferences: state.preferences.clone(),
             recent_handshake_peers: BTreeMap::new(),
             seen_event_ids: HashSet::new(),
             seen_event_order: VecDeque::new(),
@@ -112,6 +113,9 @@ impl AppCore {
                 emoji,
             } => self.toggle_reaction(&chat_id, &message_id, &emoji),
             AppAction::SendTyping { chat_id } => self.send_typing(&chat_id),
+            AppAction::SetTypingIndicatorsEnabled { enabled } => {
+                self.set_typing_indicators_enabled(enabled)
+            }
             AppAction::MarkMessagesSeen {
                 chat_id,
                 message_ids,

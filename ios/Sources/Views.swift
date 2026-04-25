@@ -1852,6 +1852,24 @@ struct ProfileSheet: View {
 
                     IrisSectionCard {
                         CardHeader(
+                            title: "Messaging",
+                            subtitle: "Choose what activity is shared while you write."
+                        )
+
+                        Toggle(
+                            "Typing indicators",
+                            isOn: Binding(
+                                get: { manager.state.preferences.sendTypingIndicators },
+                                set: { enabled in
+                                    manager.dispatch(.setTypingIndicatorsEnabled(enabled: enabled))
+                                }
+                            )
+                        )
+                        .accessibilityIdentifier("myProfileTypingIndicatorsToggle")
+                    }
+
+                    IrisSectionCard {
+                        CardHeader(
                             title: "Security",
                             subtitle: "Copy keys only when you are ready to store them securely."
                         )

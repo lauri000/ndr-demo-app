@@ -7,6 +7,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -17,6 +18,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -34,6 +36,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import social.innode.ndr.demo.core.AppManager
+import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.NetworkStatusSnapshot
 import social.innode.ndr.demo.ui.components.IrisIcons
 import social.innode.ndr.demo.ui.components.IrisInlineAction
@@ -61,6 +64,7 @@ fun MyProfileSheet(
     publicKeyHex: String,
     deviceNpub: String,
     canManageDevices: Boolean,
+    sendTypingIndicators: Boolean,
     networkStatus: NetworkStatusSnapshot?,
     onManageDevices: () -> Unit,
     onLogout: () -> Unit,
@@ -155,6 +159,30 @@ fun MyProfileSheet(
                     onClick = { clipboard.setText("Owner npub", npub) },
                 ) {
                     Icon(imageVector = IrisIcons.Copy, contentDescription = null)
+                }
+            }
+
+            IrisSectionCard {
+                Text(
+                    text = "Messaging",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Typing indicators",
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Switch(
+                        checked = sendTypingIndicators,
+                        onCheckedChange = { enabled ->
+                            appManager.dispatch(AppAction.SetTypingIndicatorsEnabled(enabled))
+                        },
+                        modifier = Modifier.testTag("myProfileTypingIndicatorsSwitch"),
+                    )
                 }
             }
 

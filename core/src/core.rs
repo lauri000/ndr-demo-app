@@ -3,8 +3,8 @@ use crate::state::{
     AccountSnapshot, AppState, ChatKind, ChatMessageSnapshot, ChatThreadSnapshot,
     CurrentChatSnapshot, DeliveryState, DeviceAuthorizationState, DeviceEntrySnapshot,
     DeviceRosterSnapshot, GroupDetailsSnapshot, GroupMemberSnapshot, MessageAttachmentSnapshot,
-    MessageReactionSnapshot, NetworkStatusSnapshot, OutgoingAttachment, Router, Screen,
-    TypingIndicatorSnapshot,
+    MessageReactionSnapshot, NetworkStatusSnapshot, OutgoingAttachment, PreferencesSnapshot,
+    Router, Screen, TypingIndicatorSnapshot,
 };
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 use flume::Sender;
@@ -81,6 +81,7 @@ pub struct AppCore {
     pending_group_controls: Vec<PendingGroupControl>,
     owner_profiles: BTreeMap<String, OwnerProfileRecord>,
     typing_indicators: BTreeMap<String, TypingIndicatorRecord>,
+    preferences: PreferencesSnapshot,
     recent_handshake_peers: BTreeMap<String, RecentHandshakePeer>,
     seen_event_ids: HashSet<String>,
     seen_event_order: VecDeque<String>,

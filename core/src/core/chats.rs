@@ -1025,6 +1025,9 @@ impl AppCore {
     }
 
     pub(super) fn send_typing(&mut self, chat_id: &str) {
+        if !self.preferences.send_typing_indicators {
+            return;
+        }
         let Some(normalized_chat_id) = self.normalize_chat_id(chat_id) else {
             return;
         };
@@ -1033,6 +1036,16 @@ impl AppCore {
         } else {
             self.send_direct_control(&normalized_chat_id, AppControlType::Typing, Vec::new());
         }
+    }
+
+    pub(super) fn set_typing_indicators_enabled(&mut self, enabled: bool) {
+        if self.preferences.send_typing_indicators == enabled {
+            return;
+        }
+        self.preferences.send_typing_indicators = enabled;
+        self.rebuild_state();
+        self.persist_best_effort();
+        self.emit_state();
     }
 
     pub(super) fn mark_messages_seen(&mut self, chat_id: &str, message_ids: &[String]) {

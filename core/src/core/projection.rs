@@ -5,6 +5,7 @@ impl AppCore {
         self.state.account = self.build_account_snapshot();
         self.state.device_roster = self.build_device_roster_snapshot();
         self.state.network_status = Some(self.build_network_status_snapshot());
+        self.state.preferences = self.preferences.clone();
 
         let default_screen = match self
             .logged_in

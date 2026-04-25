@@ -698,6 +698,26 @@ fn typing_indicators_are_projected_and_expire() {
 }
 
 #[test]
+fn typing_preference_updates_state_and_persists() {
+    let data_dir = TempDir::new().expect("temp dir");
+    let mut core = test_core(data_dir.path());
+    start_primary_test_session(&mut core, 24, true, true).expect("start session");
+
+    assert!(core.state.preferences.send_typing_indicators);
+    core.handle_action(AppAction::SetTypingIndicatorsEnabled { enabled: false });
+    assert!(!core.state.preferences.send_typing_indicators);
+    assert!(
+        !persisted_state(data_dir.path())
+            .preferences
+            .send_typing_indicators
+    );
+
+    let mut restored = test_core(data_dir.path());
+    start_primary_test_session(&mut restored, 24, true, true).expect("restore session");
+    assert!(!restored.state.preferences.send_typing_indicators);
+}
+
+#[test]
 fn old_or_unversioned_persistence_is_ignored_after_schema_cut() {
     let _guard = relay_test_lock()
         .lock()

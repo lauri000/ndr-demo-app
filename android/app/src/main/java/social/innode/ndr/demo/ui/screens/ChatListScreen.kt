@@ -200,6 +200,7 @@ fun ChatListScreen(
             publicKeyHex = account.publicKeyHex,
             deviceNpub = account.deviceNpub,
             canManageDevices = account.hasOwnerSigningAuthority,
+            sendTypingIndicators = appState.preferences.sendTypingIndicators,
             networkStatus = appState.networkStatus,
             onManageDevices = {
                 showProfile = false

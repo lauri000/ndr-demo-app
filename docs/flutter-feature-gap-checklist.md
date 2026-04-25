@@ -22,7 +22,7 @@ Compared against `~/src/iris-chat-flutter` on 2026-04-24. Sources used include F
 - [x] Inline image attachment preview, fullscreen image viewer, and Escape-to-close on desktop. Flutter coverage: `test/widget/chat_message_bubble_test.dart`.
 - [x] Disappearing-message clock and TTL rendering. Flutter coverage: `test/unit/chat_settings_test.dart`, `test/widget/chat_message_bubble_test.dart`.
 - [x] Typing indicators. Flutter coverage: `test/unit/core/utils/typing_rumor_test.dart`, `integration_test/app_chat_e2e_macos_suite.dart`.
-- [ ] Typing preference toggle.
+- [x] Typing preference toggle.
 - [x] Read/seen receipts beyond the current pending/sent/received/failed states.
 
 ## Chats, Invites, And Groups

@@ -402,6 +402,8 @@ pub(super) struct PersistedState {
     pub(super) group_manager: Option<GroupManagerSnapshot>,
     #[serde(default)]
     pub(super) owner_profiles: BTreeMap<String, OwnerProfileRecord>,
+    #[serde(default)]
+    pub(super) preferences: PersistedPreferences,
     pub(super) threads: Vec<PersistedThread>,
     #[serde(default)]
     pub(super) pending_inbound: Vec<PendingInbound>,
@@ -413,6 +415,24 @@ pub(super) struct PersistedState {
     pub(super) seen_event_ids: Vec<String>,
     #[serde(default)]
     pub(super) authorization_state: Option<PersistedAuthorizationState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct PersistedPreferences {
+    #[serde(default = "default_true")]
+    pub(super) send_typing_indicators: bool,
+}
+
+impl Default for PersistedPreferences {
+    fn default() -> Self {
+        Self {
+            send_typing_indicators: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize, Deserialize)]

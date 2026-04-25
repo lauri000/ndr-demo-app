@@ -36,6 +36,9 @@ impl AppCore {
             session_manager: Some(logged_in.session_manager.snapshot()),
             group_manager: Some(logged_in.group_manager.snapshot()),
             owner_profiles: self.owner_profiles.clone(),
+            preferences: PersistedPreferences {
+                send_typing_indicators: self.preferences.send_typing_indicators,
+            },
             threads: self
                 .threads
                 .values()
