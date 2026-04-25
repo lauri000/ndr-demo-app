@@ -613,7 +613,7 @@ struct ChatListScreen: View {
                     ForEach(Array(manager.state.chatList.enumerated()), id: \.element.chatId) { index, chat in
                         IrisChatRow(
                             title: chat.displayName,
-                            preview: chat.lastMessagePreview ?? chat.subtitle ?? "No messages yet",
+                            preview: chat.isTyping ? "Typing" : (chat.lastMessagePreview ?? chat.subtitle ?? "No messages yet"),
                             subtitle: chat.kind == .group ? chat.subtitle : nil,
                             timeLabel: irisRelativeTime(chat.lastMessageAtSecs),
                             unreadCount: chat.unreadCount,
@@ -1026,6 +1026,7 @@ struct ChatScreen: View {
     @State private var renderedMessageCount = 0
     @State private var replyTarget: ChatMessageSnapshot?
     @State private var imageViewerItem: ImageViewerItem?
+    @State private var lastTypingSentAt: Date?
 
     private var chat: CurrentChatSnapshot? {
         manager.state.currentChat?.chatId == chatId ? manager.state.currentChat : nil
@@ -1207,6 +1208,10 @@ struct ChatScreen: View {
                             }
                         }
 
+                        if !chat.typingIndicators.isEmpty {
+                            IrisTypingIndicatorRow(indicators: chat.typingIndicators)
+                        }
+
                         if let replyTarget {
                             IrisReplyComposerStrip(message: replyTarget) {
                                 self.replyTarget = nil
@@ -1219,6 +1224,9 @@ struct ChatScreen: View {
                             placeholder: "Message",
                             isSending: manager.state.busy.sendingMessage,
                             isUploading: manager.state.busy.uploadingAttachment,
+                            onDraftChange: {
+                                sendTypingIfNeeded()
+                            },
                             onAttach: { urls in
                                 do {
                                     selectedAttachments.append(
@@ -1268,6 +1276,33 @@ struct ChatScreen: View {
                 }
             }
         }
+        .task(id: seenReceiptToken(for: chat)) {
+            guard let chat else { return }
+            let incomingIds = chat.messages
+                .filter { !$0.isOutgoing && $0.delivery != .seen }
+                .map(\.id)
+            guard !incomingIds.isEmpty else { return }
+            manager.dispatch(.markMessagesSeen(chatId: chat.chatId, messageIds: incomingIds))
+        }
+    }
+
+    private func sendTypingIfNeeded() {
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let now = Date()
+        if let lastTypingSentAt, now.timeIntervalSince(lastTypingSentAt) < 3 {
+            return
+        }
+        lastTypingSentAt = now
+        manager.dispatch(.sendTyping(chatId: chatId))
+    }
+
+    private func seenReceiptToken(for chat: CurrentChatSnapshot?) -> String {
+        guard let chat else { return "" }
+        return chat.messages
+            .filter { !$0.isOutgoing && $0.delivery != .seen }
+            .map(\.id)
+            .joined(separator: ",")
     }
 
     private func scrollToBottom(proxy: ScrollViewProxy, animated: Bool) {
@@ -2328,6 +2363,40 @@ private struct ChatMessageActionDock: View {
                 .frame(width: 26, height: 24)
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct IrisTypingIndicatorRow: View {
+    @Environment(\.irisPalette) private var palette
+    let indicators: [TypingIndicatorSnapshot]
+
+    private var label: String {
+        guard let first = indicators.first else { return "" }
+        if indicators.count == 1 {
+            return "\(first.displayName) is typing"
+        }
+        return "\(first.displayName) and \(indicators.count - 1) more are typing"
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 4) {
+                Circle().frame(width: 5, height: 5)
+                Circle().frame(width: 5, height: 5)
+                Circle().frame(width: 5, height: 5)
+            }
+            .foregroundStyle(palette.muted)
+
+            Text(label)
+                .font(.system(.caption, design: .rounded, weight: .medium))
+                .foregroundStyle(palette.muted)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, IrisLayout.usesDesktopChrome ? 22 : 18)
+        .padding(.vertical, 8)
+        .background(Rectangle().fill(palette.toolbar))
+        .accessibilityIdentifier("chatTypingIndicator")
     }
 }
 

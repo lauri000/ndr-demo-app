@@ -164,7 +164,12 @@ fun ChatListScreen(
                     Column(modifier = Modifier.fillMaxWidth()) {
                         IrisChatListRow(
                             title = chat.displayName,
-                            preview = chat.lastMessagePreview ?: subtitle.orEmpty(),
+                            preview =
+                                if (chat.isTyping) {
+                                    "Typing"
+                                } else {
+                                    chat.lastMessagePreview ?: subtitle.orEmpty()
+                                },
                             timeLabel = formatRelativeTime(chat.lastMessageAtSecs?.toLong()),
                             unreadCount = chat.unreadCount.toLong(),
                             lastMessageMine = chat.lastMessageIsOutgoing == true,

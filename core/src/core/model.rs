@@ -146,13 +146,44 @@ pub(super) struct PendingGroupControl {
 pub(super) struct AppDirectMessagePayload {
     pub(super) version: u8,
     pub(super) chat_id: String,
+    #[serde(default)]
+    pub(super) message_id: Option<String>,
     pub(super) body: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct AppGroupMessagePayload {
     pub(super) version: u8,
+    #[serde(default)]
+    pub(super) message_id: Option<String>,
     pub(super) body: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct AppControlPayload {
+    pub(super) version: u8,
+    #[serde(rename = "type")]
+    pub(super) control_type: AppControlType,
+    #[serde(default)]
+    pub(super) chat_id: Option<String>,
+    #[serde(default)]
+    pub(super) message_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum AppControlType {
+    Typing,
+    Delivered,
+    Seen,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum AppPayload {
+    DirectMessage(AppDirectMessagePayload),
+    GroupMessage(AppGroupMessagePayload),
+    Control(AppControlPayload),
+    LegacyText(String),
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -180,10 +211,19 @@ pub(super) struct NostrProfileMetadata {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RoutedChatMessage {
     pub(super) chat_id: String,
+    pub(super) message_id: Option<String>,
     pub(super) body: String,
     pub(super) is_outgoing: bool,
     pub(super) author: Option<String>,
     pub(super) expires_at_secs: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct TypingIndicatorRecord {
+    pub(super) chat_id: String,
+    pub(super) author_owner_hex: String,
+    pub(super) expires_at_secs: u64,
+    pub(super) last_event_secs: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -408,6 +448,7 @@ pub(super) enum PersistedDeliveryState {
     Pending,
     Sent,
     Received,
+    Seen,
     Failed,
 }
 
@@ -424,6 +465,7 @@ impl From<PersistedDeliveryState> for DeliveryState {
             PersistedDeliveryState::Pending => DeliveryState::Pending,
             PersistedDeliveryState::Sent => DeliveryState::Sent,
             PersistedDeliveryState::Received => DeliveryState::Received,
+            PersistedDeliveryState::Seen => DeliveryState::Seen,
             PersistedDeliveryState::Failed => DeliveryState::Failed,
         }
     }
@@ -435,6 +477,7 @@ impl From<&DeliveryState> for PersistedDeliveryState {
             DeliveryState::Pending => Self::Pending,
             DeliveryState::Sent => Self::Sent,
             DeliveryState::Received => Self::Received,
+            DeliveryState::Seen => Self::Seen,
             DeliveryState::Failed => Self::Failed,
         }
     }

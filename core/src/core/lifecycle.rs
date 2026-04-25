@@ -34,6 +34,7 @@ impl AppCore {
             pending_outbound: Vec::new(),
             pending_group_controls: Vec::new(),
             owner_profiles: BTreeMap::new(),
+            typing_indicators: BTreeMap::new(),
             recent_handshake_peers: BTreeMap::new(),
             seen_event_ids: HashSet::new(),
             seen_event_order: VecDeque::new(),
@@ -110,6 +111,11 @@ impl AppCore {
                 message_id,
                 emoji,
             } => self.toggle_reaction(&chat_id, &message_id, &emoji),
+            AppAction::SendTyping { chat_id } => self.send_typing(&chat_id),
+            AppAction::MarkMessagesSeen {
+                chat_id,
+                message_ids,
+            } => self.mark_messages_seen(&chat_id, &message_ids),
             AppAction::DeleteLocalMessage {
                 chat_id,
                 message_id,
@@ -180,6 +186,19 @@ impl AppCore {
             InternalEvent::DebugLog { category, detail } => {
                 self.push_debug_log(&category, detail);
                 self.persist_debug_snapshot_best_effort();
+            }
+            InternalEvent::TypingIndicatorExpired { chat_id, author } => {
+                let key = format!("{chat_id}\n{author}");
+                let should_remove = self
+                    .typing_indicators
+                    .get(&key)
+                    .map(|indicator| indicator.expires_at_secs <= unix_now().get())
+                    .unwrap_or(false);
+                if should_remove {
+                    self.typing_indicators.remove(&key);
+                    self.rebuild_state();
+                    self.emit_state();
+                }
             }
             InternalEvent::PublishFinished {
                 message_id,

@@ -598,6 +598,106 @@ fn reaction_updates_aggregate_and_format_notification_text() {
 }
 
 #[test]
+fn receipts_advance_delivery_without_reverting() {
+    let data_dir = TempDir::new().expect("temp dir");
+    let mut core = test_core(data_dir.path());
+    let chat_id = "chat";
+    core.threads.insert(
+        chat_id.to_string(),
+        ThreadRecord {
+            chat_id: chat_id.to_string(),
+            unread_count: 1,
+            updated_at_secs: 1,
+            messages: vec![
+                ChatMessageSnapshot {
+                    id: "out".to_string(),
+                    chat_id: chat_id.to_string(),
+                    author: "me".to_string(),
+                    body: "out".to_string(),
+                    attachments: Vec::new(),
+                    reactions: Vec::new(),
+                    is_outgoing: true,
+                    created_at_secs: 1,
+                    expires_at_secs: None,
+                    delivery: DeliveryState::Sent,
+                },
+                ChatMessageSnapshot {
+                    id: "in".to_string(),
+                    chat_id: chat_id.to_string(),
+                    author: "peer".to_string(),
+                    body: "in".to_string(),
+                    attachments: Vec::new(),
+                    reactions: Vec::new(),
+                    is_outgoing: false,
+                    created_at_secs: 2,
+                    expires_at_secs: None,
+                    delivery: DeliveryState::Received,
+                },
+            ],
+        },
+    );
+
+    core.apply_receipt_to_messages(chat_id, &["out".to_string()], DeliveryState::Seen, false);
+    core.apply_receipt_to_messages(
+        chat_id,
+        &["out".to_string()],
+        DeliveryState::Received,
+        false,
+    );
+    core.apply_receipt_to_messages(chat_id, &["in".to_string()], DeliveryState::Seen, true);
+
+    let thread = core.threads.get(chat_id).expect("thread");
+    assert!(matches!(thread.messages[0].delivery, DeliveryState::Seen));
+    assert!(matches!(thread.messages[1].delivery, DeliveryState::Seen));
+    assert_eq!(thread.unread_count, 0);
+}
+
+#[test]
+fn typing_indicators_are_projected_and_expire() {
+    let data_dir = TempDir::new().expect("temp dir");
+    let mut core = test_core(data_dir.path());
+    let chat_id = "chat";
+    core.threads.insert(
+        chat_id.to_string(),
+        ThreadRecord {
+            chat_id: chat_id.to_string(),
+            unread_count: 0,
+            updated_at_secs: 1,
+            messages: Vec::new(),
+        },
+    );
+    core.set_typing_indicator(chat_id.to_string(), "peer".to_string(), unix_now().get());
+    core.rebuild_state();
+
+    assert!(core.state.chat_list[0].is_typing);
+    assert_eq!(
+        core.state
+            .current_chat
+            .as_ref()
+            .map(|chat| chat.typing_indicators.len()),
+        None
+    );
+
+    core.active_chat_id = Some(chat_id.to_string());
+    core.rebuild_state();
+    assert_eq!(
+        core.state
+            .current_chat
+            .as_ref()
+            .expect("current chat")
+            .typing_indicators
+            .len(),
+        1
+    );
+
+    for indicator in core.typing_indicators.values_mut() {
+        indicator.expires_at_secs = 1;
+    }
+    core.rebuild_state();
+    assert!(!core.state.chat_list[0].is_typing);
+}
+
+#[test]
 fn old_or_unversioned_persistence_is_ignored_after_schema_cut() {
     let _guard = relay_test_lock()
         .lock()
@@ -994,6 +1094,7 @@ fn incoming_messages_are_chronological_when_relay_events_arrive_out_of_order() {
 
     core.push_incoming_message_from(
         chat_id,
+        None,
         "newer".to_string(),
         30,
         None,
@@ -1001,6 +1102,7 @@ fn incoming_messages_are_chronological_when_relay_events_arrive_out_of_order() {
     );
     core.push_incoming_message_from(
         chat_id,
+        None,
         "older".to_string(),
         10,
         None,
@@ -1008,6 +1110,7 @@ fn incoming_messages_are_chronological_when_relay_events_arrive_out_of_order() {
     );
     core.push_incoming_message_from(
         chat_id,
+        None,
         "middle".to_string(),
         20,
         None,
@@ -1205,7 +1308,7 @@ fn incoming_group_message_routes_to_group_thread() {
             &mut alice_manager,
             &mut ProtocolContext::new(UnixSeconds(1_900_000_303), &mut rng),
             &create.group.group_id,
-            encode_app_group_message_payload("hello group").expect("payload"),
+            encode_app_group_message_payload("group-message-1", "hello group").expect("payload"),
         )
         .expect("send group message");
     let group_message = bob_core
@@ -2025,7 +2128,10 @@ fn local_relay_round_trip_and_reverse_initiation_work() {
             .map(|message| {
                 message.is_outgoing
                     && message.body == "hi alice"
-                    && matches!(message.delivery, DeliveryState::Sent)
+                    && matches!(
+                        message.delivery,
+                        DeliveryState::Sent | DeliveryState::Received | DeliveryState::Seen
+                    )
             })
             .unwrap_or(false)
     });

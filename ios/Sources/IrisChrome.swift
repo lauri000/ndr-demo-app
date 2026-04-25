@@ -532,6 +532,7 @@ struct IrisComposerBar: View {
     let placeholder: String
     let isSending: Bool
     let isUploading: Bool
+    let onDraftChange: () -> Void
     let onAttach: ([URL]) -> Void
     let onSend: () -> Void
 
@@ -614,6 +615,7 @@ struct IrisComposerBar: View {
                     .irisDraftInputModifiers()
                     .irisInputField()
                     .irisDesktopSubmit(submitDraft)
+                    .irisOnChange(of: draft) { _ in onDraftChange() }
                     .accessibilityIdentifier("chatMessageInput")
 
                 Button(action: submitDraft) {
@@ -920,6 +922,8 @@ func irisDeliveryLabel(_ delivery: DeliveryState) -> String {
         return "Sent"
     case .received:
         return "Received"
+    case .seen:
+        return "Seen"
     case .failed:
         return "Failed"
     }

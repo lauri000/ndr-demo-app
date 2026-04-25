@@ -51,6 +51,13 @@ pub enum AppAction {
         message_id: String,
         emoji: String,
     },
+    SendTyping {
+        chat_id: String,
+    },
+    MarkMessagesSeen {
+        chat_id: String,
+        message_ids: Vec<String>,
+    },
     DeleteLocalMessage {
         chat_id: String,
         message_id: String,

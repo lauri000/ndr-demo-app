@@ -93,6 +93,7 @@ pub enum DeliveryState {
     Pending,
     Sent,
     Received,
+    Seen,
     Failed,
 }
 
@@ -135,6 +136,13 @@ pub struct ChatMessageSnapshot {
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
+pub struct TypingIndicatorSnapshot {
+    pub chat_id: String,
+    pub display_name: String,
+    pub expires_at_secs: u64,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
 pub struct ChatThreadSnapshot {
     pub chat_id: String,
     pub kind: ChatKind,
@@ -146,6 +154,7 @@ pub struct ChatThreadSnapshot {
     pub last_message_is_outgoing: Option<bool>,
     pub last_message_delivery: Option<DeliveryState>,
     pub unread_count: u64,
+    pub is_typing: bool,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
@@ -157,6 +166,7 @@ pub struct CurrentChatSnapshot {
     pub group_id: Option<String>,
     pub member_count: u64,
     pub messages: Vec<ChatMessageSnapshot>,
+    pub typing_indicators: Vec<TypingIndicatorSnapshot>,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]

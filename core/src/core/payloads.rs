@@ -28,17 +28,56 @@ pub(super) fn resolve_message_sender_owner(
 
 pub(super) fn encode_app_direct_message_payload(
     chat_id: &str,
+    message_id: &str,
     body: &str,
 ) -> anyhow::Result<Vec<u8>> {
     let (normalized_chat_id, _) = parse_peer_input(chat_id)?;
     Ok(serde_json::to_vec(&AppDirectMessagePayload {
         version: APP_DIRECT_MESSAGE_PAYLOAD_VERSION,
         chat_id: normalized_chat_id,
+        message_id: Some(message_id.to_string()),
         body: body.to_string(),
     })?)
 }
 
-pub(super) fn decode_app_direct_message_payload(payload: &[u8]) -> Option<AppDirectMessagePayload> {
+pub(super) fn encode_app_group_message_payload(
+    message_id: &str,
+    body: &str,
+) -> anyhow::Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&AppGroupMessagePayload {
+        version: APP_GROUP_MESSAGE_PAYLOAD_VERSION,
+        message_id: Some(message_id.to_string()),
+        body: body.to_string(),
+    })?)
+}
+
+pub(super) fn encode_app_control_payload(
+    control_type: AppControlType,
+    chat_id: Option<String>,
+    message_ids: Vec<String>,
+) -> anyhow::Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&AppControlPayload {
+        version: APP_DIRECT_MESSAGE_PAYLOAD_VERSION,
+        control_type,
+        chat_id,
+        message_ids,
+    })?)
+}
+
+pub(super) fn decode_app_payload(payload: &[u8]) -> AppPayload {
+    if let Some(control) = decode_app_control_payload(payload) {
+        return AppPayload::Control(control);
+    }
+    if let Some(direct) = decode_app_direct_message_payload(payload) {
+        return AppPayload::DirectMessage(direct);
+    }
+    if let Some(group) = decode_app_group_message_payload(payload) {
+        return AppPayload::GroupMessage(group);
+    }
+    AppPayload::LegacyText(String::from_utf8_lossy(payload).into_owned())
+}
+
+fn decode_app_direct_message_payload(payload: &[u8]) -> Option<AppDirectMessagePayload> {
     let decoded = serde_json::from_slice::<AppDirectMessagePayload>(payload).ok()?;
     if decoded.version != APP_DIRECT_MESSAGE_PAYLOAD_VERSION {
         return None;
@@ -46,11 +85,12 @@ pub(super) fn decode_app_direct_message_payload(payload: &[u8]) -> Option<AppDir
     Some(decoded)
 }
 
-pub(super) fn encode_app_group_message_payload(body: &str) -> anyhow::Result<Vec<u8>> {
-    Ok(serde_json::to_vec(&AppGroupMessagePayload {
-        version: APP_GROUP_MESSAGE_PAYLOAD_VERSION,
-        body: body.to_string(),
-    })?)
+fn decode_app_control_payload(payload: &[u8]) -> Option<AppControlPayload> {
+    let decoded = serde_json::from_slice::<AppControlPayload>(payload).ok()?;
+    if decoded.version != APP_DIRECT_MESSAGE_PAYLOAD_VERSION {
+        return None;
+    }
+    Some(decoded)
 }
 
 pub(super) fn is_retryable_group_payload_error(error: &anyhow::Error) -> bool {
@@ -64,7 +104,7 @@ pub(super) fn is_unknown_group_payload_error(error: &anyhow::Error) -> bool {
     error.to_string().contains("unknown group")
 }
 
-pub(super) fn decode_app_group_message_payload(payload: &[u8]) -> Option<AppGroupMessagePayload> {
+fn decode_app_group_message_payload(payload: &[u8]) -> Option<AppGroupMessagePayload> {
     let decoded = serde_json::from_slice::<AppGroupMessagePayload>(payload).ok()?;
     if decoded.version != APP_GROUP_MESSAGE_PAYLOAD_VERSION {
         return None;

@@ -17,6 +17,7 @@ impl AppCore {
             Some(LocalAuthorizationState::Revoked) => Screen::DeviceRevoked,
         };
 
+        self.prune_expired_typing_indicators();
         let mut threads: Vec<&ThreadRecord> = self.threads.values().collect();
         threads.sort_by_key(|thread| std::cmp::Reverse(thread.updated_at_secs));
 
@@ -49,6 +50,7 @@ impl AppCore {
                     last_message_is_outgoing: last_message.map(|message| message.is_outgoing),
                     last_message_delivery: last_message.map(|message| message.delivery.clone()),
                     unread_count: thread.unread_count,
+                    is_typing: self.thread_has_typing_indicator(&thread.chat_id),
                 }
             })
             .collect();
@@ -76,6 +78,7 @@ impl AppCore {
                         .map(|group| group.members.len() as u64)
                         .unwrap_or(0),
                     messages: thread.messages.clone(),
+                    typing_indicators: self.typing_indicator_snapshots(&thread.chat_id),
                 }
             });
 
@@ -88,6 +91,35 @@ impl AppCore {
             default_screen,
             screen_stack: self.screen_stack.clone(),
         };
+    }
+
+    pub(super) fn prune_expired_typing_indicators(&mut self) {
+        let now = unix_now().get();
+        self.typing_indicators
+            .retain(|_, indicator| indicator.expires_at_secs > now);
+    }
+
+    pub(super) fn thread_has_typing_indicator(&self, chat_id: &str) -> bool {
+        let now = unix_now().get();
+        self.typing_indicators
+            .values()
+            .any(|indicator| indicator.chat_id == chat_id && indicator.expires_at_secs > now)
+    }
+
+    pub(super) fn typing_indicator_snapshots(&self, chat_id: &str) -> Vec<TypingIndicatorSnapshot> {
+        let now = unix_now().get();
+        let mut indicators = self
+            .typing_indicators
+            .values()
+            .filter(|indicator| indicator.chat_id == chat_id && indicator.expires_at_secs > now)
+            .map(|indicator| TypingIndicatorSnapshot {
+                chat_id: indicator.chat_id.clone(),
+                display_name: self.owner_display_label(&indicator.author_owner_hex),
+                expires_at_secs: indicator.expires_at_secs,
+            })
+            .collect::<Vec<_>>();
+        indicators.sort_by(|left, right| left.display_name.cmp(&right.display_name));
+        indicators
     }
 
     pub(super) fn build_account_snapshot(&self) -> Option<AccountSnapshot> {

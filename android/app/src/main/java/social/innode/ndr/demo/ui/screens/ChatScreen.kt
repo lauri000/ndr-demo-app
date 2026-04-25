@@ -114,6 +114,7 @@ import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.AppState
 import social.innode.ndr.demo.rust.ChatKind
 import social.innode.ndr.demo.rust.ChatMessageSnapshot
+import social.innode.ndr.demo.rust.DeliveryState
 import social.innode.ndr.demo.rust.MessageAttachmentSnapshot
 import social.innode.ndr.demo.rust.MessageReactionSnapshot
 import social.innode.ndr.demo.rust.OutgoingAttachment
@@ -146,6 +147,7 @@ fun ChatScreen(
     var observedMessageCount by remember(chatId) { mutableStateOf(0) }
     var replyTarget by remember(chatId) { mutableStateOf<ChatMessageSnapshot?>(null) }
     var imageViewerItem by remember(chatId) { mutableStateOf<DownloadedImageAttachment?>(null) }
+    var lastTypingSentMs by remember(chatId) { mutableStateOf(0L) }
     val attachmentPicker =
         rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
             if (uris.isEmpty()) {
@@ -224,6 +226,21 @@ fun ChatScreen(
         }
         if (forceScrollToLatest) {
             forceScrollToLatest = false
+        }
+    }
+
+    val unseenIncomingIds =
+        remember(chat?.messages) {
+            chat
+                ?.messages
+                ?.filter { message -> !message.isOutgoing && message.delivery != DeliveryState.SEEN }
+                ?.map { message -> message.id }
+                .orEmpty()
+        }
+
+    LaunchedEffect(chatId, unseenIncomingIds) {
+        if (unseenIncomingIds.isNotEmpty()) {
+            appManager.dispatch(AppAction.MarkMessagesSeen(chatId, unseenIncomingIds))
         }
     }
 
@@ -365,6 +382,12 @@ fun ChatScreen(
                     }
                 }
 
+                if (chat.typingIndicators.isNotEmpty()) {
+                    TypingIndicatorRow(
+                        names = chat.typingIndicators.map { indicator -> indicator.displayName },
+                    )
+                }
+
                 replyTarget?.let { reply ->
                     ReplyComposerStrip(
                         message = reply,
@@ -377,7 +400,16 @@ fun ChatScreen(
                     selectedAttachments = selectedAttachments,
                     isSending = appState.busy.sendingMessage,
                     isUploading = appState.busy.uploadingAttachment,
-                    onDraftChange = { draft = it },
+                    onDraftChange = { value ->
+                        draft = value
+                        if (value.isNotBlank()) {
+                            val nowMs = System.currentTimeMillis()
+                            if (nowMs - lastTypingSentMs >= 3_000L) {
+                                lastTypingSentMs = nowMs
+                                appManager.dispatch(AppAction.SendTyping(chatId))
+                            }
+                        }
+                    },
                     onAttach = { attachmentPicker.launch(arrayOf("*/*")) },
                     onRemoveAttachment = { attachment ->
                         selectedAttachments = selectedAttachments - attachment
@@ -753,6 +785,48 @@ private fun ReactionRow(reactions: List<MessageReactionSnapshot>) {
                     fontWeight = FontWeight.SemiBold,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun TypingIndicatorRow(names: List<String>) {
+    val label =
+        when {
+            names.isEmpty() -> ""
+            names.size == 1 -> "${names.first()} is typing"
+            else -> "${names.first()} and ${names.size - 1} more are typing"
+        }
+    Surface(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .testTag("chatTypingIndicator"),
+        color = IrisTheme.palette.toolbar,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                repeat(3) {
+                    Box(
+                        modifier =
+                            Modifier
+                                .size(5.dp)
+                                .clip(CircleShape)
+                                .background(IrisTheme.palette.muted),
+                    )
+                }
+            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = IrisTheme.palette.muted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

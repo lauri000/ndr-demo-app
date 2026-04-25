@@ -38,6 +38,10 @@ pub(crate) enum InternalEvent {
         category: String,
         detail: String,
     },
+    TypingIndicatorExpired {
+        chat_id: String,
+        author: String,
+    },
     PublishFinished {
         message_id: String,
         chat_id: String,

@@ -35,6 +35,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.Devices
+import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Group
 import androidx.compose.material.icons.rounded.Image
@@ -371,6 +372,7 @@ fun DeliveryGlyph(delivery: DeliveryState) {
             DeliveryState.PENDING -> IrisTheme.palette.muted
             DeliveryState.SENT -> IrisTheme.palette.muted
             DeliveryState.RECEIVED -> IrisTheme.palette.accentAlt
+            DeliveryState.SEEN -> IrisTheme.palette.accent
             DeliveryState.FAILED -> MaterialTheme.colorScheme.error
         }
     val imageVector =
@@ -378,6 +380,7 @@ fun DeliveryGlyph(delivery: DeliveryState) {
             DeliveryState.PENDING -> Icons.Rounded.Schedule
             DeliveryState.SENT -> Icons.Rounded.Check
             DeliveryState.RECEIVED -> Icons.Rounded.Check
+            DeliveryState.SEEN -> Icons.Rounded.DoneAll
             DeliveryState.FAILED -> Icons.Rounded.MoreHoriz
         }
     Icon(

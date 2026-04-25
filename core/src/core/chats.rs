@@ -1,5 +1,7 @@
 use super::*;
 
+const TYPING_INDICATOR_TTL_SECS: u64 = 10;
+
 impl AppCore {
     pub(super) fn create_chat(&mut self, peer_input: &str) {
         if self.logged_in.is_none() {
@@ -171,13 +173,15 @@ impl AppCore {
             return;
         };
 
-        let payload = match encode_app_direct_message_payload(&normalized_chat_id, text) {
-            Ok(payload) => payload,
-            Err(error) => {
-                self.state.toast = Some(error.to_string());
-                return;
-            }
-        };
+        let message_id = self.allocate_message_id();
+        let payload =
+            match encode_app_direct_message_payload(&normalized_chat_id, &message_id, text) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    self.state.toast = Some(error.to_string());
+                    return;
+                }
+            };
         let owner = OwnerPubkey::from_bytes(peer_pubkey.to_bytes());
         let prepared = {
             let logged_in = self.logged_in.as_mut().expect("logged in checked above");
@@ -188,7 +192,7 @@ impl AppCore {
                 .prepare_send(&mut ctx, owner, payload)
         };
 
-        self.handle_prepared_direct_send(&normalized_chat_id, text, now, prepared);
+        self.handle_prepared_direct_send(&normalized_chat_id, message_id, text, now, prepared);
     }
 
     pub(super) fn send_group_message(&mut self, chat_id: &str, text: &str, now: UnixSeconds) {
@@ -196,7 +200,8 @@ impl AppCore {
             self.state.toast = Some("Invalid group id.".to_string());
             return;
         };
-        let payload = match encode_app_group_message_payload(text) {
+        let message_id = self.allocate_message_id();
+        let payload = match encode_app_group_message_payload(&message_id, text) {
             Ok(payload) => payload,
             Err(error) => {
                 self.state.toast = Some(error.to_string());
@@ -226,7 +231,8 @@ impl AppCore {
                         ),
                     );
                     let pending_reason = reason.clone();
-                    let message = self.push_outgoing_message(
+                    let message = self.push_outgoing_message_with_id(
+                        message_id.clone(),
                         chat_id,
                         text.to_string(),
                         now.get(),
@@ -251,7 +257,8 @@ impl AppCore {
                     match build_group_prepared_publish_batch(&prepared) {
                         Ok(Some(batch)) => {
                             let publish_mode = publish_mode_for_batch(&batch);
-                            let message = self.push_outgoing_message(
+                            let message = self.push_outgoing_message_with_id(
+                                message_id.clone(),
                                 chat_id,
                                 text.to_string(),
                                 now.get(),
@@ -276,7 +283,8 @@ impl AppCore {
                             );
                         }
                         Ok(None) => {
-                            let message = self.push_outgoing_message(
+                            let message = self.push_outgoing_message_with_id(
+                                message_id.clone(),
                                 chat_id,
                                 text.to_string(),
                                 now.get(),
@@ -302,6 +310,7 @@ impl AppCore {
     pub(super) fn handle_prepared_direct_send(
         &mut self,
         chat_id: &str,
+        message_id: String,
         text: &str,
         now: UnixSeconds,
         prepared: Result<nostr_double_ratchet::PreparedSend, Error>,
@@ -318,7 +327,8 @@ impl AppCore {
                         ),
                     );
                     let pending_reason = reason.clone();
-                    let message = self.push_outgoing_message(
+                    let message = self.push_outgoing_message_with_id(
+                        message_id.clone(),
                         chat_id,
                         text.to_string(),
                         now.get(),
@@ -343,7 +353,8 @@ impl AppCore {
                     match build_prepared_publish_batch(&prepared) {
                         Ok(Some(batch)) => {
                             let publish_mode = publish_mode_for_batch(&batch);
-                            let message = self.push_outgoing_message(
+                            let message = self.push_outgoing_message_with_id(
+                                message_id.clone(),
                                 chat_id,
                                 text.to_string(),
                                 now.get(),
@@ -368,7 +379,8 @@ impl AppCore {
                             );
                         }
                         Ok(None) => {
-                            let message = self.push_outgoing_message(
+                            let message = self.push_outgoing_message_with_id(
+                                message_id.clone(),
                                 chat_id,
                                 text.to_string(),
                                 now.get(),
@@ -557,7 +569,10 @@ impl AppCore {
                     );
                     continue;
                 };
-                let payload = match encode_app_group_message_payload(&pending_message.body) {
+                let payload = match encode_app_group_message_payload(
+                    &pending_message.message_id,
+                    &pending_message.body,
+                ) {
                     Ok(payload) => payload,
                     Err(error) => {
                         self.state.toast = Some(error.to_string());
@@ -673,6 +688,7 @@ impl AppCore {
 
                 let payload = match encode_app_direct_message_payload(
                     &pending_message.chat_id,
+                    &pending_message.message_id,
                     &pending_message.body,
                 ) {
                     Ok(payload) => payload,
@@ -834,9 +850,29 @@ impl AppCore {
         expires_at_secs: Option<u64>,
         delivery: DeliveryState,
     ) -> ChatMessageSnapshot {
+        let message_id = self.allocate_message_id();
+        self.push_outgoing_message_with_id(
+            message_id,
+            chat_id,
+            body,
+            created_at_secs,
+            expires_at_secs,
+            delivery,
+        )
+    }
+
+    pub(super) fn push_outgoing_message_with_id(
+        &mut self,
+        message_id: String,
+        chat_id: &str,
+        body: String,
+        created_at_secs: u64,
+        expires_at_secs: Option<u64>,
+        delivery: DeliveryState,
+    ) -> ChatMessageSnapshot {
         let (body, attachments) = extract_message_attachments(&body);
         let message = ChatMessageSnapshot {
-            id: self.allocate_message_id(),
+            id: message_id,
             chat_id: chat_id.to_string(),
             author: self
                 .state
@@ -870,12 +906,13 @@ impl AppCore {
     pub(super) fn push_incoming_message_from(
         &mut self,
         chat_id: &str,
+        message_id: Option<String>,
         body: String,
         created_at_secs: u64,
         expires_at_secs: Option<u64>,
         author: Option<String>,
     ) {
-        let message_id = self.allocate_message_id();
+        let message_id = message_id.unwrap_or_else(|| self.allocate_message_id());
         let author = author.unwrap_or_else(|| self.owner_display_label(chat_id));
         let thread = self
             .threads
@@ -987,27 +1024,304 @@ impl AppCore {
         self.emit_state();
     }
 
+    pub(super) fn send_typing(&mut self, chat_id: &str) {
+        let Some(normalized_chat_id) = self.normalize_chat_id(chat_id) else {
+            return;
+        };
+        if is_group_chat_id(&normalized_chat_id) {
+            self.send_group_control(&normalized_chat_id, AppControlType::Typing, Vec::new());
+        } else {
+            self.send_direct_control(&normalized_chat_id, AppControlType::Typing, Vec::new());
+        }
+    }
+
+    pub(super) fn mark_messages_seen(&mut self, chat_id: &str, message_ids: &[String]) {
+        if message_ids.is_empty() {
+            return;
+        }
+        let Some(normalized_chat_id) = self.normalize_chat_id(chat_id) else {
+            return;
+        };
+        let Some(thread) = self.threads.get_mut(&normalized_chat_id) else {
+            return;
+        };
+
+        let mut changed = false;
+        let mut receipt_ids = Vec::new();
+        for message in &mut thread.messages {
+            if message.is_outgoing || !message_ids.iter().any(|id| id == &message.id) {
+                continue;
+            }
+            if should_advance_delivery(&message.delivery, &DeliveryState::Seen) {
+                message.delivery = DeliveryState::Seen;
+                changed = true;
+            }
+            receipt_ids.push(message.id.clone());
+        }
+        if receipt_ids.is_empty() {
+            return;
+        }
+
+        if thread.unread_count != 0 {
+            thread.unread_count = 0;
+            changed = true;
+        }
+        if is_group_chat_id(&normalized_chat_id) {
+            // Group read state is local-only for now, matching the Flutter client.
+        } else {
+            self.send_direct_control(&normalized_chat_id, AppControlType::Seen, receipt_ids);
+        }
+
+        if changed {
+            self.persist_best_effort();
+            self.rebuild_state();
+            self.emit_state();
+        }
+    }
+
+    pub(super) fn send_direct_control(
+        &mut self,
+        chat_id: &str,
+        control_type: AppControlType,
+        message_ids: Vec<String>,
+    ) {
+        let Ok((normalized_chat_id, peer_pubkey)) = parse_peer_input(chat_id) else {
+            return;
+        };
+        let payload = match encode_app_control_payload(
+            control_type,
+            Some(normalized_chat_id.clone()),
+            message_ids,
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.push_debug_log("control.direct.encode", error.to_string());
+                return;
+            }
+        };
+        let Some(logged_in) = self.logged_in.as_mut() else {
+            return;
+        };
+        let mut rng = OsRng;
+        let mut ctx = ProtocolContext::new(unix_now(), &mut rng);
+        let owner = OwnerPubkey::from_bytes(peer_pubkey.to_bytes());
+        match logged_in
+            .session_manager
+            .prepare_send(&mut ctx, owner, payload)
+        {
+            Ok(prepared) => match build_prepared_publish_batch(&prepared) {
+                Ok(Some(batch)) => {
+                    let control_id = format!("control-{}", self.allocate_message_id());
+                    let publish_mode = publish_mode_for_batch(&batch);
+                    self.start_publish_for_pending(
+                        control_id,
+                        normalized_chat_id,
+                        publish_mode,
+                        batch,
+                    );
+                }
+                Ok(None) => {}
+                Err(error) => self.push_debug_log("control.direct.publish", error.to_string()),
+            },
+            Err(error) => self.push_debug_log("control.direct.prepare", error.to_string()),
+        }
+    }
+
+    pub(super) fn send_group_control(
+        &mut self,
+        chat_id: &str,
+        control_type: AppControlType,
+        message_ids: Vec<String>,
+    ) {
+        let Some(group_id) = parse_group_id_from_chat_id(chat_id) else {
+            return;
+        };
+        let payload = match encode_app_control_payload(control_type, None, message_ids) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.push_debug_log("control.group.encode", error.to_string());
+                return;
+            }
+        };
+        let Some(logged_in) = self.logged_in.as_mut() else {
+            return;
+        };
+        let mut rng = OsRng;
+        let mut ctx = ProtocolContext::new(unix_now(), &mut rng);
+        let (session_manager, group_manager) =
+            (&mut logged_in.session_manager, &mut logged_in.group_manager);
+        match group_manager.send_message(session_manager, &mut ctx, &group_id, payload) {
+            Ok(prepared) => {
+                self.publish_group_local_sibling_best_effort(&prepared);
+                match build_group_prepared_publish_batch(&prepared) {
+                    Ok(Some(batch)) => {
+                        let control_id = format!("control-{}", self.allocate_message_id());
+                        let publish_mode = publish_mode_for_batch(&batch);
+                        self.start_publish_for_pending(
+                            control_id,
+                            chat_id.to_string(),
+                            publish_mode,
+                            batch,
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(error) => self.push_debug_log("control.group.publish", error.to_string()),
+                }
+            }
+            Err(error) => self.push_debug_log("control.group.prepare", error.to_string()),
+        }
+    }
+
+    pub(super) fn apply_receipt_to_messages(
+        &mut self,
+        chat_id: &str,
+        message_ids: &[String],
+        delivery: DeliveryState,
+        is_from_local_owner: bool,
+    ) {
+        if message_ids.is_empty() {
+            return;
+        }
+        let Some(thread) = self.threads.get_mut(chat_id) else {
+            return;
+        };
+        let mut changed = false;
+        for message in &mut thread.messages {
+            if !message_ids.iter().any(|id| id == &message.id) {
+                continue;
+            }
+            if is_from_local_owner == message.is_outgoing {
+                continue;
+            }
+            if should_advance_delivery(&message.delivery, &delivery) {
+                message.delivery = delivery.clone();
+                changed = true;
+            }
+        }
+        if is_from_local_owner && matches!(delivery, DeliveryState::Seen) {
+            thread.unread_count = 0;
+            changed = true;
+        }
+        if changed {
+            self.persist_best_effort();
+        }
+    }
+
+    pub(super) fn set_typing_indicator(
+        &mut self,
+        chat_id: String,
+        author_owner_hex: String,
+        event_secs: u64,
+    ) {
+        let expires_at_secs = unix_now().get().saturating_add(TYPING_INDICATOR_TTL_SECS);
+        let key = typing_indicator_key(&chat_id, &author_owner_hex);
+        self.typing_indicators.insert(
+            key,
+            TypingIndicatorRecord {
+                chat_id: chat_id.clone(),
+                author_owner_hex: author_owner_hex.clone(),
+                expires_at_secs,
+                last_event_secs: event_secs,
+            },
+        );
+        self.schedule_typing_indicator_expiry(chat_id, author_owner_hex);
+    }
+
+    pub(super) fn clear_typing_indicator(&mut self, chat_id: &str, author_owner_hex: &str) {
+        self.typing_indicators
+            .remove(&typing_indicator_key(chat_id, author_owner_hex));
+    }
+
+    pub(super) fn schedule_typing_indicator_expiry(&self, chat_id: String, author: String) {
+        let tx = self.core_sender.clone();
+        self.runtime.spawn(async move {
+            sleep(Duration::from_secs(TYPING_INDICATOR_TTL_SECS)).await;
+            let _ = tx.send(CoreMsg::Internal(Box::new(
+                InternalEvent::TypingIndicatorExpired { chat_id, author },
+            )));
+        });
+    }
+
     pub(super) fn apply_routed_chat_message(
         &mut self,
         routed: RoutedChatMessage,
         created_at_secs: u64,
     ) {
         if routed.is_outgoing {
-            self.push_outgoing_message(
-                &routed.chat_id,
-                routed.body,
-                created_at_secs,
-                routed.expires_at_secs,
-                DeliveryState::Sent,
-            );
+            match routed.message_id {
+                Some(message_id) => self.push_outgoing_message_with_id(
+                    message_id,
+                    &routed.chat_id,
+                    routed.body,
+                    created_at_secs,
+                    routed.expires_at_secs,
+                    DeliveryState::Sent,
+                ),
+                None => self.push_outgoing_message(
+                    &routed.chat_id,
+                    routed.body,
+                    created_at_secs,
+                    routed.expires_at_secs,
+                    DeliveryState::Sent,
+                ),
+            };
         } else {
             self.push_incoming_message_from(
                 &routed.chat_id,
+                routed.message_id,
                 routed.body,
                 created_at_secs,
                 routed.expires_at_secs,
                 routed.author,
             );
+        }
+    }
+
+    pub(super) fn apply_control_payload(
+        &mut self,
+        sender_owner: OwnerPubkey,
+        control: AppControlPayload,
+        created_at_secs: u64,
+    ) {
+        let Some(local_owner) = self
+            .logged_in
+            .as_ref()
+            .map(|logged_in| logged_in.owner_pubkey)
+        else {
+            return;
+        };
+        let is_from_local_owner = sender_owner == local_owner;
+        let chat_id = if is_from_local_owner {
+            control
+                .chat_id
+                .clone()
+                .unwrap_or_else(|| sender_owner.to_string())
+        } else {
+            sender_owner.to_string()
+        };
+
+        match control.control_type {
+            AppControlType::Typing => {
+                if !is_from_local_owner {
+                    self.set_typing_indicator(chat_id, sender_owner.to_string(), created_at_secs);
+                }
+            }
+            AppControlType::Delivered => {
+                self.apply_receipt_to_messages(
+                    &chat_id,
+                    &control.message_ids,
+                    DeliveryState::Received,
+                    is_from_local_owner,
+                );
+            }
+            AppControlType::Seen => {
+                self.apply_receipt_to_messages(
+                    &chat_id,
+                    &control.message_ids,
+                    DeliveryState::Seen,
+                    is_from_local_owner,
+                );
+            }
         }
     }
 
@@ -1017,36 +1331,56 @@ impl AppCore {
         sender_owner: OwnerPubkey,
         payload: &[u8],
     ) -> RoutedChatMessage {
-        if let Some(decoded) = decode_app_direct_message_payload(payload) {
-            if sender_owner == local_owner {
-                if let Ok((chat_id, _)) = parse_peer_input(&decoded.chat_id) {
-                    if chat_id != local_owner.to_string() {
-                        return RoutedChatMessage {
-                            chat_id,
-                            body: decoded.body,
-                            is_outgoing: true,
-                            author: Some(self.owner_display_label(&local_owner.to_string())),
-                            expires_at_secs: None,
-                        };
+        match decode_app_payload(payload) {
+            AppPayload::DirectMessage(decoded) => {
+                if sender_owner == local_owner {
+                    if let Ok((chat_id, _)) = parse_peer_input(&decoded.chat_id) {
+                        if chat_id != local_owner.to_string() {
+                            return RoutedChatMessage {
+                                chat_id,
+                                message_id: decoded.message_id,
+                                body: decoded.body,
+                                is_outgoing: true,
+                                author: Some(self.owner_display_label(&local_owner.to_string())),
+                                expires_at_secs: None,
+                            };
+                        }
                     }
                 }
-            }
 
-            return RoutedChatMessage {
+                RoutedChatMessage {
+                    chat_id: sender_owner.to_string(),
+                    message_id: decoded.message_id,
+                    body: decoded.body,
+                    is_outgoing: false,
+                    author: Some(self.owner_display_label(&sender_owner.to_string())),
+                    expires_at_secs: None,
+                }
+            }
+            AppPayload::LegacyText(body) => RoutedChatMessage {
                 chat_id: sender_owner.to_string(),
+                message_id: None,
+                body,
+                is_outgoing: false,
+                author: Some(self.owner_display_label(&sender_owner.to_string())),
+                expires_at_secs: None,
+            },
+            AppPayload::GroupMessage(decoded) => RoutedChatMessage {
+                chat_id: sender_owner.to_string(),
+                message_id: decoded.message_id,
                 body: decoded.body,
                 is_outgoing: false,
                 author: Some(self.owner_display_label(&sender_owner.to_string())),
                 expires_at_secs: None,
-            };
-        }
-
-        RoutedChatMessage {
-            chat_id: sender_owner.to_string(),
-            body: String::from_utf8_lossy(payload).into_owned(),
-            is_outgoing: false,
-            author: Some(self.owner_display_label(&sender_owner.to_string())),
-            expires_at_secs: None,
+            },
+            AppPayload::Control(_) => RoutedChatMessage {
+                chat_id: sender_owner.to_string(),
+                message_id: None,
+                body: String::new(),
+                is_outgoing: false,
+                author: Some(self.owner_display_label(&sender_owner.to_string())),
+                expires_at_secs: None,
+            },
         }
     }
 
@@ -1099,27 +1433,113 @@ impl AppCore {
                 self.apply_group_metadata_update(group, previous, created_at_secs);
             }
             Some(GroupIncomingEvent::Message(group_message)) => {
-                let decoded = decode_app_group_message_payload(&group_message.body)
-                    .ok_or_else(|| anyhow::anyhow!("Invalid group message payload."))?;
-                self.apply_routed_chat_message(
-                    RoutedChatMessage {
-                        chat_id: group_chat_id(&group_message.group_id),
-                        body: decoded.body,
-                        is_outgoing: group_message.sender_owner == local_owner,
-                        author: Some(
-                            self.owner_display_label(&group_message.sender_owner.to_string()),
-                        ),
-                        expires_at_secs,
-                    },
-                    created_at_secs,
-                );
+                let chat_id = group_chat_id(&group_message.group_id);
+                match decode_app_payload(&group_message.body) {
+                    AppPayload::Control(control) => {
+                        if group_message.sender_owner != local_owner
+                            && control.control_type == AppControlType::Typing
+                        {
+                            self.set_typing_indicator(
+                                chat_id,
+                                group_message.sender_owner.to_string(),
+                                created_at_secs,
+                            );
+                        }
+                    }
+                    AppPayload::GroupMessage(decoded) => {
+                        self.clear_typing_indicator(
+                            &chat_id,
+                            &group_message.sender_owner.to_string(),
+                        );
+                        self.apply_routed_chat_message(
+                            RoutedChatMessage {
+                                chat_id,
+                                message_id: decoded.message_id,
+                                body: decoded.body,
+                                is_outgoing: group_message.sender_owner == local_owner,
+                                author: Some(
+                                    self.owner_display_label(
+                                        &group_message.sender_owner.to_string(),
+                                    ),
+                                ),
+                                expires_at_secs,
+                            },
+                            created_at_secs,
+                        );
+                    }
+                    AppPayload::LegacyText(body) => {
+                        self.clear_typing_indicator(
+                            &chat_id,
+                            &group_message.sender_owner.to_string(),
+                        );
+                        self.apply_routed_chat_message(
+                            RoutedChatMessage {
+                                chat_id,
+                                message_id: None,
+                                body,
+                                is_outgoing: group_message.sender_owner == local_owner,
+                                author: Some(
+                                    self.owner_display_label(
+                                        &group_message.sender_owner.to_string(),
+                                    ),
+                                ),
+                                expires_at_secs,
+                            },
+                            created_at_secs,
+                        );
+                    }
+                    AppPayload::DirectMessage(decoded) => {
+                        self.clear_typing_indicator(
+                            &chat_id,
+                            &group_message.sender_owner.to_string(),
+                        );
+                        self.apply_routed_chat_message(
+                            RoutedChatMessage {
+                                chat_id,
+                                message_id: decoded.message_id,
+                                body: decoded.body,
+                                is_outgoing: group_message.sender_owner == local_owner,
+                                author: Some(
+                                    self.owner_display_label(
+                                        &group_message.sender_owner.to_string(),
+                                    ),
+                                ),
+                                expires_at_secs,
+                            },
+                            created_at_secs,
+                        );
+                    }
+                }
             }
-            None => {
-                let mut routed =
-                    self.route_received_direct_message(local_owner, sender_owner, payload);
-                routed.expires_at_secs = expires_at_secs;
-                self.apply_routed_chat_message(routed, created_at_secs);
-            }
+            None => match decode_app_payload(payload) {
+                AppPayload::Control(control) => {
+                    self.apply_control_payload(sender_owner, control, created_at_secs);
+                }
+                _ => {
+                    let mut routed =
+                        self.route_received_direct_message(local_owner, sender_owner, payload);
+                    routed.expires_at_secs = expires_at_secs;
+                    let should_send_delivered = !routed.is_outgoing
+                        && routed
+                            .message_id
+                            .as_ref()
+                            .map(|id| !id.is_empty())
+                            .unwrap_or(false);
+                    let receipt_chat_id = routed.chat_id.clone();
+                    let receipt_message_id = routed.message_id.clone();
+                    self.clear_typing_indicator(&receipt_chat_id, &sender_owner.to_string());
+                    self.apply_routed_chat_message(routed, created_at_secs);
+                    if should_send_delivered {
+                        if let Some(message_id) = receipt_message_id {
+                            self.send_direct_control(
+                                &receipt_chat_id,
+                                AppControlType::Delivered,
+                                vec![message_id],
+                            );
+                        }
+                    }
+                }
+            },
         }
 
         Ok(())
@@ -1184,6 +1604,24 @@ pub(super) fn apply_incoming_reaction(message: &mut ChatMessageSnapshot, emoji: 
     }
     sort_message_reactions(&mut message.reactions);
     true
+}
+
+pub(super) fn typing_indicator_key(chat_id: &str, author_owner_hex: &str) -> String {
+    format!("{chat_id}\n{author_owner_hex}")
+}
+
+pub(super) fn should_advance_delivery(current: &DeliveryState, next: &DeliveryState) -> bool {
+    delivery_rank(next) > delivery_rank(current)
+}
+
+fn delivery_rank(delivery: &DeliveryState) -> u8 {
+    match delivery {
+        DeliveryState::Pending => 0,
+        DeliveryState::Sent => 1,
+        DeliveryState::Received => 2,
+        DeliveryState::Seen => 3,
+        DeliveryState::Failed => 4,
+    }
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
