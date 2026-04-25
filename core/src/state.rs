@@ -108,6 +108,7 @@ pub struct DeviceRosterSnapshot {
 
 #[derive(uniffi::Enum, Clone, Debug)]
 pub enum DeliveryState {
+    Queued,
     Pending,
     Sent,
     Received,

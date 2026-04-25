@@ -1665,6 +1665,15 @@ fn retry_pending_outbound_reuses_same_prepared_events_without_advancing_session(
     );
     assert!(!pending_after_failure.in_flight);
     assert!(pending_after_failure.next_retry_at_secs > 0);
+    let failed_snapshot = core.threads.get(&chat_id).expect("thread");
+    assert!(matches!(
+        failed_snapshot
+            .messages
+            .last()
+            .expect("message after publish failure")
+            .delivery,
+        DeliveryState::Queued
+    ));
 
     let snapshot_before_retry = core
         .logged_in
@@ -1699,6 +1708,15 @@ fn retry_pending_outbound_reuses_same_prepared_events_without_advancing_session(
             .expect("pending outbound after retry")
             .in_flight
     );
+    let retry_snapshot = core.threads.get(&chat_id).expect("thread");
+    assert!(matches!(
+        retry_snapshot
+            .messages
+            .last()
+            .expect("message after retry")
+            .delivery,
+        DeliveryState::Pending
+    ));
 }
 
 #[test]
@@ -2231,7 +2249,7 @@ fn pending_send_waits_for_missing_device_invite_then_publishes() {
             .current_chat
             .as_ref()
             .and_then(|chat| chat.messages.last())
-            .map(|message| matches!(message.delivery, DeliveryState::Pending))
+            .map(|message| matches!(message.delivery, DeliveryState::Queued))
             .unwrap_or(false)
     });
 

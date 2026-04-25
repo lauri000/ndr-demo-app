@@ -120,7 +120,7 @@ final class InteropHarnessTests: XCTestCase {
             let finalizedDelivery = try await waitFor(label: "outgoing message \(message)", timeout: 180) {
                 if let current = manager.state.currentChat,
                    self.sameIdentifier(current.chatId, chatID),
-                   let messageEntry = current.messages.first(where: { $0.isOutgoing && $0.body == message && $0.delivery != .pending }) {
+                   let messageEntry = current.messages.first(where: { $0.isOutgoing && $0.body == message && $0.delivery != .queued && $0.delivery != .pending }) {
                     return String(describing: messageEntry.delivery)
                 }
                 guard let persisted = self.readJsonObject(at: dataDir.appendingPathComponent(self.persistedStateFilename)) else {

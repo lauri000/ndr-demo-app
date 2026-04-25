@@ -565,6 +565,7 @@ class RealRelayHarnessTest {
                     ?.find { entry ->
                         entry.isOutgoing &&
                             entry.body == message &&
+                            entry.delivery != DeliveryState.QUEUED &&
                             entry.delivery != DeliveryState.PENDING
                     }
             }

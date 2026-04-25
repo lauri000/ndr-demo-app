@@ -916,6 +916,8 @@ func irisSameTimelineDay(_ lhs: UInt64, _ rhs: UInt64) -> Bool {
 
 func irisDeliveryLabel(_ delivery: DeliveryState) -> String {
     switch delivery {
+    case .queued:
+        return "Queued"
     case .pending:
         return "Pending"
     case .sent:

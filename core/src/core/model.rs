@@ -505,6 +505,7 @@ pub(super) struct PersistedMessage {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) enum PersistedDeliveryState {
+    Queued,
     Pending,
     Sent,
     Received,
@@ -522,6 +523,7 @@ pub(super) enum PersistedAuthorizationState {
 impl From<PersistedDeliveryState> for DeliveryState {
     fn from(value: PersistedDeliveryState) -> Self {
         match value {
+            PersistedDeliveryState::Queued => DeliveryState::Queued,
             PersistedDeliveryState::Pending => DeliveryState::Pending,
             PersistedDeliveryState::Sent => DeliveryState::Sent,
             PersistedDeliveryState::Received => DeliveryState::Received,
@@ -534,6 +536,7 @@ impl From<PersistedDeliveryState> for DeliveryState {
 impl From<&DeliveryState> for PersistedDeliveryState {
     fn from(value: &DeliveryState) -> Self {
         match value {
+            DeliveryState::Queued => Self::Queued,
             DeliveryState::Pending => Self::Pending,
             DeliveryState::Sent => Self::Sent,
             DeliveryState::Received => Self::Received,

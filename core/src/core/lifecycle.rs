@@ -249,6 +249,7 @@ impl AppCore {
                     pending.reason = PendingSendReason::PublishRetry;
                     let retry_after_secs = retry_delay_for_publish_mode(&pending.publish_mode);
                     pending.next_retry_at_secs = unix_now().get().saturating_add(retry_after_secs);
+                    self.update_message_delivery(&chat_id, &message_id, DeliveryState::Queued);
                     self.schedule_pending_outbound_retry(Duration::from_secs(retry_after_secs));
                 }
                 self.schedule_next_pending_retry(unix_now().get());

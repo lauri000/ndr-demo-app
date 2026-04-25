@@ -237,7 +237,7 @@ impl AppCore {
                         text.to_string(),
                         now.get(),
                         None,
-                        DeliveryState::Pending,
+                        DeliveryState::Queued,
                     );
                     self.queue_pending_outbound(
                         message.id,
@@ -333,7 +333,7 @@ impl AppCore {
                         text.to_string(),
                         now.get(),
                         None,
-                        DeliveryState::Pending,
+                        DeliveryState::Queued,
                     );
                     self.queue_pending_outbound(
                         message.id,
@@ -550,6 +550,11 @@ impl AppCore {
                 pending_message.next_retry_at_secs =
                     retry_deadline_for_publish_mode(now.get(), &pending_message.publish_mode);
                 pending_message.in_flight = true;
+                self.update_message_delivery(
+                    &pending_message.chat_id,
+                    &pending_message.message_id,
+                    DeliveryState::Pending,
+                );
                 self.start_publish_for_pending(
                     pending_message.message_id.clone(),
                     pending_message.chat_id.clone(),
@@ -608,6 +613,11 @@ impl AppCore {
                             pending_message.reason = reason.clone();
                             pending_message.next_retry_at_secs =
                                 now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
+                            self.update_message_delivery(
+                                &pending_message.chat_id,
+                                &pending_message.message_id,
+                                DeliveryState::Queued,
+                            );
                             self.nudge_protocol_state_for_pending_reason(&reason);
                             pending_message.publish_mode = OutboundPublishMode::WaitForPeer;
                             still_pending.push(pending_message);
@@ -625,6 +635,11 @@ impl AppCore {
                                             &pending_message.publish_mode,
                                         );
                                     pending_message.in_flight = true;
+                                    self.update_message_delivery(
+                                        &pending_message.chat_id,
+                                        &pending_message.message_id,
+                                        DeliveryState::Pending,
+                                    );
                                     self.start_publish_for_pending(
                                         pending_message.message_id.clone(),
                                         pending_message.chat_id.clone(),
@@ -638,6 +653,11 @@ impl AppCore {
                                     pending_message.reason = PendingSendReason::MissingDeviceInvite;
                                     pending_message.next_retry_at_secs =
                                         now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
+                                    self.update_message_delivery(
+                                        &pending_message.chat_id,
+                                        &pending_message.message_id,
+                                        DeliveryState::Queued,
+                                    );
                                     self.push_debug_log(
                                         "retry.group.pending",
                                         format!(
@@ -725,6 +745,11 @@ impl AppCore {
                         pending_message.reason = reason.clone();
                         pending_message.next_retry_at_secs =
                             now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
+                        self.update_message_delivery(
+                            &pending_message.chat_id,
+                            &pending_message.message_id,
+                            DeliveryState::Queued,
+                        );
                         self.nudge_protocol_state_for_pending_reason(&reason);
                         pending_message.publish_mode = OutboundPublishMode::WaitForPeer;
                         still_pending.push(pending_message);
@@ -741,6 +766,11 @@ impl AppCore {
                                         &pending_message.publish_mode,
                                     );
                                 pending_message.in_flight = true;
+                                self.update_message_delivery(
+                                    &pending_message.chat_id,
+                                    &pending_message.message_id,
+                                    DeliveryState::Pending,
+                                );
                                 self.start_publish_for_pending(
                                     pending_message.message_id.clone(),
                                     pending_message.chat_id.clone(),
@@ -754,6 +784,11 @@ impl AppCore {
                                 pending_message.reason = PendingSendReason::MissingDeviceInvite;
                                 pending_message.next_retry_at_secs =
                                     now.get().saturating_add(PENDING_RETRY_DELAY_SECS);
+                                self.update_message_delivery(
+                                    &pending_message.chat_id,
+                                    &pending_message.message_id,
+                                    DeliveryState::Queued,
+                                );
                                 self.push_debug_log(
                                     "retry.direct.pending",
                                     format!(
@@ -1839,12 +1874,19 @@ async fn sync_session_relays(client: &Client, previous: &[RelayUrl], next: &[Rel
 }
 
 pub(super) fn should_advance_delivery(current: &DeliveryState, next: &DeliveryState) -> bool {
+    if matches!(
+        (current, next),
+        (DeliveryState::Pending, DeliveryState::Queued)
+            | (DeliveryState::Queued, DeliveryState::Pending)
+    ) {
+        return true;
+    }
     delivery_rank(next) > delivery_rank(current)
 }
 
 fn delivery_rank(delivery: &DeliveryState) -> u8 {
     match delivery {
-        DeliveryState::Pending => 0,
+        DeliveryState::Queued | DeliveryState::Pending => 0,
         DeliveryState::Sent => 1,
         DeliveryState::Received => 2,
         DeliveryState::Seen => 3,

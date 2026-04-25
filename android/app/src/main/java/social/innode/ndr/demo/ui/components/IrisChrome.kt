@@ -371,6 +371,7 @@ fun IrisChatListRow(
 fun DeliveryGlyph(delivery: DeliveryState) {
     val tint =
         when (delivery) {
+            DeliveryState.QUEUED -> IrisTheme.palette.muted
             DeliveryState.PENDING -> IrisTheme.palette.muted
             DeliveryState.SENT -> IrisTheme.palette.muted
             DeliveryState.RECEIVED -> IrisTheme.palette.accentAlt
@@ -379,6 +380,7 @@ fun DeliveryGlyph(delivery: DeliveryState) {
         }
     val imageVector =
         when (delivery) {
+            DeliveryState.QUEUED -> Icons.Rounded.Schedule
             DeliveryState.PENDING -> Icons.Rounded.Schedule
             DeliveryState.SENT -> Icons.Rounded.Check
             DeliveryState.RECEIVED -> Icons.Rounded.Check
