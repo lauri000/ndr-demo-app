@@ -1825,6 +1825,17 @@ struct ProfileSheet: View {
                             )
                         )
                         .accessibilityIdentifier("myProfileTypingIndicatorsToggle")
+
+                        Toggle(
+                            "Notifications",
+                            isOn: Binding(
+                                get: { manager.state.preferences.desktopNotificationsEnabled },
+                                set: { enabled in
+                                    manager.dispatch(.setDesktopNotificationsEnabled(enabled: enabled))
+                                }
+                            )
+                        )
+                        .accessibilityIdentifier("myProfileDesktopNotificationsToggle")
                     }
 
                     IrisSectionCard {

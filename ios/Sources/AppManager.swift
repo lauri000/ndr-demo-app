@@ -138,6 +138,7 @@ final class AppManager: ObservableObject {
 
     private let rust: RustAppClient
     private let secretStore: AccountSecretStore
+    private let desktopNotifications: DesktopNotificationPosting
     private let dataDir: URL
     private let fileManager: FileManager
     private var lastRevApplied: UInt64
@@ -146,6 +147,7 @@ final class AppManager: ObservableObject {
     init(
         rust: RustAppClient? = nil,
         secretStore: AccountSecretStore? = nil,
+        desktopNotifications: DesktopNotificationPosting? = nil,
         dataDir: URL? = nil,
         fileManager: FileManager = .default,
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -166,6 +168,7 @@ final class AppManager: ObservableObject {
 
         self.rust = resolvedRust
         self.secretStore = resolvedSecretStore
+        self.desktopNotifications = desktopNotifications ?? SystemDesktopNotificationPoster()
         self.dataDir = resolvedDataDir
         self.state = initialState
         self.lastRevApplied = initialState.rev
@@ -397,6 +400,7 @@ final class AppManager: ObservableObject {
                 return
             }
             lastRevApplied = nextState.rev
+            postDesktopNotifications(from: state, to: nextState)
             state = nextState
             bootstrapInFlight = false
             if let toast = nextState.toast, !toast.isEmpty {
@@ -430,6 +434,31 @@ final class AppManager: ObservableObject {
                 return
             }
             self?.toastMessage = nil
+        }
+    }
+
+    private func postDesktopNotifications(from oldState: AppState, to nextState: AppState) {
+        guard oldState.account != nil, nextState.preferences.desktopNotificationsEnabled else {
+            return
+        }
+        let oldUnreadByChat = Dictionary(
+            uniqueKeysWithValues: oldState.chatList.map { ($0.chatId, $0.unreadCount) }
+        )
+        for chat in nextState.chatList {
+            guard chat.lastMessageIsOutgoing == false else {
+                continue
+            }
+            guard chat.chatId != nextState.currentChat?.chatId else {
+                continue
+            }
+            let previousUnread = oldUnreadByChat[chat.chatId] ?? 0
+            guard chat.unreadCount > previousUnread else {
+                continue
+            }
+            let preview = chat.lastMessagePreview?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let body = preview.isEmpty ? "New message" : preview
+            desktopNotifications.post(title: chat.displayName, body: body)
         }
     }
 

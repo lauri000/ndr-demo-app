@@ -38,6 +38,7 @@ impl AppCore {
             owner_profiles: self.owner_profiles.clone(),
             preferences: PersistedPreferences {
                 send_typing_indicators: self.preferences.send_typing_indicators,
+                desktop_notifications_enabled: self.preferences.desktop_notifications_enabled,
             },
             threads: self
                 .threads

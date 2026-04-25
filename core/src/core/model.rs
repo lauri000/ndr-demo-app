@@ -421,12 +421,15 @@ pub(super) struct PersistedState {
 pub(super) struct PersistedPreferences {
     #[serde(default = "default_true")]
     pub(super) send_typing_indicators: bool,
+    #[serde(default = "default_true")]
+    pub(super) desktop_notifications_enabled: bool,
 }
 
 impl Default for PersistedPreferences {
     fn default() -> Self {
         Self {
             send_typing_indicators: true,
+            desktop_notifications_enabled: true,
         }
     }
 }

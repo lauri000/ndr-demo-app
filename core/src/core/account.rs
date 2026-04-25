@@ -393,6 +393,8 @@ impl AppCore {
             self.next_message_id = persisted.next_message_id.max(1);
             self.owner_profiles = persisted.owner_profiles.clone();
             self.preferences.send_typing_indicators = persisted.preferences.send_typing_indicators;
+            self.preferences.desktop_notifications_enabled =
+                persisted.preferences.desktop_notifications_enabled;
             if allow_protocol_restore {
                 self.pending_outbound = persisted.pending_outbound.clone();
                 for pending in &mut self.pending_outbound {

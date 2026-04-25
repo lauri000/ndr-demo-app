@@ -377,7 +377,7 @@ class AppManagerContractTest {
             currentChat = null,
             groupDetails = null,
             networkStatus = null,
-            preferences = PreferencesSnapshot(sendTypingIndicators = true),
+            preferences = PreferencesSnapshot(sendTypingIndicators = true, desktopNotificationsEnabled = true),
             toast = toast,
         )
 
@@ -479,7 +479,7 @@ private object AppManagerContractDefaults {
             currentChat = null,
             groupDetails = null,
             networkStatus = null,
-            preferences = PreferencesSnapshot(sendTypingIndicators = true),
+            preferences = PreferencesSnapshot(sendTypingIndicators = true, desktopNotificationsEnabled = true),
             toast = null,
         )
 }

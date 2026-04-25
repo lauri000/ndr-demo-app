@@ -118,6 +118,9 @@ impl AppCore {
             AppAction::SetTypingIndicatorsEnabled { enabled } => {
                 self.set_typing_indicators_enabled(enabled)
             }
+            AppAction::SetDesktopNotificationsEnabled { enabled } => {
+                self.set_desktop_notifications_enabled(enabled)
+            }
             AppAction::MarkMessagesSeen {
                 chat_id,
                 message_ids,

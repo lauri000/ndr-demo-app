@@ -81,6 +81,7 @@ fun MyProfileSheet(
     deviceNpub: String,
     canManageDevices: Boolean,
     sendTypingIndicators: Boolean,
+    desktopNotificationsEnabled: Boolean,
     networkStatus: NetworkStatusSnapshot?,
     onManageDevices: () -> Unit,
     onLogout: () -> Unit,
@@ -242,6 +243,23 @@ fun MyProfileSheet(
                             appManager.dispatch(AppAction.SetTypingIndicatorsEnabled(enabled))
                         },
                         modifier = Modifier.testTag("myProfileTypingIndicatorsSwitch"),
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Notifications",
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Switch(
+                        checked = desktopNotificationsEnabled,
+                        onCheckedChange = { enabled ->
+                            appManager.dispatch(AppAction.SetDesktopNotificationsEnabled(enabled))
+                        },
+                        modifier = Modifier.testTag("myProfileDesktopNotificationsSwitch"),
                     )
                 }
             }

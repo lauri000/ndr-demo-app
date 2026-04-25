@@ -39,6 +39,7 @@ pub struct BusyState {
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct PreferencesSnapshot {
     pub send_typing_indicators: bool,
+    pub desktop_notifications_enabled: bool,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
@@ -240,6 +241,7 @@ impl AppState {
             network_status: None,
             preferences: PreferencesSnapshot {
                 send_typing_indicators: true,
+                desktop_notifications_enabled: true,
             },
             toast: None,
         }

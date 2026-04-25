@@ -21,6 +21,14 @@ private final class InMemorySecretStore: AccountSecretStore {
     }
 }
 
+private final class MockDesktopNotificationPoster: DesktopNotificationPosting {
+    var posts: [(title: String, body: String)] = []
+
+    func post(title: String, body: String) {
+        posts.append((title: title, body: body))
+    }
+}
+
 private final class MockRustApp: RustAppClient {
     var currentState: AppState
     var dispatchedActions: [AppAction] = []
@@ -49,7 +57,7 @@ private final class MockRustApp: RustAppClient {
         currentChat: nil,
         groupDetails: nil,
         networkStatus: nil,
-        preferences: PreferencesSnapshot(sendTypingIndicators: true),
+        preferences: PreferencesSnapshot(sendTypingIndicators: true, desktopNotificationsEnabled: true),
         toast: nil
     )) {
         self.currentState = state
@@ -95,20 +103,57 @@ private func makeBusyState() -> BusyState {
 private func makeAppState(
     rev: UInt64 = 0,
     router: Router = Router(defaultScreen: .welcome, screenStack: []),
+    account: AccountSnapshot? = nil,
+    chatList: [ChatThreadSnapshot] = [],
+    currentChat: CurrentChatSnapshot? = nil,
+    preferences: PreferencesSnapshot = PreferencesSnapshot(sendTypingIndicators: true, desktopNotificationsEnabled: true),
     toast: String? = nil
 ) -> AppState {
     AppState(
         rev: rev,
         router: router,
-        account: nil,
+        account: account,
         deviceRoster: nil,
         busy: makeBusyState(),
-        chatList: [],
-        currentChat: nil,
+        chatList: chatList,
+        currentChat: currentChat,
         groupDetails: nil,
         networkStatus: nil,
-        preferences: PreferencesSnapshot(sendTypingIndicators: true),
+        preferences: preferences,
         toast: toast
+    )
+}
+
+private func makeAccount() -> AccountSnapshot {
+    AccountSnapshot(
+        publicKeyHex: "owner",
+        npub: "npub-owner",
+        displayName: "Alice",
+        pictureUrl: nil,
+        devicePublicKeyHex: "device",
+        deviceNpub: "npub-device",
+        hasOwnerSigningAuthority: true,
+        authorizationState: .authorized
+    )
+}
+
+private func makeChatThread(
+    unreadCount: UInt64,
+    lastMessageIsOutgoing: Bool? = false,
+    preview: String? = "hello"
+) -> ChatThreadSnapshot {
+    ChatThreadSnapshot(
+        chatId: "chat-1",
+        kind: .direct,
+        displayName: "Bob",
+        subtitle: nil,
+        memberCount: 2,
+        lastMessagePreview: preview,
+        lastMessageAtSecs: 100,
+        lastMessageIsOutgoing: lastMessageIsOutgoing,
+        lastMessageDelivery: .received,
+        unreadCount: unreadCount,
+        isTyping: false
     )
 }
 
@@ -128,6 +173,70 @@ private func waitUntil(
 }
 
 final class IrisChatTests: XCTestCase {
+    @MainActor
+    func testDesktopNotificationPostedForNewUnreadIncomingMessage() async {
+        let rust = MockRustApp(
+            state: makeAppState(
+                rev: 1,
+                account: makeAccount(),
+                chatList: [makeChatThread(unreadCount: 0)]
+            )
+        )
+        let notifications = MockDesktopNotificationPoster()
+        let manager = AppManager(
+            rust: rust,
+            secretStore: InMemorySecretStore(),
+            desktopNotifications: notifications
+        )
+
+        rust.emit(.fullState(makeAppState(
+            rev: 2,
+            account: makeAccount(),
+            chatList: [makeChatThread(unreadCount: 1, preview: "new text")]
+        )))
+
+        let posted = await waitUntil { notifications.posts.count == 1 }
+        XCTAssertTrue(posted)
+        XCTAssertEqual(notifications.posts.first?.title, "Bob")
+        XCTAssertEqual(notifications.posts.first?.body, "new text")
+        _ = manager
+    }
+
+    @MainActor
+    func testDesktopNotificationPreferenceSuppressesNewUnreadMessages() async {
+        let rust = MockRustApp(
+            state: makeAppState(
+                rev: 1,
+                account: makeAccount(),
+                chatList: [makeChatThread(unreadCount: 0)],
+                preferences: PreferencesSnapshot(
+                    sendTypingIndicators: true,
+                    desktopNotificationsEnabled: false
+                )
+            )
+        )
+        let notifications = MockDesktopNotificationPoster()
+        let manager = AppManager(
+            rust: rust,
+            secretStore: InMemorySecretStore(),
+            desktopNotifications: notifications
+        )
+
+        rust.emit(.fullState(makeAppState(
+            rev: 2,
+            account: makeAccount(),
+            chatList: [makeChatThread(unreadCount: 1, preview: "new text")],
+            preferences: PreferencesSnapshot(
+                sendTypingIndicators: true,
+                desktopNotificationsEnabled: false
+            )
+        )))
+
+        _ = await waitUntil(timeoutNanoseconds: 50_000_000) { notifications.posts.count == 1 }
+        XCTAssertTrue(notifications.posts.isEmpty)
+        _ = manager
+    }
+
     func testDeviceApprovalQrRoundTrip() {
         let encoded = DeviceApprovalQr.encode(ownerInput: "npub-owner", deviceInput: "npub-device")
         let decoded = DeviceApprovalQr.decode(encoded)

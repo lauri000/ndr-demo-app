@@ -58,6 +58,9 @@ pub enum AppAction {
     SetTypingIndicatorsEnabled {
         enabled: bool,
     },
+    SetDesktopNotificationsEnabled {
+        enabled: bool,
+    },
     MarkMessagesSeen {
         chat_id: String,
         message_ids: Vec<String>,

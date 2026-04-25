@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 #if canImport(UIKit)
 import UIKit
@@ -328,4 +329,45 @@ var irisToolbarTrailingPlacement: ToolbarItemPlacement {
     #else
     .automatic
     #endif
+}
+
+protocol DesktopNotificationPosting {
+    func post(title: String, body: String)
+}
+
+final class SystemDesktopNotificationPoster: DesktopNotificationPosting {
+    private let center = UNUserNotificationCenter.current()
+
+    func post(title: String, body: String) {
+        center.getNotificationSettings { [center] settings in
+            switch settings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral:
+                Self.enqueue(title: title, body: body, center: center)
+            case .notDetermined:
+                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                    guard granted else {
+                        return
+                    }
+                    Self.enqueue(title: title, body: body, center: center)
+                }
+            case .denied:
+                break
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    private static func enqueue(title: String, body: String, center: UNUserNotificationCenter) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let request = UNNotificationRequest(
+            identifier: "iris-chat-\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        center.add(request)
+    }
 }
