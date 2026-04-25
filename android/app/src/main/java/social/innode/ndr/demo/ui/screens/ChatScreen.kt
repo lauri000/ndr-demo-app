@@ -18,6 +18,9 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,6 +40,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -47,10 +52,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Reply
+import androidx.compose.material.icons.rounded.AddReaction
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.Audiotrack
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Warning
@@ -458,8 +466,13 @@ private fun MessageBubble(
     val clipboard = rememberIrisClipboard()
     val parsed = remember(message.body) { parseReplyEncodedMessage(message.body) }
     val showActionDock = LocalConfiguration.current.screenWidthDp >= 600
+    val hoverInteractionSource = remember { MutableInteractionSource() }
+    val isHovering by hoverInteractionSource.collectIsHoveredAsState()
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .hoverable(hoverInteractionSource),
         horizontalArrangement = if (message.isOutgoing) Arrangement.End else Arrangement.Start,
     ) {
         Column(
@@ -468,13 +481,18 @@ private fun MessageBubble(
         ) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.Top,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (showActionDock && message.isOutgoing) {
+                if (showActionDock && isHovering && message.isOutgoing) {
                     MessageActionDock(
+                        onReact = { onReact("❤️") },
                         onReply = onReply,
-                        onHeart = { onReact("❤️") },
-                        onThumb = { onReact("👍") },
+                        onInfo = {
+                            clipboard.setText(
+                                "Message info",
+                                "Message ${message.id} · ${formatMessageClock(message.createdAtSecs.toLong())}",
+                            )
+                        },
                         onDelete = onDelete,
                     )
                 }
@@ -582,11 +600,16 @@ private fun MessageBubble(
                         }
                     }
                 }
-                if (showActionDock && !message.isOutgoing) {
+                if (showActionDock && isHovering && !message.isOutgoing) {
                     MessageActionDock(
+                        onReact = { onReact("❤️") },
                         onReply = onReply,
-                        onHeart = { onReact("❤️") },
-                        onThumb = { onReact("👍") },
+                        onInfo = {
+                            clipboard.setText(
+                                "Message info",
+                                "Message ${message.id} · ${formatMessageClock(message.createdAtSecs.toLong())}",
+                            )
+                        },
                         onDelete = onDelete,
                     )
                 }
@@ -600,11 +623,12 @@ private fun MessageBubble(
 
 @Composable
 private fun MessageActionDock(
+    onReact: () -> Unit,
     onReply: () -> Unit,
-    onHeart: () -> Unit,
-    onThumb: () -> Unit,
+    onInfo: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    var menuOpen by remember { mutableStateOf(false) }
     Surface(
         color = IrisTheme.palette.toolbar,
         shape = RoundedCornerShape(100.dp),
@@ -614,16 +638,37 @@ private fun MessageActionDock(
             horizontalArrangement = Arrangement.spacedBy(1.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            ActionDockButton("↩", onReply)
-            ActionDockButton("❤️", onHeart)
-            ActionDockButton("👍", onThumb)
-            ActionDockButton("×", onDelete)
+            ActionDockIconButton(Icons.Rounded.AddReaction, "React", onReact)
+            ActionDockIconButton(Icons.AutoMirrored.Rounded.Reply, "Reply", onReply)
+            Box {
+                ActionDockIconButton(Icons.Rounded.MoreHoriz, "More", { menuOpen = true })
+                DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Message info") },
+                        onClick = {
+                            menuOpen = false
+                            onInfo()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Delete message") },
+                        onClick = {
+                            menuOpen = false
+                            onDelete()
+                        },
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun ActionDockButton(
+private fun ActionDockIconButton(
+    icon: ImageVector,
     label: String,
     onClick: () -> Unit,
 ) {
@@ -635,10 +680,11 @@ private fun ActionDockButton(
                 .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurface,
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.size(18.dp),
         )
     }
 }

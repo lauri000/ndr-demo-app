@@ -2196,7 +2196,18 @@ private struct ChatMessageRow: View {
                         .foregroundStyle(palette.muted)
                 }
 
-                ZStack(alignment: message.isOutgoing ? .topLeading : .topTrailing) {
+                HStack(alignment: .center, spacing: 6) {
+                    if IrisLayout.usesDesktopChrome && isHovering && message.isOutgoing {
+                        ChatMessageActionDock(
+                            onReact: { onReact("❤️") },
+                            onReply: onReply,
+                            onCopyInfo: {
+                                PlatformClipboard.setString("Message \(message.id) · \(irisMessageClock(message.createdAtSecs))")
+                            },
+                            onDelete: onDelete
+                        )
+                    }
+
                     VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 8) {
                         if let reply = bodyParts.reply {
                             ReplyPreviewView(reply: reply, isOutgoing: message.isOutgoing)
@@ -2239,14 +2250,15 @@ private struct ChatMessageRow: View {
                     }
                     .accessibilityIdentifier("chatMessage-\(message.id)")
 
-                    if IrisLayout.usesDesktopChrome && isHovering {
+                    if IrisLayout.usesDesktopChrome && isHovering && !message.isOutgoing {
                         ChatMessageActionDock(
+                            onReact: { onReact("❤️") },
                             onReply: onReply,
-                            onHeart: { onReact("❤️") },
-                            onThumb: { onReact("👍") },
+                            onCopyInfo: {
+                                PlatformClipboard.setString("Message \(message.id) · \(irisMessageClock(message.createdAtSecs))")
+                            },
                             onDelete: onDelete
                         )
-                        .offset(x: message.isOutgoing ? -10 : 10, y: -18)
                     }
                 }
                 .onHover { isHovering = $0 }
@@ -2283,17 +2295,24 @@ private struct ChatMessageRow: View {
 
 private struct ChatMessageActionDock: View {
     @Environment(\.irisPalette) private var palette
+    let onReact: () -> Void
     let onReply: () -> Void
-    let onHeart: () -> Void
-    let onThumb: () -> Void
+    let onCopyInfo: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
         HStack(spacing: 2) {
+            dockButton("face.smiling.fill", action: onReact)
             dockButton("arrowshape.turn.up.left.fill", action: onReply)
-            dockTextButton("❤️", action: onHeart)
-            dockTextButton("👍", action: onThumb)
-            dockButton("trash.fill", action: onDelete)
+            Menu {
+                Button("Message info", action: onCopyInfo)
+                Button("Delete message", role: .destructive, action: onDelete)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .bold))
+                    .frame(width: 26, height: 24)
+            }
+            .buttonStyle(.plain)
         }
         .padding(5)
         .background(
@@ -2306,15 +2325,6 @@ private struct ChatMessageActionDock: View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 12, weight: .semibold))
-                .frame(width: 26, height: 24)
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func dockTextButton(_ text: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(text)
-                .font(.system(size: 14))
                 .frame(width: 26, height: 24)
         }
         .buttonStyle(.plain)
