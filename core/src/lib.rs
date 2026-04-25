@@ -164,3 +164,10 @@ pub fn proxied_image_url(
 pub fn is_trusted_test_build() -> bool {
     crate::core::trusted_test_build_flag()
 }
+
+#[uniffi::export]
+pub fn resolve_mobile_push_notification_payload(
+    raw_payload_json: String,
+) -> MobilePushNotificationResolution {
+    crate::core::resolve_mobile_push_notification(raw_payload_json)
+}

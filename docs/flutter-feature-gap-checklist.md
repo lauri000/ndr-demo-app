@@ -50,7 +50,8 @@ Compared against `~/src/iris-chat-flutter` on 2026-04-24. Sources used include F
 - [x] User-editable Nostr relay settings with add/edit/delete validation. Flutter coverage: `test/unit/core/services/nostr_relay_settings_service_test.dart`, `test/widget/settings_screen_test.dart`.
 - [x] Offline queue service and queued message state. Flutter README lists offline support; Flutter model has `MessageStatus.queued`.
 - [x] Desktop notifications and notification preference.
-- [ ] Mobile push subscription/runtime/filtering, including suppression for typing indicators. Flutter coverage: `test/unit/core/services/mobile_push_*`, `integration_test/mobile_push_device_delivery_test.dart`.
+- [ ] Mobile push platform subscription/runtime delivery via APNS/FCM token registration and notification-server delivery. Flutter coverage: `test/unit/core/services/mobile_push_*`, `integration_test/mobile_push_device_delivery_test.dart`.
+- [x] Mobile push core/native sync hooks for relay author filters, decryptable session snapshots, and typing/read/settings push suppression.
 - [x] Startup-at-login preference on supported desktop platforms. Flutter coverage: `test/unit/core/services/startup_launch_service_test.dart`.
 - [x] Connectivity/offline indicator UI.
 - [x] Relay connection status/debug visibility beyond support bundle data.

@@ -40,6 +40,7 @@ import social.innode.ndr.demo.rust.AppState
 import social.innode.ndr.demo.rust.AppUpdate
 import social.innode.ndr.demo.rust.BusyState
 import social.innode.ndr.demo.rust.DeviceAuthorizationState
+import social.innode.ndr.demo.rust.MobilePushSyncSnapshot
 import social.innode.ndr.demo.rust.PreferencesSnapshot
 import social.innode.ndr.demo.rust.Router
 import social.innode.ndr.demo.rust.Screen
@@ -380,6 +381,7 @@ class AppManagerContractTest {
             groupDetails = null,
             publicInvite = null,
             networkStatus = null,
+            mobilePush = MobilePushSyncSnapshot(null, emptyList(), emptyList()),
             preferences =
                 PreferencesSnapshot(
                     sendTypingIndicators = true,
@@ -496,6 +498,7 @@ private object AppManagerContractDefaults {
             groupDetails = null,
             publicInvite = null,
             networkStatus = null,
+            mobilePush = MobilePushSyncSnapshot(null, emptyList(), emptyList()),
             preferences =
                 PreferencesSnapshot(
                     sendTypingIndicators = true,

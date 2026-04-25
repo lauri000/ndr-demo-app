@@ -222,6 +222,30 @@ pub struct NetworkStatusSnapshot {
     pub last_debug_detail: Option<String>,
 }
 
+#[derive(uniffi::Record, Clone, Debug, Default)]
+pub struct MobilePushSessionSnapshot {
+    pub recipient_pubkey_hex: String,
+    pub display_name: String,
+    pub state_json: String,
+    pub tracked_sender_pubkeys: Vec<String>,
+    pub has_receiving_capability: bool,
+}
+
+#[derive(uniffi::Record, Clone, Debug, Default)]
+pub struct MobilePushSyncSnapshot {
+    pub owner_pubkey_hex: Option<String>,
+    pub message_author_pubkeys: Vec<String>,
+    pub sessions: Vec<MobilePushSessionSnapshot>,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct MobilePushNotificationResolution {
+    pub should_show: bool,
+    pub title: String,
+    pub body: String,
+    pub payload_json: String,
+}
+
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct PublicInviteSnapshot {
     pub url: String,
@@ -239,6 +263,7 @@ pub struct AppState {
     pub group_details: Option<GroupDetailsSnapshot>,
     pub public_invite: Option<PublicInviteSnapshot>,
     pub network_status: Option<NetworkStatusSnapshot>,
+    pub mobile_push: MobilePushSyncSnapshot,
     pub preferences: PreferencesSnapshot,
     pub toast: Option<String>,
 }
@@ -259,6 +284,7 @@ impl AppState {
             group_details: None,
             public_invite: None,
             network_status: None,
+            mobile_push: MobilePushSyncSnapshot::default(),
             preferences: PreferencesSnapshot {
                 send_typing_indicators: true,
                 send_read_receipts: true,

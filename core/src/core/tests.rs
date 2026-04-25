@@ -2101,6 +2101,61 @@ fn protocol_state_catch_up_fetches_recent_message_events() {
 }
 
 #[test]
+fn mobile_push_snapshot_tracks_authors_and_session_states() {
+    let data_dir = TempDir::new().expect("temp dir");
+    let (_alice_manager, bob_manager, _bob_chat_id) =
+        established_session_manager_pair(141, 142, 1_900_010_000);
+    let chat_id = local_owner_from_keys(&keys_for_fill(141)).to_string();
+    let mut core = logged_in_core_with_manager(data_dir.path(), 142, bob_manager);
+    core.handle_action(AppAction::CreateChat {
+        peer_input: chat_id.clone(),
+    });
+
+    let snapshot = &core.state.mobile_push;
+    let expected_owner = local_owner_from_keys(&keys_for_fill(142)).to_string();
+    assert_eq!(
+        snapshot.owner_pubkey_hex.as_deref(),
+        Some(expected_owner.as_str())
+    );
+    assert!(
+        !snapshot.message_author_pubkeys.is_empty(),
+        "message push sync must expose relay authors"
+    );
+    assert!(
+        snapshot
+            .sessions
+            .iter()
+            .any(|session| session.recipient_pubkey_hex == chat_id
+                && !session.state_json.is_empty()
+                && session.has_receiving_capability
+                && !session.tracked_sender_pubkeys.is_empty()),
+        "message push sync must expose decryptable session snapshots"
+    );
+}
+
+#[test]
+fn mobile_push_notification_filter_suppresses_typing_and_formats_messages() {
+    let typing = resolve_mobile_push_notification(
+        r#"{"title":"DM by Alice","body":"typing","inner_kind":"25"}"#.to_string(),
+    );
+    assert!(!typing.should_show);
+
+    let message = resolve_mobile_push_notification(
+        r#"{"title":"DM by Alice","body":"hello","inner_event_json":"{\"kind\":14,\"content\":\"hello\"}"}"#.to_string(),
+    );
+    assert!(message.should_show);
+    assert_eq!(message.title, "Alice");
+    assert_eq!(message.body, "hello");
+
+    let reaction = resolve_mobile_push_notification(
+        r#"{"title":"DM by Alice","inner_event_json":"{\"kind\":7,\"content\":\"🔥\"}"}"#
+            .to_string(),
+    );
+    assert!(reaction.should_show);
+    assert_eq!(reaction.body, "Reacted 🔥");
+}
+
+#[test]
 fn invite_response_delivery_requires_matching_pubkey_tag() {
     let _guard = relay_test_lock()
         .lock()

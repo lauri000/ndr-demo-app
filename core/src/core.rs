@@ -3,7 +3,8 @@ use crate::state::{
     AccountSnapshot, AppState, ChatKind, ChatMessageSnapshot, ChatThreadSnapshot,
     CurrentChatSnapshot, DeliveryState, DeviceAuthorizationState, DeviceEntrySnapshot,
     DeviceRosterSnapshot, GroupDetailsSnapshot, GroupMemberSnapshot, MessageAttachmentSnapshot,
-    MessageReactionSnapshot, NetworkStatusSnapshot, OutgoingAttachment, PreferencesSnapshot,
+    MessageReactionSnapshot, MobilePushNotificationResolution, MobilePushSessionSnapshot,
+    MobilePushSyncSnapshot, NetworkStatusSnapshot, OutgoingAttachment, PreferencesSnapshot,
     PublicInviteSnapshot, Router, Screen, TypingIndicatorSnapshot,
 };
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
@@ -37,6 +38,7 @@ mod groups;
 mod identity;
 mod invites;
 mod lifecycle;
+mod mobile_push;
 mod model;
 mod payloads;
 mod persistence;
@@ -58,6 +60,7 @@ use config::*;
 pub(crate) use config::{build_summary, configured_relays, relay_set_id, trusted_test_build_flag};
 use identity::*;
 pub(crate) use identity::{normalize_peer_input_for_display, parse_peer_input};
+pub(crate) use mobile_push::resolve_mobile_push_notification;
 pub(crate) use model::ProtocolSubscriptionPlan;
 use model::*;
 use payloads::*;

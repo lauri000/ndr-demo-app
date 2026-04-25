@@ -6,6 +6,7 @@ impl AppCore {
         self.state.device_roster = self.build_device_roster_snapshot();
         self.state.network_status = Some(self.build_network_status_snapshot());
         self.state.public_invite = self.build_public_invite_snapshot();
+        self.state.mobile_push = self.build_mobile_push_sync_snapshot();
         self.state.preferences = self.preferences.clone();
 
         let default_screen = match self
