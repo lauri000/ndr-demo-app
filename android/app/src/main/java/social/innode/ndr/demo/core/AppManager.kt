@@ -39,6 +39,7 @@ import social.innode.ndr.demo.rust.MessageAttachmentSnapshot
 import social.innode.ndr.demo.rust.OutgoingAttachment
 import social.innode.ndr.demo.rust.Screen
 import social.innode.ndr.demo.rust.downloadHashtreeAttachment
+import social.innode.ndr.demo.push.AndroidMobilePushRuntime
 
 interface RustAppClient {
     fun state(): AppState
@@ -91,6 +92,7 @@ class AppManager(
             ?: PreferenceDataStoreFactory.create(
                 produceFile = { appContext.preferencesDataStoreFile(dataStoreName) },
             )
+    private val mobilePushRuntime = AndroidMobilePushRuntime(this.dataStore)
 
     private var rust = createRustApp()
     private var rustGeneration: Long = 0
@@ -373,12 +375,16 @@ class AppManager(
             is AppUpdate.PersistAccountBundle -> {
                 // Secure persistence is a shell side effect and must be applied even if snapshot revs race.
                 applicationScope.launch(ioDispatcher) {
-                    persistBundle(
+                    val bundle =
                         StoredAccountBundle(
                             ownerNsec = update.ownerNsec,
                             ownerPubkeyHex = update.ownerPubkeyHex,
                             deviceNsec = update.deviceNsec,
-                        ),
+                        )
+                    persistBundle(bundle)
+                    mobilePushRuntime.sync(
+                        mutableState.value,
+                        bundle.ownerNsec,
                     )
                 }
             }
@@ -395,6 +401,9 @@ class AppManager(
                         "toast=${update.v1.toast.orEmpty()}",
                 )
                 publishState(update.v1)
+                applicationScope.launch(ioDispatcher) {
+                    mobilePushRuntime.sync(update.v1, loadPersistedBundle()?.ownerNsec)
+                }
             }
         }
     }

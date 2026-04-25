@@ -141,6 +141,9 @@ final class AppManager: ObservableObject {
     private let desktopNotifications: DesktopNotificationPosting
     private let dataDir: URL
     private let fileManager: FileManager
+#if os(iOS)
+    private let mobilePushRuntime = MobilePushRuntime()
+#endif
     private var lastRevApplied: UInt64
     private lazy var reconciler = UpdateBridge(owner: self)
 
@@ -411,6 +414,9 @@ final class AppManager: ObservableObject {
             lastRevApplied = nextState.rev
             postDesktopNotifications(from: state, to: nextState)
             state = nextState
+#if os(iOS)
+            mobilePushRuntime.sync(state: nextState, ownerNsec: secretStore.load()?.ownerNsec)
+#endif
             bootstrapInFlight = false
             if let toast = nextState.toast, !toast.isEmpty {
                 showToast(toast)

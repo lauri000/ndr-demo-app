@@ -5,6 +5,7 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.google.services)
     alias(libs.plugins.kotlin.compose)
 }
 
@@ -26,7 +27,7 @@ val androidSdkDir =
         ?: System.getenv("ANDROID_HOME")
         ?: System.getenv("ANDROID_SDK_ROOT")
         ?: error("Android SDK path was not found. Define sdk.dir in android/local.properties.")
-val androidAppId = "social.innode.irischat"
+val androidAppId = "to.iris.chat"
 val androidNdkDir = file("$androidSdkDir/ndk/$ndkVersionValue")
 val cargoBinary = file("${System.getProperty("user.home")}/.cargo/bin/cargo")
 val publicRelayFallbackCsv = "wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net"
@@ -149,6 +150,8 @@ android {
 
     buildTypes {
         debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
             buildConfigField("String", "BUILD_CHANNEL", stringLiteral("debug"))
             buildConfigField("String", "BUILD_GIT_SHA", stringLiteral(buildGitSha))
             buildConfigField("String", "BUILD_TIMESTAMP_UTC", stringLiteral(buildTimestampUtc))
@@ -416,6 +419,8 @@ dependencies {
     implementation(libs.google.mlkit.barcode.scanning)
     implementation(libs.okhttp)
     implementation(libs.zxing.core)
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
     implementation("net.java.dev.jna:jna:5.12.0@aar")
 
     testImplementation(libs.junit)

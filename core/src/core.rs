@@ -4,8 +4,9 @@ use crate::state::{
     CurrentChatSnapshot, DeliveryState, DeviceAuthorizationState, DeviceEntrySnapshot,
     DeviceRosterSnapshot, GroupDetailsSnapshot, GroupMemberSnapshot, MessageAttachmentSnapshot,
     MessageReactionSnapshot, MobilePushNotificationResolution, MobilePushSessionSnapshot,
-    MobilePushSyncSnapshot, NetworkStatusSnapshot, OutgoingAttachment, PreferencesSnapshot,
-    PublicInviteSnapshot, Router, Screen, TypingIndicatorSnapshot,
+    MobilePushSubscriptionRequest, MobilePushSyncSnapshot, NetworkStatusSnapshot,
+    OutgoingAttachment, PreferencesSnapshot, PublicInviteSnapshot, Router, Screen,
+    TypingIndicatorSnapshot,
 };
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 use flume::Sender;
@@ -60,7 +61,12 @@ use config::*;
 pub(crate) use config::{build_summary, configured_relays, relay_set_id, trusted_test_build_flag};
 use identity::*;
 pub(crate) use identity::{normalize_peer_input_for_display, parse_peer_input};
-pub(crate) use mobile_push::resolve_mobile_push_notification;
+pub(crate) use mobile_push::{
+    build_mobile_push_create_subscription_request, build_mobile_push_delete_subscription_request,
+    build_mobile_push_list_subscriptions_request, build_mobile_push_update_subscription_request,
+    mobile_push_stored_subscription_id_key, resolve_mobile_push_notification,
+    resolve_mobile_push_server_url,
+};
 pub(crate) use model::ProtocolSubscriptionPlan;
 use model::*;
 use payloads::*;

@@ -28,10 +28,16 @@ targets:
     settings:
       base:
         PRODUCT_NAME: IrisChat
+        CODE_SIGN_ENTITLEMENTS: IrisChat.entitlements
         DEFINES_MODULE: YES
         INFOPLIST_FILE: Info.plist
         INFOPLIST_KEY_CFBundleDisplayName: Iris Chat
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+      configs:
+        Debug:
+          APS_ENVIRONMENT: development
+        Release:
+          APS_ENVIRONMENT: production
     dependencies:
       - framework: Frameworks/NdrDemoCore.xcframework
         embed: false

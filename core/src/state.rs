@@ -247,6 +247,14 @@ pub struct MobilePushNotificationResolution {
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
+pub struct MobilePushSubscriptionRequest {
+    pub method: String,
+    pub url: String,
+    pub authorization_header: String,
+    pub body_json: Option<String>,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
 pub struct PublicInviteSnapshot {
     pub url: String,
 }

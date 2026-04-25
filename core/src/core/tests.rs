@@ -2156,6 +2156,90 @@ fn mobile_push_notification_filter_suppresses_typing_and_formats_messages() {
 }
 
 #[test]
+fn mobile_push_subscription_requests_match_notification_server_contract() {
+    let owner_nsec = nsec_for_fill(151);
+    let author_a = local_owner_from_keys(&keys_for_fill(152)).to_string();
+    let author_b = local_owner_from_keys(&keys_for_fill(153)).to_string();
+
+    let request = build_mobile_push_create_subscription_request(
+        owner_nsec.clone(),
+        "ios".to_string(),
+        "apns-token".to_string(),
+        Some("social.innode.irischat".to_string()),
+        vec![
+            author_b.clone(),
+            "not-hex".to_string(),
+            author_a.clone(),
+            author_a,
+        ],
+        false,
+        None,
+    )
+    .expect("request");
+
+    assert_eq!(request.method, "POST");
+    assert_eq!(
+        request.url,
+        "https://notifications-sandbox.iris.to/subscriptions"
+    );
+    assert!(request.authorization_header.starts_with("Nostr "));
+
+    let body: serde_json::Value =
+        serde_json::from_str(request.body_json.as_deref().unwrap()).expect("subscription body");
+    assert_eq!(body["webhooks"], serde_json::json!([]));
+    assert_eq!(body["web_push_subscriptions"], serde_json::json!([]));
+    assert_eq!(body["fcm_tokens"], serde_json::json!([]));
+    assert_eq!(body["apns_tokens"], serde_json::json!(["apns-token"]));
+    assert_eq!(body["apns_topic"], "social.innode.irischat");
+    assert_eq!(body["filter"]["kinds"], serde_json::json!([1060]));
+    let mut expected_authors = vec![
+        author_b,
+        local_owner_from_keys(&keys_for_fill(152)).to_string(),
+    ];
+    expected_authors.sort();
+    assert_eq!(
+        body["filter"]["authors"],
+        serde_json::json!(expected_authors)
+    );
+
+    let update = build_mobile_push_update_subscription_request(
+        owner_nsec.clone(),
+        "sub-1".to_string(),
+        "android".to_string(),
+        "fcm-token".to_string(),
+        None,
+        vec![local_owner_from_keys(&keys_for_fill(154)).to_string()],
+        true,
+        Some("https://push.example.test/root/".to_string()),
+    )
+    .expect("update request");
+    assert_eq!(update.method, "POST");
+    assert_eq!(
+        update.url,
+        "https://push.example.test/root/subscriptions/sub-1"
+    );
+    let update_body: serde_json::Value =
+        serde_json::from_str(update.body_json.as_deref().unwrap()).expect("update body");
+    assert_eq!(update_body["fcm_tokens"], serde_json::json!(["fcm-token"]));
+    assert_eq!(update_body["apns_tokens"], serde_json::json!([]));
+
+    let delete = build_mobile_push_delete_subscription_request(
+        owner_nsec,
+        "sub-1".to_string(),
+        "ios".to_string(),
+        true,
+        None,
+    )
+    .expect("delete request");
+    assert_eq!(delete.method, "DELETE");
+    assert_eq!(delete.body_json, None);
+    assert_eq!(
+        mobile_push_stored_subscription_id_key("ios".to_string()),
+        "settings.mobile_push_subscription_id.ios"
+    );
+}
+
+#[test]
 fn invite_response_delivery_requires_matching_pubkey_tag() {
     let _guard = relay_test_lock()
         .lock()

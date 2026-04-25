@@ -1,0 +1,310 @@
+import Foundation
+import UIKit
+import UserNotifications
+
+final class IrisPushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        return true
+    }
+
+    func application(
+        _ application: UIApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        MobilePushTokenCenter.shared.setApnsToken(deviceToken.map { String(format: "%02x", $0) }.joined())
+    }
+
+    func application(
+        _ application: UIApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: Error
+    ) {
+        MobilePushTokenCenter.shared.setApnsToken(nil)
+    }
+}
+
+@MainActor
+final class MobilePushTokenCenter {
+    static let shared = MobilePushTokenCenter()
+
+    private var apnsToken: String?
+
+    func setApnsToken(_ token: String?) {
+        apnsToken = token?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+
+    func currentApnsToken() -> String? {
+        apnsToken
+    }
+}
+
+final class MobilePushRuntime {
+    private let userDefaults: UserDefaults
+    private let urlSession: URLSession
+    private var lastSyncSignature: String?
+    private var currentSyncTask: Task<Void, Never>?
+
+    init(userDefaults: UserDefaults = .standard, urlSession: URLSession = .shared) {
+        self.userDefaults = userDefaults
+        self.urlSession = urlSession
+    }
+
+    @MainActor
+    func sync(state: AppState, ownerNsec: String?) {
+        let owner = state.mobilePush.ownerPubkeyHex?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let ownerSecret = ownerNsec?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let authors = state.mobilePush.messageAuthorPubkeys
+        let enabled = state.preferences.desktopNotificationsEnabled
+        let signature = [
+            enabled ? "1" : "0",
+            owner ?? "",
+            ownerSecret == nil ? "0" : "1",
+            authors.joined(separator: ","),
+        ].joined(separator: "|")
+
+        guard signature != lastSyncSignature else {
+            return
+        }
+        lastSyncSignature = signature
+        currentSyncTask?.cancel()
+        currentSyncTask = Task { [weak self] in
+            await self?.sync(
+                enabled: enabled,
+                ownerNsec: ownerSecret,
+                messageAuthorPubkeys: authors
+            )
+        }
+    }
+
+    private func sync(
+        enabled: Bool,
+        ownerNsec: String?,
+        messageAuthorPubkeys: [String]
+    ) async {
+        let storageKey = mobilePushSubscriptionIdKey(platformKey: "ios")
+        guard enabled, let ownerNsec, !messageAuthorPubkeys.isEmpty else {
+            await disableStoredSubscription(ownerNsec: ownerNsec, storageKey: storageKey)
+            return
+        }
+
+        guard let token = await requestApnsToken() else {
+            return
+        }
+
+        let storedId = userDefaults.string(forKey: storageKey)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let existingId = await resolveExistingSubscriptionId(
+            ownerNsec: ownerNsec,
+            pushToken: token,
+            storedId: storedId
+        )
+        if let existingId,
+           await updateSubscription(
+               ownerNsec: ownerNsec,
+               subscriptionId: existingId,
+               pushToken: token,
+               messageAuthorPubkeys: messageAuthorPubkeys,
+               storageKey: storageKey
+           ) {
+            return
+        }
+
+        await createSubscription(
+            ownerNsec: ownerNsec,
+            pushToken: token,
+            messageAuthorPubkeys: messageAuthorPubkeys,
+            storageKey: storageKey
+        )
+    }
+
+    private func requestApnsToken() async -> String? {
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        var status = settings.authorizationStatus
+        if status == .notDetermined {
+            do {
+                let options: UNAuthorizationOptions = [.alert, .badge, .sound]
+                let granted = try await center.requestAuthorization(options: options)
+                status = granted ? .authorized : .denied
+            } catch {
+                return nil
+            }
+        }
+        guard status == .authorized || status == .provisional || status == .ephemeral else {
+            return nil
+        }
+
+        await MainActor.run {
+            UIApplication.shared.registerForRemoteNotifications()
+        }
+        for attempt in 0..<5 {
+            if let token = await MainActor.run(body: { MobilePushTokenCenter.shared.currentApnsToken() }) {
+                return token
+            }
+            try? await Task.sleep(nanoseconds: UInt64(250_000_000 * UInt64(attempt + 1)))
+        }
+        return nil
+    }
+
+    private func resolveExistingSubscriptionId(
+        ownerNsec: String,
+        pushToken: String,
+        storedId: String?
+    ) async -> String? {
+        guard let request = buildMobilePushListSubscriptionsRequest(
+            ownerNsec: ownerNsec,
+            platformKey: "ios",
+            isRelease: isMobilePushReleaseBuild,
+            serverUrlOverride: mobilePushServerOverride
+        ) else {
+            return storedId
+        }
+        guard let data = await perform(request).data else {
+            return storedId
+        }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return storedId
+        }
+        if let storedId, object[storedId] != nil {
+            return storedId
+        }
+        for (subscriptionId, value) in object {
+            guard let subscription = value as? [String: Any],
+                  let tokens = subscription["apns_tokens"] as? [String],
+                  tokens.contains(pushToken) else {
+                continue
+            }
+            return subscriptionId
+        }
+        return nil
+    }
+
+    private func updateSubscription(
+        ownerNsec: String,
+        subscriptionId: String,
+        pushToken: String,
+        messageAuthorPubkeys: [String],
+        storageKey: String
+    ) async -> Bool {
+        guard let request = buildMobilePushUpdateSubscriptionRequest(
+            ownerNsec: ownerNsec,
+            subscriptionId: subscriptionId,
+            platformKey: "ios",
+            pushToken: pushToken,
+            apnsTopic: Bundle.main.bundleIdentifier,
+            messageAuthorPubkeys: messageAuthorPubkeys,
+            isRelease: isMobilePushReleaseBuild,
+            serverUrlOverride: mobilePushServerOverride
+        ) else {
+            return false
+        }
+        let response = await perform(request)
+        if response.isSuccess {
+            userDefaults.set(subscriptionId, forKey: storageKey)
+            return true
+        }
+        if response.statusCode == 404 {
+            userDefaults.removeObject(forKey: storageKey)
+        }
+        return false
+    }
+
+    private func createSubscription(
+        ownerNsec: String,
+        pushToken: String,
+        messageAuthorPubkeys: [String],
+        storageKey: String
+    ) async {
+        guard let request = buildMobilePushCreateSubscriptionRequest(
+            ownerNsec: ownerNsec,
+            platformKey: "ios",
+            pushToken: pushToken,
+            apnsTopic: Bundle.main.bundleIdentifier,
+            messageAuthorPubkeys: messageAuthorPubkeys,
+            isRelease: isMobilePushReleaseBuild,
+            serverUrlOverride: mobilePushServerOverride
+        ) else {
+            return
+        }
+        let response = await perform(request)
+        guard response.isSuccess,
+              let data = response.data,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let id = object["id"] as? String,
+              !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+        userDefaults.set(id, forKey: storageKey)
+    }
+
+    private func disableStoredSubscription(ownerNsec: String?, storageKey: String) async {
+        guard let storedId = userDefaults.string(forKey: storageKey)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty else {
+            return
+        }
+        guard let ownerNsec,
+              let request = buildMobilePushDeleteSubscriptionRequest(
+                  ownerNsec: ownerNsec,
+                  subscriptionId: storedId,
+                  platformKey: "ios",
+                  isRelease: isMobilePushReleaseBuild,
+                  serverUrlOverride: mobilePushServerOverride
+              ) else {
+            userDefaults.removeObject(forKey: storageKey)
+            return
+        }
+        let response = await perform(request)
+        if response.isSuccess || response.statusCode == 404 {
+            userDefaults.removeObject(forKey: storageKey)
+        }
+    }
+
+    private func perform(_ request: MobilePushSubscriptionRequest) async -> MobilePushHTTPResponse {
+        guard let url = URL(string: request.url) else {
+            return MobilePushHTTPResponse(statusCode: 0, data: nil)
+        }
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = request.method
+        urlRequest.setValue("application/json", forHTTPHeaderField: "accept")
+        urlRequest.setValue(request.authorizationHeader, forHTTPHeaderField: "authorization")
+        if let body = request.bodyJson {
+            urlRequest.setValue("application/json", forHTTPHeaderField: "content-type")
+            urlRequest.httpBody = Data(body.utf8)
+        }
+        do {
+            let (data, response) = try await urlSession.data(for: urlRequest)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            return MobilePushHTTPResponse(statusCode: statusCode, data: data)
+        } catch {
+            return MobilePushHTTPResponse(statusCode: 0, data: nil)
+        }
+    }
+}
+
+private struct MobilePushHTTPResponse {
+    let statusCode: Int
+    let data: Data?
+
+    var isSuccess: Bool {
+        (200..<300).contains(statusCode)
+    }
+}
+
+private var isMobilePushReleaseBuild: Bool {
+#if DEBUG
+    false
+#else
+    true
+#endif
+}
+
+private var mobilePushServerOverride: String? {
+    ProcessInfo.processInfo.environment["IRIS_NOTIFICATION_SERVER_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
+    }
+}

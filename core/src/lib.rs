@@ -171,3 +171,93 @@ pub fn resolve_mobile_push_notification_payload(
 ) -> MobilePushNotificationResolution {
     crate::core::resolve_mobile_push_notification(raw_payload_json)
 }
+
+#[uniffi::export]
+pub fn resolve_mobile_push_subscription_server_url(
+    platform_key: String,
+    is_release: bool,
+    override_url: Option<String>,
+) -> String {
+    crate::core::resolve_mobile_push_server_url(platform_key, is_release, override_url)
+}
+
+#[uniffi::export]
+pub fn mobile_push_subscription_id_key(platform_key: String) -> String {
+    crate::core::mobile_push_stored_subscription_id_key(platform_key)
+}
+
+#[uniffi::export]
+pub fn build_mobile_push_list_subscriptions_request(
+    owner_nsec: String,
+    platform_key: String,
+    is_release: bool,
+    server_url_override: Option<String>,
+) -> Option<MobilePushSubscriptionRequest> {
+    crate::core::build_mobile_push_list_subscriptions_request(
+        owner_nsec,
+        platform_key,
+        is_release,
+        server_url_override,
+    )
+}
+
+#[uniffi::export]
+pub fn build_mobile_push_create_subscription_request(
+    owner_nsec: String,
+    platform_key: String,
+    push_token: String,
+    apns_topic: Option<String>,
+    message_author_pubkeys: Vec<String>,
+    is_release: bool,
+    server_url_override: Option<String>,
+) -> Option<MobilePushSubscriptionRequest> {
+    crate::core::build_mobile_push_create_subscription_request(
+        owner_nsec,
+        platform_key,
+        push_token,
+        apns_topic,
+        message_author_pubkeys,
+        is_release,
+        server_url_override,
+    )
+}
+
+#[uniffi::export]
+pub fn build_mobile_push_update_subscription_request(
+    owner_nsec: String,
+    subscription_id: String,
+    platform_key: String,
+    push_token: String,
+    apns_topic: Option<String>,
+    message_author_pubkeys: Vec<String>,
+    is_release: bool,
+    server_url_override: Option<String>,
+) -> Option<MobilePushSubscriptionRequest> {
+    crate::core::build_mobile_push_update_subscription_request(
+        owner_nsec,
+        subscription_id,
+        platform_key,
+        push_token,
+        apns_topic,
+        message_author_pubkeys,
+        is_release,
+        server_url_override,
+    )
+}
+
+#[uniffi::export]
+pub fn build_mobile_push_delete_subscription_request(
+    owner_nsec: String,
+    subscription_id: String,
+    platform_key: String,
+    is_release: bool,
+    server_url_override: Option<String>,
+) -> Option<MobilePushSubscriptionRequest> {
+    crate::core::build_mobile_push_delete_subscription_request(
+        owner_nsec,
+        subscription_id,
+        platform_key,
+        is_release,
+        server_url_override,
+    )
+}
