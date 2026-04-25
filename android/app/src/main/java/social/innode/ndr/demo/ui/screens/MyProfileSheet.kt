@@ -81,6 +81,7 @@ fun MyProfileSheet(
     deviceNpub: String,
     canManageDevices: Boolean,
     sendTypingIndicators: Boolean,
+    sendReadReceipts: Boolean,
     desktopNotificationsEnabled: Boolean,
     networkStatus: NetworkStatusSnapshot?,
     onManageDevices: () -> Unit,
@@ -243,6 +244,23 @@ fun MyProfileSheet(
                             appManager.dispatch(AppAction.SetTypingIndicatorsEnabled(enabled))
                         },
                         modifier = Modifier.testTag("myProfileTypingIndicatorsSwitch"),
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Received / seen",
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Switch(
+                        checked = sendReadReceipts,
+                        onCheckedChange = { enabled ->
+                            appManager.dispatch(AppAction.SetReadReceiptsEnabled(enabled))
+                        },
+                        modifier = Modifier.testTag("myProfileReadReceiptsSwitch"),
                     )
                 }
                 Row(

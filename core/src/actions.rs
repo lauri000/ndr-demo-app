@@ -58,6 +58,9 @@ pub enum AppAction {
     SetTypingIndicatorsEnabled {
         enabled: bool,
     },
+    SetReadReceiptsEnabled {
+        enabled: bool,
+    },
     SetDesktopNotificationsEnabled {
         enabled: bool,
     },

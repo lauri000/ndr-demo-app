@@ -38,6 +38,7 @@ impl AppCore {
             owner_profiles: self.owner_profiles.clone(),
             preferences: PersistedPreferences {
                 send_typing_indicators: self.preferences.send_typing_indicators,
+                send_read_receipts: self.preferences.send_read_receipts,
                 desktop_notifications_enabled: self.preferences.desktop_notifications_enabled,
                 startup_at_login_enabled: self.preferences.startup_at_login_enabled,
             },

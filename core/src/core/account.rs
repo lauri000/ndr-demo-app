@@ -393,6 +393,7 @@ impl AppCore {
             self.next_message_id = persisted.next_message_id.max(1);
             self.owner_profiles = persisted.owner_profiles.clone();
             self.preferences.send_typing_indicators = persisted.preferences.send_typing_indicators;
+            self.preferences.send_read_receipts = persisted.preferences.send_read_receipts;
             self.preferences.desktop_notifications_enabled =
                 persisted.preferences.desktop_notifications_enabled;
             self.preferences.startup_at_login_enabled =

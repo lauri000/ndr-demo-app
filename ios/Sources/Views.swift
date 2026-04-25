@@ -1827,6 +1827,17 @@ struct ProfileSheet: View {
                         .accessibilityIdentifier("myProfileTypingIndicatorsToggle")
 
                         Toggle(
+                            "Received / seen",
+                            isOn: Binding(
+                                get: { manager.state.preferences.sendReadReceipts },
+                                set: { enabled in
+                                    manager.dispatch(.setReadReceiptsEnabled(enabled: enabled))
+                                }
+                            )
+                        )
+                        .accessibilityIdentifier("myProfileReadReceiptsToggle")
+
+                        Toggle(
                             "Notifications",
                             isOn: Binding(
                                 get: { manager.state.preferences.desktopNotificationsEnabled },

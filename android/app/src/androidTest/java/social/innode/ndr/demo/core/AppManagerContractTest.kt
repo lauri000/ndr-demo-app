@@ -380,6 +380,7 @@ class AppManagerContractTest {
             preferences =
                 PreferencesSnapshot(
                     sendTypingIndicators = true,
+                    sendReadReceipts = true,
                     desktopNotificationsEnabled = true,
                     startupAtLoginEnabled = false,
                 ),
@@ -487,6 +488,7 @@ private object AppManagerContractDefaults {
             preferences =
                 PreferencesSnapshot(
                     sendTypingIndicators = true,
+                    sendReadReceipts = true,
                     desktopNotificationsEnabled = true,
                     startupAtLoginEnabled = false,
                 ),

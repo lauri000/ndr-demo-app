@@ -59,6 +59,7 @@ private final class MockRustApp: RustAppClient {
         networkStatus: nil,
         preferences: PreferencesSnapshot(
             sendTypingIndicators: true,
+            sendReadReceipts: true,
             desktopNotificationsEnabled: true,
             startupAtLoginEnabled: false
         ),
@@ -112,6 +113,7 @@ private func makeAppState(
     currentChat: CurrentChatSnapshot? = nil,
     preferences: PreferencesSnapshot = PreferencesSnapshot(
         sendTypingIndicators: true,
+        sendReadReceipts: true,
         desktopNotificationsEnabled: true,
         startupAtLoginEnabled: false
     ),
@@ -219,6 +221,7 @@ final class IrisChatTests: XCTestCase {
                 chatList: [makeChatThread(unreadCount: 0)],
                 preferences: PreferencesSnapshot(
                     sendTypingIndicators: true,
+                    sendReadReceipts: true,
                     desktopNotificationsEnabled: false,
                     startupAtLoginEnabled: false
                 )
@@ -237,6 +240,7 @@ final class IrisChatTests: XCTestCase {
             chatList: [makeChatThread(unreadCount: 1, preview: "new text")],
             preferences: PreferencesSnapshot(
                 sendTypingIndicators: true,
+                sendReadReceipts: true,
                 desktopNotificationsEnabled: false,
                 startupAtLoginEnabled: false
             )

@@ -118,6 +118,9 @@ impl AppCore {
             AppAction::SetTypingIndicatorsEnabled { enabled } => {
                 self.set_typing_indicators_enabled(enabled)
             }
+            AppAction::SetReadReceiptsEnabled { enabled } => {
+                self.set_read_receipts_enabled(enabled)
+            }
             AppAction::SetDesktopNotificationsEnabled { enabled } => {
                 self.set_desktop_notifications_enabled(enabled)
             }

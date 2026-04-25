@@ -1048,6 +1048,16 @@ impl AppCore {
         self.emit_state();
     }
 
+    pub(super) fn set_read_receipts_enabled(&mut self, enabled: bool) {
+        if self.preferences.send_read_receipts == enabled {
+            return;
+        }
+        self.preferences.send_read_receipts = enabled;
+        self.rebuild_state();
+        self.persist_best_effort();
+        self.emit_state();
+    }
+
     pub(super) fn set_desktop_notifications_enabled(&mut self, enabled: bool) {
         if self.preferences.desktop_notifications_enabled == enabled {
             return;
@@ -1101,7 +1111,7 @@ impl AppCore {
         }
         if is_group_chat_id(&normalized_chat_id) {
             // Group read state is local-only for now, matching the Flutter client.
-        } else {
+        } else if self.preferences.send_read_receipts {
             self.send_direct_control(&normalized_chat_id, AppControlType::Seen, receipt_ids);
         }
 
@@ -1562,7 +1572,7 @@ impl AppCore {
                     let receipt_message_id = routed.message_id.clone();
                     self.clear_typing_indicator(&receipt_chat_id, &sender_owner.to_string());
                     self.apply_routed_chat_message(routed, created_at_secs);
-                    if should_send_delivered {
+                    if should_send_delivered && self.preferences.send_read_receipts {
                         if let Some(message_id) = receipt_message_id {
                             self.send_direct_control(
                                 &receipt_chat_id,

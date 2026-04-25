@@ -718,6 +718,52 @@ fn typing_preference_updates_state_and_persists() {
 }
 
 #[test]
+fn read_receipt_preference_updates_state_and_persists() {
+    let data_dir = TempDir::new().expect("temp dir");
+    let mut core = test_core(data_dir.path());
+    start_primary_test_session(&mut core, 24, true, true).expect("start session");
+
+    assert!(core.state.preferences.send_read_receipts);
+    core.handle_action(AppAction::SetReadReceiptsEnabled { enabled: false });
+    assert!(!core.state.preferences.send_read_receipts);
+    assert!(
+        !persisted_state(data_dir.path())
+            .preferences
+            .send_read_receipts
+    );
+
+    let mut restored = test_core(data_dir.path());
+    start_primary_test_session(&mut restored, 24, true, true).expect("restore session");
+    assert!(!restored.state.preferences.send_read_receipts);
+}
+
+#[test]
+fn disabled_read_receipts_suppress_delivered_and_seen_controls() {
+    let data_dir = TempDir::new().expect("temp dir");
+    let (alice_manager, _bob_manager, bob_chat_id) =
+        established_session_manager_pair(24, 25, 1_900_000_000);
+    let mut core = logged_in_core_with_manager(data_dir.path(), 24, alice_manager);
+    core.handle_action(AppAction::SetReadReceiptsEnabled { enabled: false });
+
+    let alice_chat_id = local_owner_from_keys(&keys_for_fill(24)).to_string();
+    let bob_owner = local_owner_from_keys(&keys_for_fill(25));
+    let payload =
+        encode_app_direct_message_payload(&alice_chat_id, "remote-1", "hello").expect("payload");
+    core.apply_decrypted_payload(bob_owner, &payload, 1_900_000_010, None)
+        .expect("apply payload");
+
+    let thread = core.threads.get(&bob_chat_id).expect("thread");
+    assert_eq!(thread.messages.len(), 1);
+    assert!(core.pending_outbound.is_empty());
+
+    core.mark_messages_seen(&bob_chat_id, &["remote-1".to_string()]);
+
+    let thread = core.threads.get(&bob_chat_id).expect("thread");
+    assert!(matches!(thread.messages[0].delivery, DeliveryState::Seen));
+    assert!(core.pending_outbound.is_empty());
+}
+
+#[test]
 fn desktop_notification_preference_updates_state_and_persists() {
     let data_dir = TempDir::new().expect("temp dir");
     let mut core = test_core(data_dir.path());
