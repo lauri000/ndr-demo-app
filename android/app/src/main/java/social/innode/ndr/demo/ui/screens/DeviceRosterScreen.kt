@@ -112,7 +112,7 @@ fun DeviceRosterScreen(
                     color = IrisTheme.palette.muted,
                 )
                 Text(
-                    text = "Owner",
+                    text = "User ID",
                     style = MaterialTheme.typography.titleSmall,
                 )
                 Text(
@@ -121,7 +121,7 @@ fun DeviceRosterScreen(
                     modifier = Modifier.testTag("deviceRosterOwnerNpub"),
                 )
                 Text(
-                    text = "Current device",
+                    text = "Device ID",
                     style = MaterialTheme.typography.titleSmall,
                 )
                 Text(
@@ -139,7 +139,7 @@ fun DeviceRosterScreen(
                 Text(
                     text =
                         if (roster.canManageDevices) {
-                            "Scan a link invite from the new device, or paste a device npub as fallback."
+                            "Scan a link invite from the new device, or paste a device ID as fallback."
                         } else if (isCurrentDeviceRegistered) {
                             "Read-only on this device. Use a session with your main Secret Key to add or remove devices."
                         } else {
@@ -159,7 +159,7 @@ fun DeviceRosterScreen(
                                 .testTag("deviceRosterAddInput"),
                         placeholder = {
                             Text(
-                                text = "Device npub, hex, or approval code",
+                                text = "Device ID, hex, or approval code",
                                 color = IrisTheme.palette.muted,
                             )
                         },
@@ -475,7 +475,7 @@ private fun resolveDeviceAuthorizationInput(
     } else {
         ResolvedDeviceAuthorizationInput(
             deviceInput = "",
-            errorMessage = "Not a valid device npub or approval code.",
+            errorMessage = "Not a valid device ID or approval code.",
         )
     }
 }

@@ -47,6 +47,10 @@ impl AppCore {
                 self.screen_stack = vec![Screen::NewGroup];
                 self.active_chat_id = None;
             }
+            Screen::Settings => {
+                self.screen_stack = vec![Screen::Settings];
+                self.active_chat_id = None;
+            }
             Screen::Chat { chat_id } => {
                 self.open_chat(&chat_id);
                 return;
@@ -107,6 +111,7 @@ impl AppCore {
                 | Screen::ChatList
                 | Screen::AwaitingDeviceApproval
                 | Screen::DeviceRevoked => {}
+                Screen::Settings => normalized_stack.push(Screen::Settings),
                 Screen::NewChat => {
                     if self.can_use_chats() {
                         normalized_stack.push(Screen::NewChat);

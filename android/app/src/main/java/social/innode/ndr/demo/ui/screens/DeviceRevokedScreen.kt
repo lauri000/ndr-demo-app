@@ -45,7 +45,7 @@ fun DeviceRevokedScreen(
             )
             account?.let {
                 Text(
-                    text = "Owner",
+                    text = "User ID",
                     style = MaterialTheme.typography.titleSmall,
                 )
                 Text(
@@ -53,7 +53,7 @@ fun DeviceRevokedScreen(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
-                    text = "Device",
+                    text = "Device ID",
                     style = MaterialTheme.typography.titleSmall,
                 )
                 Text(

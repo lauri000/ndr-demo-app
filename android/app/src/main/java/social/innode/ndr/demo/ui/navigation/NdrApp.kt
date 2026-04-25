@@ -34,6 +34,7 @@ import social.innode.ndr.demo.ui.screens.DeviceRosterScreen
 import social.innode.ndr.demo.ui.screens.GroupDetailsScreen
 import social.innode.ndr.demo.ui.screens.NewChatScreen
 import social.innode.ndr.demo.ui.screens.NewGroupScreen
+import social.innode.ndr.demo.ui.screens.MyProfileSheet
 import social.innode.ndr.demo.ui.screens.RestoreAccountScreen
 import social.innode.ndr.demo.ui.screens.SplashScreen
 import social.innode.ndr.demo.ui.screens.SplashViewModel
@@ -109,6 +110,39 @@ fun NdrApp(container: AppContainer) {
 
                     Screen.NewGroup -> {
                         NewGroupScreen(appManager = appManager, appState = appState)
+                    }
+
+                    Screen.Settings -> {
+                        val account = appState.account
+                        if (account == null) {
+                            ChatListScreen(appManager = appManager, appState = appState)
+                        } else {
+                            MyProfileSheet(
+                                appManager = appManager,
+                                npub = account.npub,
+                                displayName = account.displayName,
+                                pictureUrl = account.pictureUrl,
+                                publicKeyHex = account.publicKeyHex,
+                                deviceNpub = account.deviceNpub,
+                                canManageDevices = account.hasOwnerSigningAuthority,
+                                sendTypingIndicators = appState.preferences.sendTypingIndicators,
+                                sendReadReceipts = appState.preferences.sendReadReceipts,
+                                desktopNotificationsEnabled = appState.preferences.desktopNotificationsEnabled,
+                                imageProxyEnabled = appState.preferences.imageProxyEnabled,
+                                imageProxyUrl = appState.preferences.imageProxyUrl,
+                                imageProxyKeyHex = appState.preferences.imageProxyKeyHex,
+                                imageProxySaltHex = appState.preferences.imageProxySaltHex,
+                                preferences = appState.preferences,
+                                networkStatus = appState.networkStatus,
+                                onManageDevices = { appManager.pushScreen(Screen.DeviceRoster) },
+                                onLogout = { appManager.logout() },
+                                onDismiss = {
+                                    appManager.dispatch(
+                                        AppAction.UpdateScreenStack(router.screenStack.dropLast(1)),
+                                    )
+                                },
+                            )
+                        }
                     }
 
                     Screen.DeviceRoster -> {

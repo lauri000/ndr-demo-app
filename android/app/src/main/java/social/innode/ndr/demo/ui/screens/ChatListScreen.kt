@@ -49,7 +49,6 @@ fun ChatListScreen(
     appManager: AppManager,
     appState: AppState,
 ) {
-    var showProfile by remember { mutableStateOf(false) }
     var showNewChooser by remember { mutableStateOf(false) }
     val account = appState.account
 
@@ -65,7 +64,7 @@ fun ChatListScreen(
                                 Modifier
                                     .padding(start = 4.dp)
                                     .testTag("chatListProfileButton")
-                                    .clickable { showProfile = true },
+                                    .clickable { appManager.pushScreen(Screen.Settings) },
                         ) {
                             IrisAvatar(
                                 label = account.displayName,
@@ -121,7 +120,7 @@ fun ChatListScreen(
                         fontWeight = FontWeight.Bold,
                     )
                     Text(
-                        text = "Direct chats and groups live together here. Start a 1:1 conversation with an npub or create a group and manage it from the thread itself.",
+                        text = "Direct chats and groups live together here. Start a 1:1 conversation with a user ID or create a group and manage it from the thread itself.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = IrisTheme.palette.muted,
                     )
@@ -200,36 +199,6 @@ fun ChatListScreen(
                 }
             }
         }
-    }
-
-    if (showProfile && account != null) {
-        MyProfileSheet(
-            appManager = appManager,
-            npub = account.npub,
-            displayName = account.displayName,
-            pictureUrl = account.pictureUrl,
-            publicKeyHex = account.publicKeyHex,
-            deviceNpub = account.deviceNpub,
-            canManageDevices = account.hasOwnerSigningAuthority,
-            sendTypingIndicators = appState.preferences.sendTypingIndicators,
-            sendReadReceipts = appState.preferences.sendReadReceipts,
-            desktopNotificationsEnabled = appState.preferences.desktopNotificationsEnabled,
-            imageProxyEnabled = appState.preferences.imageProxyEnabled,
-            imageProxyUrl = appState.preferences.imageProxyUrl,
-            imageProxyKeyHex = appState.preferences.imageProxyKeyHex,
-            imageProxySaltHex = appState.preferences.imageProxySaltHex,
-            preferences = appState.preferences,
-            networkStatus = appState.networkStatus,
-            onManageDevices = {
-                showProfile = false
-                appManager.pushScreen(Screen.DeviceRoster)
-            },
-            onLogout = {
-                showProfile = false
-                appManager.logout()
-            },
-            onDismiss = { showProfile = false },
-        )
     }
 
     if (showNewChooser) {

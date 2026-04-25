@@ -92,7 +92,7 @@ fun NewGroupScreen(
                     style = MaterialTheme.typography.titleLarge,
                 )
                 Text(
-                    text = "Pick members from existing direct chats or paste and scan owner npubs. The creator stays the managing admin in this client.",
+                    text = "Pick members from existing direct chats or paste and scan user IDs. The creator stays the managing admin in this client.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = IrisTheme.palette.muted,
                 )
@@ -143,7 +143,7 @@ fun NewGroupScreen(
                             .testTag("newGroupMemberInput"),
                     placeholder = {
                         Text(
-                            text = "npub, hex, or nostr:...",
+                            text = "User ID, hex, or nostr:...",
                             color = IrisTheme.palette.muted,
                         )
                     },

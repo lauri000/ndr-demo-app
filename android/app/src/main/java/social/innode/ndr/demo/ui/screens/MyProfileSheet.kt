@@ -23,7 +23,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -60,12 +60,14 @@ import social.innode.ndr.demo.ui.components.IrisInlineAction
 import social.innode.ndr.demo.ui.components.IrisPrimaryButton
 import social.innode.ndr.demo.ui.components.IrisSectionCard
 import social.innode.ndr.demo.ui.components.IrisSecondaryButton
+import social.innode.ndr.demo.ui.components.IrisTopBar
 import social.innode.ndr.demo.ui.components.rememberIrisClipboard
 import social.innode.ndr.demo.ui.theme.IrisTheme
 
 private const val IrisSourceUrl =
     "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-chat-rs"
-private const val IrisSourceLabel = "git.iris.to/iris-chat-rs"
+private const val IrisSourceLabel =
+    "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-chat-rs"
 
 private enum class SecretExportKind {
     Owner,
@@ -134,15 +136,21 @@ fun MyProfileSheet(
             )
         }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
+    Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-    ) {
+        topBar = {
+            IrisTopBar(
+                title = "Settings",
+                onBack = onDismiss,
+            )
+        },
+    ) { padding ->
         Column(
             modifier =
                 Modifier
                     .testTag("myProfileSheet")
-                    .fillMaxWidth()
+                    .fillMaxSize()
+                    .padding(padding)
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -154,7 +162,7 @@ fun MyProfileSheet(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     IrisAvatar(
-                        label = displayName.ifBlank { npub },
+                        label = displayName.ifBlank { "Profile" },
                         size = 54.dp,
                         emphasize = true,
                         imageUrl = proxiedAvatarUrl,
@@ -239,7 +247,7 @@ fun MyProfileSheet(
                     if (qrBitmap != null) {
                         Image(
                             bitmap = qrBitmap.asImageBitmap(),
-                            contentDescription = "My npub QR code",
+                            contentDescription = "My user ID QR code",
                             modifier =
                                 Modifier
                                     .size(260.dp)
@@ -248,8 +256,8 @@ fun MyProfileSheet(
                     }
                 }
                 IrisInlineAction(
-                    text = "Copy owner npub",
-                    onClick = { clipboard.setText("Owner npub", npub) },
+                    text = "Copy user ID",
+                    onClick = { clipboard.setText("User ID", npub) },
                 ) {
                     Icon(imageVector = IrisIcons.Copy, contentDescription = null)
                 }
@@ -444,7 +452,7 @@ fun MyProfileSheet(
 
             IrisSectionCard {
                 Text(
-                    text = "Owner npub",
+                    text = "User ID",
                     style = MaterialTheme.typography.titleSmall,
                 )
                 Text(
@@ -453,7 +461,7 @@ fun MyProfileSheet(
                     modifier = Modifier.testTag("myProfileNpubValue"),
                 )
                 Text(
-                    text = "Current device npub",
+                    text = "Current device ID",
                     style = MaterialTheme.typography.titleSmall,
                 )
                 Text(

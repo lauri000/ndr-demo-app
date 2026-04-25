@@ -68,7 +68,7 @@ func resolveDeviceAuthorizationInput(
 
     return ResolvedDeviceAuthorizationInput(
         deviceInput: "",
-        errorMessage: "Not a valid device npub or approval code."
+        errorMessage: "Not a valid device ID or approval code."
     )
 }
 

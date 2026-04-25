@@ -9,6 +9,7 @@ pub enum Screen {
     ChatList,
     NewChat,
     NewGroup,
+    Settings,
     Chat { chat_id: String },
     GroupDetails { group_id: String },
     DeviceRoster,

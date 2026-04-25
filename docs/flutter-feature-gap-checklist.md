@@ -36,7 +36,7 @@ Compared against `~/src/iris-chat-flutter` on 2026-04-24. Sources used include F
 
 ## Profile, Identity, And Devices
 
-- [ ] Full settings screen. Flutter coverage: `test/widget/settings_screen_test.dart`.
+- [x] Full settings screen. Flutter coverage: `test/widget/settings_screen_test.dart`.
 - [x] Editable profile metadata and profile picture publishing from settings.
 - [x] Profile avatars and image modal for own profile picture.
 - [x] Export owner/device secret key flows with confirmation dialogs.

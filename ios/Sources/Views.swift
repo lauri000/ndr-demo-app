@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 
 private let irisSourceURL = URL(string: "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-chat-rs")!
-private let irisSourceLabel = "git.iris.to/iris-chat-rs"
+private let irisSourceLabel = "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-chat-rs"
 
 private func proxiedImageURL(
     _ rawURL: String?,
@@ -41,7 +41,6 @@ private enum SecretExportKind: Identifiable {
 
 struct RootView: View {
     @ObservedObject var manager: AppManager
-    @State private var showingProfile = false
 
     var body: some View {
         IrisTheme {
@@ -68,30 +67,7 @@ struct RootView: View {
                     LoadingOverlay()
                 }
             }
-            .irisOnChange(of: manager.activeScreen) { newScreen in
-                if !matchesChatList(newScreen) {
-                    showingProfile = false
-                }
-            }
-            .irisOnChange(of: manager.state.account?.npub) { npub in
-                if npub == nil {
-                    showingProfile = false
-                }
-            }
-            .sheet(isPresented: $showingProfile) {
-                ProfileSheet(
-                    manager: manager,
-                    closeSheet: { showingProfile = false }
-                )
-            }
         }
-    }
-
-    private func matchesChatList(_ screen: Screen) -> Bool {
-        if case .chatList = screen {
-            return true
-        }
-        return false
     }
 
     @ViewBuilder
@@ -111,6 +87,8 @@ struct RootView: View {
             NewChatScreen(manager: manager)
         case .newGroup:
             NewGroupScreen(manager: manager)
+        case .settings:
+            SettingsScreen(manager: manager)
         case .chat(let chatId):
             ChatScreen(manager: manager, chatId: chatId)
         case .groupDetails(let groupId):
@@ -130,7 +108,7 @@ struct RootView: View {
         }
 
         return AnyView(
-            Button(action: { showingProfile = true }) {
+            Button(action: { manager.dispatch(.pushScreen(screen: .settings)) }) {
                 IrisAvatar(
                     label: account.displayName.isEmpty ? account.npub : account.displayName,
                     emphasize: true,
@@ -173,6 +151,7 @@ struct RootView: View {
         case .chatList: return "Chats"
         case .newChat: return "New Chat"
         case .newGroup: return "New Group"
+        case .settings: return "Settings"
         case .chat:
             return manager.state.currentChat?.displayName ?? "Chat"
         case .groupDetails:
@@ -493,11 +472,11 @@ struct AddDeviceScreen: View {
                     )
 
                     if awaitingApproval, let account = manager.state.account {
-                        MonoValue(label: "Owner", value: account.npub, identifier: "awaitingApprovalOwnerNpub")
-                        MonoValue(label: "This device", value: account.deviceNpub, identifier: "awaitingApprovalDeviceNpub")
+                        MonoValue(label: "User ID", value: account.npub, identifier: "awaitingApprovalOwnerNpub")
+                        MonoValue(label: "Device ID", value: account.deviceNpub, identifier: "awaitingApprovalDeviceNpub")
 
                         HStack(spacing: 10) {
-                            Button("Copy device npub") {
+                            Button("Copy device ID") {
                                 manager.copyToClipboard(account.deviceNpub)
                             }
                             .buttonStyle(IrisSecondaryButtonStyle(compact: true))
@@ -508,7 +487,7 @@ struct AddDeviceScreen: View {
                         }
                         .buttonStyle(IrisSecondaryButtonStyle())
                     } else {
-                        TextField("Owner npub or hex", text: $ownerInput)
+                        TextField("User ID or hex", text: $ownerInput)
                             .irisIdentifierInputModifiers()
                             .textFieldStyle(.plain)
                             .irisInputField()
@@ -640,7 +619,7 @@ struct ChatListScreen: View {
                     Text("No chats yet")
                         .font(.system(.headline, design: .rounded, weight: .semibold))
                         .foregroundStyle(palette.textPrimary)
-                    Text("Create a direct chat with an npub or start a group with people you already know.")
+                    Text("Create a direct chat with a user ID or start a group with people you already know.")
                         .font(.system(.body, design: .rounded))
                         .foregroundStyle(palette.muted)
                 }
@@ -779,10 +758,10 @@ struct NewChatScreen: View {
 
             CardHeader(
                 title: "Direct chat",
-                subtitle: "Paste an npub, a hex key, or scan a QR code to open a one-to-one conversation."
+                subtitle: "Paste a user ID, a hex key, or scan a QR code to open a one-to-one conversation."
             )
 
-            TextField("npub, hex, or nostr:…", text: $peerInput)
+            TextField("User ID, hex, or nostr:…", text: $peerInput)
                 .irisIdentifierInputModifiers()
                 .textFieldStyle(.plain)
                 .irisInputField()
@@ -917,7 +896,7 @@ struct NewGroupScreen: View {
                         subtitle: "Paste or scan people directly, or pick from existing direct chats."
                     )
 
-                    TextField("npub, hex, or nostr:…", text: $memberInput)
+                    TextField("User ID, hex, or nostr:…", text: $memberInput)
                         .irisIdentifierInputModifiers()
                         .textFieldStyle(.plain)
                         .irisInputField()
@@ -1516,7 +1495,7 @@ struct GroupDetailsScreen: View {
                             subtitle: "Approve a new member by scan or paste."
                         )
 
-                        TextField("Member npub, hex, or nostr:…", text: $memberInput)
+                        TextField("Member user ID, hex, or nostr:…", text: $memberInput)
                             .irisIdentifierInputModifiers()
                             .textFieldStyle(.plain)
                             .irisInputField()
@@ -1579,7 +1558,7 @@ struct DeviceRosterScreen: View {
             return ""
         }
         if roster.canManageDevices {
-            return "Scan a link invite from the new device, or paste a device npub as fallback."
+            return "Scan a link invite from the new device, or paste a device ID as fallback."
         }
         if isCurrentDeviceRegistered {
             return "Read-only on this device. Use a session with your main Secret Key to add or remove devices."
@@ -1596,8 +1575,8 @@ struct DeviceRosterScreen: View {
                         subtitle: roster.canManageDevices ? "This device can approve and remove linked devices." : "This device can view linked devices only."
                     )
 
-                    MonoValue(label: "Owner", value: roster.ownerNpub, identifier: "deviceRosterOwnerNpub")
-                    MonoValue(label: "This device", value: roster.currentDeviceNpub, identifier: "deviceRosterCurrentDeviceNpub")
+                    MonoValue(label: "User ID", value: roster.ownerNpub, identifier: "deviceRosterOwnerNpub")
+                    MonoValue(label: "Device ID", value: roster.currentDeviceNpub, identifier: "deviceRosterCurrentDeviceNpub")
                 }
 
                 IrisSectionCard {
@@ -1606,7 +1585,7 @@ struct DeviceRosterScreen: View {
                         subtitle: deviceAccessSubtitle
                     )
 
-                    TextField("Device npub, hex, or approval code", text: $deviceInput)
+                    TextField("Device ID, hex, or approval code", text: $deviceInput)
                         .irisIdentifierInputModifiers()
                         .textFieldStyle(.plain)
                         .irisInputField()
@@ -1792,10 +1771,9 @@ struct DeviceRevokedScreen: View {
     }
 }
 
-struct ProfileSheet: View {
+struct SettingsScreen: View {
     @Environment(\.irisPalette) private var palette
     @ObservedObject var manager: AppManager
-    @Environment(\.dismiss) private var dismiss
     @State private var shareText: String?
     @State private var pendingSecretExport: SecretExportKind?
     @State private var showingDeleteAllConfirmation = false
@@ -1805,14 +1783,13 @@ struct ProfileSheet: View {
     @State private var newRelayURL = ""
     @State private var editingRelayURL: String?
     @State private var editingRelayDraft = ""
-    let closeSheet: () -> Void
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                BackgroundFill()
+        ZStack {
+            BackgroundFill()
 
-                IrisScrollScreen {
+            IrisScrollScreen {
+                LazyVGrid(columns: settingsColumns, spacing: 18) {
                     if let account = manager.state.account {
                         ProfileEditorCard(
                             manager: manager,
@@ -1821,7 +1798,6 @@ struct ProfileSheet: View {
                             profilePictureURL: $profilePictureURL,
                             openProfilePicture: { profilePictureViewerURL = $0 },
                             manageDevices: {
-                                close()
                                 manager.dispatch(.pushScreen(screen: .deviceRoster))
                             }
                         )
@@ -1875,15 +1851,6 @@ struct ProfileSheet: View {
                         )
                         .accessibilityIdentifier("myProfileDesktopNotificationsToggle")
 
-                        ImageProxySettingsSection(manager: manager)
-
-                        NostrRelaySettingsSection(
-                            manager: manager,
-                            newRelayURL: $newRelayURL,
-                            editingRelayURL: $editingRelayURL,
-                            editingRelayDraft: $editingRelayDraft
-                        )
-
                         if PlatformStartupAtLogin.isSupported {
                             Toggle(
                                 "Open at login",
@@ -1896,6 +1863,27 @@ struct ProfileSheet: View {
                             )
                             .accessibilityIdentifier("myProfileStartupAtLoginToggle")
                         }
+                    }
+
+                    IrisSectionCard {
+                        CardHeader(
+                            title: "Media",
+                            subtitle: "Control how remote profile images are loaded."
+                        )
+                        ImageProxySettingsSection(manager: manager)
+                    }
+
+                    IrisSectionCard {
+                        CardHeader(
+                            title: "Relays",
+                            subtitle: "Edit the network relays used for messages and sync."
+                        )
+                        NostrRelaySettingsSection(
+                            manager: manager,
+                            newRelayURL: $newRelayURL,
+                            editingRelayURL: $editingRelayURL,
+                            editingRelayDraft: $editingRelayDraft
+                        )
                     }
 
                     IrisSectionCard {
@@ -2017,7 +2005,6 @@ struct ProfileSheet: View {
                         )
 
                         Button("Logout", role: .destructive) {
-                            close()
                             manager.logout()
                         }
                         .buttonStyle(IrisSecondaryButtonStyle())
@@ -2031,22 +2018,15 @@ struct ProfileSheet: View {
                     }
                 }
             }
-            .navigationTitle("Profile")
-            .irisInlineTitleDisplayMode()
-            .overlay {
-                if let profilePictureViewerURL {
-                    IrisProfilePictureViewer(url: profilePictureViewerURL) {
-                        self.profilePictureViewerURL = nil
-                    }
-                }
-            }
-            .toolbar {
-                ToolbarItem(placement: irisToolbarTrailingPlacement) {
-                    Button("Done") { close() }
+        }
+        .overlay {
+            if let profilePictureViewerURL {
+                IrisProfilePictureViewer(url: profilePictureViewerURL) {
+                    self.profilePictureViewerURL = nil
                 }
             }
         }
-        .accessibilityIdentifier("myProfileSheet")
+        .accessibilityIdentifier("settingsScreen")
         .sheet(item: Binding(
             get: { shareText.map(SharePayload.init(text:)) },
             set: { shareText = $0?.text }
@@ -2074,7 +2054,6 @@ struct ProfileSheet: View {
         .alert("Delete All Data?", isPresented: $showingDeleteAllConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Delete Everything", role: .destructive) {
-                close()
                 manager.resetAppState()
             }
             .accessibilityIdentifier("myProfileConfirmDeleteAllDataButton")
@@ -2083,9 +2062,12 @@ struct ProfileSheet: View {
         }
     }
 
-    private func close() {
-        closeSheet()
-        dismiss()
+    private var settingsColumns: [GridItem] {
+        #if os(macOS)
+        [GridItem(.adaptive(minimum: 360, maximum: 520), spacing: 18, alignment: .top)]
+        #else
+        [GridItem(.flexible(), spacing: 18, alignment: .top)]
+        #endif
     }
 
 }
@@ -2284,11 +2266,6 @@ private struct ProfileEditorCard: View {
                     Text(account.displayName.isEmpty ? "Owner profile" : account.displayName)
                         .font(.system(.title3, design: .rounded, weight: .bold))
                         .foregroundStyle(palette.textPrimary)
-                    Text(account.npub)
-                        .font(.system(.footnote, design: .monospaced))
-                        .foregroundStyle(palette.muted)
-                        .lineLimit(2)
-                        .accessibilityIdentifier("myProfileNpubValue")
                 }
             }
             .onAppear {
@@ -2333,12 +2310,12 @@ private struct ProfileEditorCard: View {
                 .frame(maxWidth: .infinity)
                 .accessibilityIdentifier("myProfileQrCode")
 
-            MonoValue(label: "Device", value: account.deviceNpub)
+            MonoValue(label: "Device ID", value: account.deviceNpub)
 
             VStack(spacing: 10) {
-                Button("Copy owner npub") { manager.copyToClipboard(account.npub) }
+                Button("Copy user ID") { manager.copyToClipboard(account.npub) }
                     .buttonStyle(IrisSecondaryButtonStyle())
-                Button("Copy device npub") { manager.copyToClipboard(account.deviceNpub) }
+                Button("Copy device ID") { manager.copyToClipboard(account.deviceNpub) }
                     .buttonStyle(IrisSecondaryButtonStyle())
             }
         }
@@ -2346,7 +2323,7 @@ private struct ProfileEditorCard: View {
 
     @ViewBuilder
     private var profileAvatar: some View {
-        let label = account.displayName.isEmpty ? account.npub : account.displayName
+        let label = account.displayName.isEmpty ? "Profile" : account.displayName
         let trimmedURL = account.pictureUrl?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let displayURL = proxiedImageURL(trimmedURL, preferences: manager.state.preferences, width: 1024, height: 1024)
         if !trimmedURL.isEmpty, let url = URL(string: displayURL ?? trimmedURL) {

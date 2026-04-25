@@ -426,7 +426,7 @@ fun AddDeviceScreen(
                             .testTag("linkOwnerInput"),
                     placeholder = {
                         Text(
-                            text = "Owner npub or hex",
+                            text = "User ID or hex",
                             color = IrisTheme.palette.muted,
                         )
                     },
@@ -484,7 +484,7 @@ fun AddDeviceScreen(
                         identifier = "awaitingApprovalOwnerNpub",
                     )
                     MonoValue(
-                        label = "This device",
+                        label = "Device ID",
                         value = account.deviceNpub,
                         identifier = "awaitingApprovalDeviceNpub",
                     )

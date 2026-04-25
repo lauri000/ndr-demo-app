@@ -96,7 +96,7 @@ fun NewChatScreen(
                     style = MaterialTheme.typography.titleLarge,
                 )
                 Text(
-                    text = "Paste an npub, hex key, or scan a QR.",
+                    text = "Paste a user ID, hex key, or scan a QR.",
                     style = MaterialTheme.typography.bodySmall,
                     color = IrisTheme.palette.muted,
                 )
@@ -113,7 +113,7 @@ fun NewChatScreen(
                             .testTag("newChatPeerInput"),
                     placeholder = {
                         Text(
-                            text = "npub, hex, or nostr:...",
+                            text = "User ID, hex, or nostr:...",
                             color = IrisTheme.palette.muted,
                         )
                     },

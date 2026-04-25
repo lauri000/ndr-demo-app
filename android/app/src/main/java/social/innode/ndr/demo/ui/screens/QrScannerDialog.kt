@@ -100,7 +100,7 @@ fun QrScannerDialog(
                         color = MaterialTheme.colorScheme.error,
                     )
                     Text(
-                        text = "You can still paste an npub manually.",
+                        text = "You can still paste a user ID manually.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
