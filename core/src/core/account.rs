@@ -398,6 +398,12 @@ impl AppCore {
                 persisted.preferences.desktop_notifications_enabled;
             self.preferences.startup_at_login_enabled =
                 persisted.preferences.startup_at_login_enabled;
+            self.preferences.image_proxy_enabled = persisted.preferences.image_proxy_enabled;
+            self.preferences.image_proxy_url = persisted.preferences.image_proxy_url.clone();
+            self.preferences.image_proxy_key_hex =
+                persisted.preferences.image_proxy_key_hex.clone();
+            self.preferences.image_proxy_salt_hex =
+                persisted.preferences.image_proxy_salt_hex.clone();
             if allow_protocol_restore {
                 self.pending_outbound = persisted.pending_outbound.clone();
                 for pending in &mut self.pending_outbound {

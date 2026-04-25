@@ -127,6 +127,13 @@ impl AppCore {
             AppAction::SetStartupAtLoginEnabled { enabled } => {
                 self.set_startup_at_login_enabled(enabled)
             }
+            AppAction::SetImageProxyEnabled { enabled } => self.set_image_proxy_enabled(enabled),
+            AppAction::SetImageProxyUrl { url } => self.set_image_proxy_url(&url),
+            AppAction::SetImageProxyKeyHex { key_hex } => self.set_image_proxy_key_hex(&key_hex),
+            AppAction::SetImageProxySaltHex { salt_hex } => {
+                self.set_image_proxy_salt_hex(&salt_hex)
+            }
+            AppAction::ResetImageProxySettings => self.reset_image_proxy_settings(),
             AppAction::MarkMessagesSeen {
                 chat_id,
                 message_ids,

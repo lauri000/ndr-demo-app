@@ -804,6 +804,57 @@ fn startup_at_login_preference_updates_state_and_persists() {
 }
 
 #[test]
+fn image_proxy_preferences_update_state_and_persist() {
+    let data_dir = TempDir::new().expect("temp dir");
+    let mut core = test_core(data_dir.path());
+    start_primary_test_session(&mut core, 24, true, true).expect("start session");
+
+    assert!(core.state.preferences.image_proxy_enabled);
+    core.handle_action(AppAction::SetImageProxyEnabled { enabled: false });
+    core.handle_action(AppAction::SetImageProxyUrl {
+        url: " https://proxy.example ".to_string(),
+    });
+    core.handle_action(AppAction::SetImageProxyKeyHex {
+        key_hex: "AA".repeat(32),
+    });
+    core.handle_action(AppAction::SetImageProxySaltHex {
+        salt_hex: "BB".repeat(32),
+    });
+
+    let persisted = persisted_state(data_dir.path());
+    assert!(!persisted.preferences.image_proxy_enabled);
+    assert_eq!(
+        persisted.preferences.image_proxy_url,
+        "https://proxy.example"
+    );
+    assert_eq!(persisted.preferences.image_proxy_key_hex, "aa".repeat(32));
+    assert_eq!(persisted.preferences.image_proxy_salt_hex, "bb".repeat(32));
+
+    let mut restored = test_core(data_dir.path());
+    start_primary_test_session(&mut restored, 24, true, true).expect("restore session");
+    assert!(!restored.state.preferences.image_proxy_enabled);
+    assert_eq!(
+        restored.state.preferences.image_proxy_url,
+        "https://proxy.example"
+    );
+    assert_eq!(
+        restored.state.preferences.image_proxy_key_hex,
+        "aa".repeat(32)
+    );
+    assert_eq!(
+        restored.state.preferences.image_proxy_salt_hex,
+        "bb".repeat(32)
+    );
+
+    restored.handle_action(AppAction::ResetImageProxySettings);
+    assert!(restored.state.preferences.image_proxy_enabled);
+    assert_eq!(
+        restored.state.preferences.image_proxy_url,
+        crate::image_proxy::DEFAULT_IMAGE_PROXY_URL
+    );
+}
+
+#[test]
 fn old_or_unversioned_persistence_is_ignored_after_schema_cut() {
     let _guard = relay_test_lock()
         .lock()

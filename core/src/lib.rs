@@ -1,5 +1,6 @@
 mod actions;
 mod core;
+pub mod image_proxy;
 pub mod local_relay;
 mod qr;
 mod state;
@@ -146,6 +147,17 @@ pub fn build_summary() -> String {
 #[uniffi::export]
 pub fn relay_set_id() -> String {
     crate::core::relay_set_id().to_string()
+}
+
+#[uniffi::export]
+pub fn proxied_image_url(
+    original_src: String,
+    preferences: PreferencesSnapshot,
+    width: Option<u32>,
+    height: Option<u32>,
+    square: bool,
+) -> String {
+    image_proxy::proxied_image_url(&original_src, &preferences, width, height, square)
 }
 
 #[uniffi::export]

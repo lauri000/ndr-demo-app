@@ -4,6 +4,29 @@ import SwiftUI
 private let irisSourceURL = URL(string: "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-chat-rs")!
 private let irisSourceLabel = "git.iris.to/iris-chat-rs"
 
+private func proxiedImageURL(
+    _ rawURL: String?,
+    preferences: PreferencesSnapshot,
+    width: UInt32? = nil,
+    height: UInt32? = nil,
+    square: Bool = false
+) -> String? {
+    guard let rawURL else {
+        return nil
+    }
+    let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+        return nil
+    }
+    return proxiedImageUrl(
+        originalSrc: trimmed,
+        preferences: preferences,
+        width: width,
+        height: height,
+        square: square
+    )
+}
+
 private enum SecretExportKind: Identifiable {
     case owner
     case device
@@ -110,7 +133,8 @@ struct RootView: View {
             Button(action: { showingProfile = true }) {
                 IrisAvatar(
                     label: account.displayName.isEmpty ? account.npub : account.displayName,
-                    emphasize: true
+                    emphasize: true,
+                    imageURL: proxiedImageURL(account.pictureUrl, preferences: manager.state.preferences, width: 88, height: 88, square: true)
                 )
             }
             .buttonStyle(.plain)
@@ -689,7 +713,7 @@ struct ChatListScreen: View {
                 IrisAvatar(
                     label: account.displayName.isEmpty ? account.npub : account.displayName,
                     emphasize: true,
-                    imageURL: account.pictureUrl
+                    imageURL: proxiedImageURL(account.pictureUrl, preferences: manager.state.preferences, width: 96, height: 96, square: true)
                 )
                 VStack(alignment: .leading, spacing: 4) {
                     Text(account.displayName.isEmpty ? "Your account" : account.displayName)
@@ -1848,6 +1872,8 @@ struct ProfileSheet: View {
                         )
                         .accessibilityIdentifier("myProfileDesktopNotificationsToggle")
 
+                        ImageProxySettingsSection(manager: manager)
+
                         if PlatformStartupAtLogin.isSupported {
                             Toggle(
                                 "Open at login",
@@ -2054,6 +2080,78 @@ struct ProfileSheet: View {
 
 }
 
+private struct ImageProxySettingsSection: View {
+    @ObservedObject var manager: AppManager
+
+    var body: some View {
+        Toggle("Image proxy", isOn: imageProxyEnabled)
+            .accessibilityIdentifier("myProfileImageProxyToggle")
+
+        imageProxyTextField(
+            title: "Proxy URL",
+            text: imageProxyUrl,
+            identifier: "myProfileImageProxyUrlInput"
+        )
+
+        imageProxyTextField(
+            title: "Key hex",
+            text: imageProxyKeyHex,
+            identifier: "myProfileImageProxyKeyInput"
+        )
+
+        imageProxyTextField(
+            title: "Salt hex",
+            text: imageProxySaltHex,
+            identifier: "myProfileImageProxySaltInput"
+        )
+
+        Button("Reset image proxy") {
+            manager.dispatch(.resetImageProxySettings)
+        }
+        .buttonStyle(IrisSecondaryButtonStyle())
+        .accessibilityIdentifier("myProfileResetImageProxyButton")
+    }
+
+    private var imageProxyEnabled: Binding<Bool> {
+        Binding(
+            get: { manager.state.preferences.imageProxyEnabled },
+            set: { enabled in manager.dispatch(.setImageProxyEnabled(enabled: enabled)) }
+        )
+    }
+
+    private var imageProxyUrl: Binding<String> {
+        Binding(
+            get: { manager.state.preferences.imageProxyUrl },
+            set: { value in manager.dispatch(.setImageProxyUrl(url: value)) }
+        )
+    }
+
+    private var imageProxyKeyHex: Binding<String> {
+        Binding(
+            get: { manager.state.preferences.imageProxyKeyHex },
+            set: { value in manager.dispatch(.setImageProxyKeyHex(keyHex: value)) }
+        )
+    }
+
+    private var imageProxySaltHex: Binding<String> {
+        Binding(
+            get: { manager.state.preferences.imageProxySaltHex },
+            set: { value in manager.dispatch(.setImageProxySaltHex(saltHex: value)) }
+        )
+    }
+
+    private func imageProxyTextField(
+        title: String,
+        text: Binding<String>,
+        identifier: String
+    ) -> some View {
+        TextField(title, text: text)
+            .textFieldStyle(.roundedBorder)
+            .autocorrectionDisabled()
+            .accessibilityIdentifier(identifier)
+    }
+}
+
 private struct ProfileEditorCard: View {
     @Environment(\.irisPalette) private var palette
     @ObservedObject var manager: AppManager
@@ -2135,17 +2233,28 @@ private struct ProfileEditorCard: View {
     private var profileAvatar: some View {
         let label = account.displayName.isEmpty ? account.npub : account.displayName
         let trimmedURL = account.pictureUrl?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !trimmedURL.isEmpty, let url = URL(string: trimmedURL) {
+        let displayURL = proxiedImageURL(trimmedURL, preferences: manager.state.preferences, width: 1024, height: 1024)
+        if !trimmedURL.isEmpty, let url = URL(string: displayURL ?? trimmedURL) {
             Button {
                 openProfilePicture(url)
             } label: {
-                IrisAvatar(label: label, size: 52, emphasize: true, imageURL: trimmedURL)
+                IrisAvatar(
+                    label: label,
+                    size: 52,
+                    emphasize: true,
+                    imageURL: proxiedImageURL(trimmedURL, preferences: manager.state.preferences, width: 104, height: 104, square: true)
+                )
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Open profile picture")
             .accessibilityIdentifier("myProfilePictureButton")
         } else {
-            IrisAvatar(label: label, size: 52, emphasize: true, imageURL: account.pictureUrl)
+            IrisAvatar(
+                label: label,
+                size: 52,
+                emphasize: true,
+                imageURL: proxiedImageURL(account.pictureUrl, preferences: manager.state.preferences, width: 104, height: 104, square: true)
+            )
         }
     }
 

@@ -1078,6 +1078,67 @@ impl AppCore {
         self.emit_state();
     }
 
+    pub(super) fn set_image_proxy_enabled(&mut self, enabled: bool) {
+        if self.preferences.image_proxy_enabled == enabled {
+            return;
+        }
+        self.preferences.image_proxy_enabled = enabled;
+        self.rebuild_state();
+        self.persist_best_effort();
+        self.emit_state();
+    }
+
+    pub(super) fn set_image_proxy_url(&mut self, url: &str) {
+        let normalized = normalized_setting(url, crate::image_proxy::DEFAULT_IMAGE_PROXY_URL);
+        if self.preferences.image_proxy_url == normalized {
+            return;
+        }
+        self.preferences.image_proxy_url = normalized;
+        self.rebuild_state();
+        self.persist_best_effort();
+        self.emit_state();
+    }
+
+    pub(super) fn set_image_proxy_key_hex(&mut self, key_hex: &str) {
+        let normalized = normalized_setting(
+            &key_hex.to_ascii_lowercase(),
+            crate::image_proxy::DEFAULT_IMAGE_PROXY_KEY_HEX,
+        );
+        if self.preferences.image_proxy_key_hex == normalized {
+            return;
+        }
+        self.preferences.image_proxy_key_hex = normalized;
+        self.rebuild_state();
+        self.persist_best_effort();
+        self.emit_state();
+    }
+
+    pub(super) fn set_image_proxy_salt_hex(&mut self, salt_hex: &str) {
+        let normalized = normalized_setting(
+            &salt_hex.to_ascii_lowercase(),
+            crate::image_proxy::DEFAULT_IMAGE_PROXY_SALT_HEX,
+        );
+        if self.preferences.image_proxy_salt_hex == normalized {
+            return;
+        }
+        self.preferences.image_proxy_salt_hex = normalized;
+        self.rebuild_state();
+        self.persist_best_effort();
+        self.emit_state();
+    }
+
+    pub(super) fn reset_image_proxy_settings(&mut self) {
+        self.preferences.image_proxy_enabled = true;
+        self.preferences.image_proxy_url = crate::image_proxy::DEFAULT_IMAGE_PROXY_URL.to_string();
+        self.preferences.image_proxy_key_hex =
+            crate::image_proxy::DEFAULT_IMAGE_PROXY_KEY_HEX.to_string();
+        self.preferences.image_proxy_salt_hex =
+            crate::image_proxy::DEFAULT_IMAGE_PROXY_SALT_HEX.to_string();
+        self.rebuild_state();
+        self.persist_best_effort();
+        self.emit_state();
+    }
+
     pub(super) fn mark_messages_seen(&mut self, chat_id: &str, message_ids: &[String]) {
         if message_ids.is_empty() {
             return;
@@ -1651,6 +1712,15 @@ pub(super) fn apply_incoming_reaction(message: &mut ChatMessageSnapshot, emoji: 
 
 pub(super) fn typing_indicator_key(chat_id: &str, author_owner_hex: &str) -> String {
     format!("{chat_id}\n{author_owner_hex}")
+}
+
+fn normalized_setting(value: &str, fallback: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 pub(super) fn should_advance_delivery(current: &DeliveryState, next: &DeliveryState) -> bool {

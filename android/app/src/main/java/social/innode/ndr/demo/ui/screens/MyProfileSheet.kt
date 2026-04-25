@@ -52,6 +52,8 @@ import kotlinx.coroutines.withContext
 import social.innode.ndr.demo.core.AppManager
 import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.NetworkStatusSnapshot
+import social.innode.ndr.demo.rust.PreferencesSnapshot
+import social.innode.ndr.demo.rust.proxiedImageUrl
 import social.innode.ndr.demo.ui.components.IrisAvatar
 import social.innode.ndr.demo.ui.components.IrisIcons
 import social.innode.ndr.demo.ui.components.IrisInlineAction
@@ -83,6 +85,11 @@ fun MyProfileSheet(
     sendTypingIndicators: Boolean,
     sendReadReceipts: Boolean,
     desktopNotificationsEnabled: Boolean,
+    imageProxyEnabled: Boolean,
+    imageProxyUrl: String,
+    imageProxyKeyHex: String,
+    imageProxySaltHex: String,
+    preferences: PreferencesSnapshot,
     networkStatus: NetworkStatusSnapshot?,
     onManageDevices: () -> Unit,
     onLogout: () -> Unit,
@@ -102,6 +109,26 @@ fun MyProfileSheet(
     var profilePictureUrl by remember(pictureUrl) { mutableStateOf(pictureUrl.orEmpty()) }
     var showProfilePicture by remember { mutableStateOf(false) }
     val trimmedPictureUrl = pictureUrl?.trim().orEmpty()
+    val proxiedAvatarUrl =
+        trimmedPictureUrl.ifEmpty { null }?.let { url ->
+            proxiedImageUrl(
+                originalSrc = url,
+                preferences = preferences,
+                width = 108u,
+                height = 108u,
+                square = true,
+            )
+        }
+    val proxiedProfilePictureUrl =
+        trimmedPictureUrl.ifEmpty { null }?.let { url ->
+            proxiedImageUrl(
+                originalSrc = url,
+                preferences = preferences,
+                width = 1024u,
+                height = 1024u,
+                square = false,
+            )
+        }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -126,7 +153,7 @@ fun MyProfileSheet(
                         label = displayName.ifBlank { npub },
                         size = 54.dp,
                         emphasize = true,
-                        imageUrl = trimmedPictureUrl.ifEmpty { null },
+                        imageUrl = proxiedAvatarUrl,
                         modifier =
                             Modifier
                                 .then(
@@ -280,6 +307,57 @@ fun MyProfileSheet(
                         modifier = Modifier.testTag("myProfileDesktopNotificationsSwitch"),
                     )
                 }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Image proxy",
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Switch(
+                        checked = imageProxyEnabled,
+                        onCheckedChange = { enabled ->
+                            appManager.dispatch(AppAction.SetImageProxyEnabled(enabled))
+                        },
+                        modifier = Modifier.testTag("myProfileImageProxySwitch"),
+                    )
+                }
+                TextField(
+                    value = imageProxyUrl,
+                    onValueChange = { value ->
+                        appManager.dispatch(AppAction.SetImageProxyUrl(value))
+                    },
+                    label = { Text("Proxy URL") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("myProfileImageProxyUrlInput"),
+                )
+                TextField(
+                    value = imageProxyKeyHex,
+                    onValueChange = { value ->
+                        appManager.dispatch(AppAction.SetImageProxyKeyHex(value))
+                    },
+                    label = { Text("Key hex") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("myProfileImageProxyKeyInput"),
+                )
+                TextField(
+                    value = imageProxySaltHex,
+                    onValueChange = { value ->
+                        appManager.dispatch(AppAction.SetImageProxySaltHex(value))
+                    },
+                    label = { Text("Salt hex") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("myProfileImageProxySaltInput"),
+                )
+                IrisSecondaryButton(
+                    text = "Reset image proxy",
+                    onClick = {
+                        appManager.dispatch(AppAction.ResetImageProxySettings)
+                    },
+                    modifier = Modifier.testTag("myProfileResetImageProxyButton"),
+                )
             }
 
             IrisSectionCard {
@@ -511,7 +589,7 @@ fun MyProfileSheet(
 
     if (showProfilePicture && trimmedPictureUrl.isNotEmpty()) {
         ProfilePictureDialog(
-            imageUrl = trimmedPictureUrl,
+            imageUrl = proxiedProfilePictureUrl ?: trimmedPictureUrl,
             onDismiss = { showProfilePicture = false },
         )
     }

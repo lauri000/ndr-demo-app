@@ -427,6 +427,14 @@ pub(super) struct PersistedPreferences {
     pub(super) desktop_notifications_enabled: bool,
     #[serde(default)]
     pub(super) startup_at_login_enabled: bool,
+    #[serde(default = "default_true")]
+    pub(super) image_proxy_enabled: bool,
+    #[serde(default = "default_image_proxy_url")]
+    pub(super) image_proxy_url: String,
+    #[serde(default = "default_image_proxy_key_hex")]
+    pub(super) image_proxy_key_hex: String,
+    #[serde(default = "default_image_proxy_salt_hex")]
+    pub(super) image_proxy_salt_hex: String,
 }
 
 impl Default for PersistedPreferences {
@@ -436,12 +444,28 @@ impl Default for PersistedPreferences {
             send_read_receipts: true,
             desktop_notifications_enabled: true,
             startup_at_login_enabled: false,
+            image_proxy_enabled: true,
+            image_proxy_url: default_image_proxy_url(),
+            image_proxy_key_hex: default_image_proxy_key_hex(),
+            image_proxy_salt_hex: default_image_proxy_salt_hex(),
         }
     }
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_image_proxy_url() -> String {
+    crate::image_proxy::DEFAULT_IMAGE_PROXY_URL.to_string()
+}
+
+fn default_image_proxy_key_hex() -> String {
+    crate::image_proxy::DEFAULT_IMAGE_PROXY_KEY_HEX.to_string()
+}
+
+fn default_image_proxy_salt_hex() -> String {
+    crate::image_proxy::DEFAULT_IMAGE_PROXY_SALT_HEX.to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]

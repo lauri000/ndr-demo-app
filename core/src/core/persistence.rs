@@ -41,6 +41,10 @@ impl AppCore {
                 send_read_receipts: self.preferences.send_read_receipts,
                 desktop_notifications_enabled: self.preferences.desktop_notifications_enabled,
                 startup_at_login_enabled: self.preferences.startup_at_login_enabled,
+                image_proxy_enabled: self.preferences.image_proxy_enabled,
+                image_proxy_url: self.preferences.image_proxy_url.clone(),
+                image_proxy_key_hex: self.preferences.image_proxy_key_hex.clone(),
+                image_proxy_salt_hex: self.preferences.image_proxy_salt_hex.clone(),
             },
             threads: self
                 .threads

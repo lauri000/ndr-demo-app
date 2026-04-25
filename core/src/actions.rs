@@ -67,6 +67,19 @@ pub enum AppAction {
     SetStartupAtLoginEnabled {
         enabled: bool,
     },
+    SetImageProxyEnabled {
+        enabled: bool,
+    },
+    SetImageProxyUrl {
+        url: String,
+    },
+    SetImageProxyKeyHex {
+        key_hex: String,
+    },
+    SetImageProxySaltHex {
+        salt_hex: String,
+    },
+    ResetImageProxySettings,
     MarkMessagesSeen {
         chat_id: String,
         message_ids: Vec<String>,

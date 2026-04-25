@@ -31,6 +31,7 @@ import social.innode.ndr.demo.core.AppManager
 import social.innode.ndr.demo.rust.AppState
 import social.innode.ndr.demo.rust.ChatKind
 import social.innode.ndr.demo.rust.Screen
+import social.innode.ndr.demo.rust.proxiedImageUrl
 import social.innode.ndr.demo.ui.components.IrisAvatar
 import social.innode.ndr.demo.ui.components.IrisChatListRow
 import social.innode.ndr.demo.ui.components.IrisDivider
@@ -70,7 +71,16 @@ fun ChatListScreen(
                                 label = account.displayName,
                                 emphasize = true,
                                 size = 44.dp,
-                                imageUrl = account.pictureUrl,
+                                imageUrl =
+                                    account.pictureUrl?.let { url ->
+                                        proxiedImageUrl(
+                                            originalSrc = url,
+                                            preferences = appState.preferences,
+                                            width = 88u,
+                                            height = 88u,
+                                            square = true,
+                                        )
+                                    },
                             )
                         }
                     }
@@ -204,6 +214,11 @@ fun ChatListScreen(
             sendTypingIndicators = appState.preferences.sendTypingIndicators,
             sendReadReceipts = appState.preferences.sendReadReceipts,
             desktopNotificationsEnabled = appState.preferences.desktopNotificationsEnabled,
+            imageProxyEnabled = appState.preferences.imageProxyEnabled,
+            imageProxyUrl = appState.preferences.imageProxyUrl,
+            imageProxyKeyHex = appState.preferences.imageProxyKeyHex,
+            imageProxySaltHex = appState.preferences.imageProxySaltHex,
+            preferences = appState.preferences,
             networkStatus = appState.networkStatus,
             onManageDevices = {
                 showProfile = false

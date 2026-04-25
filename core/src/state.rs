@@ -42,6 +42,10 @@ pub struct PreferencesSnapshot {
     pub send_read_receipts: bool,
     pub desktop_notifications_enabled: bool,
     pub startup_at_login_enabled: bool,
+    pub image_proxy_enabled: bool,
+    pub image_proxy_url: String,
+    pub image_proxy_key_hex: String,
+    pub image_proxy_salt_hex: String,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
@@ -246,6 +250,10 @@ impl AppState {
                 send_read_receipts: true,
                 desktop_notifications_enabled: true,
                 startup_at_login_enabled: false,
+                image_proxy_enabled: true,
+                image_proxy_url: crate::image_proxy::DEFAULT_IMAGE_PROXY_URL.to_string(),
+                image_proxy_key_hex: crate::image_proxy::DEFAULT_IMAGE_PROXY_KEY_HEX.to_string(),
+                image_proxy_salt_hex: crate::image_proxy::DEFAULT_IMAGE_PROXY_SALT_HEX.to_string(),
             },
             toast: None,
         }
