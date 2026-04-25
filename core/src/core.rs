@@ -4,15 +4,15 @@ use crate::state::{
     CurrentChatSnapshot, DeliveryState, DeviceAuthorizationState, DeviceEntrySnapshot,
     DeviceRosterSnapshot, GroupDetailsSnapshot, GroupMemberSnapshot, MessageAttachmentSnapshot,
     MessageReactionSnapshot, NetworkStatusSnapshot, OutgoingAttachment, PreferencesSnapshot,
-    Router, Screen, TypingIndicatorSnapshot,
+    PublicInviteSnapshot, Router, Screen, TypingIndicatorSnapshot,
 };
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 use flume::Sender;
 use nostr::EventBuilder;
 use nostr_double_ratchet::{
     DevicePubkey, DeviceRoster, DomainError, Error, GroupIncomingEvent, GroupManager,
-    GroupManagerSnapshot, GroupSnapshot, MessageEnvelope, OwnerPubkey, ProtocolContext, RelayGap,
-    RosterEditor, SessionManager, SessionManagerSnapshot, SessionState, UnixSeconds,
+    GroupManagerSnapshot, GroupSnapshot, Invite, MessageEnvelope, OwnerPubkey, ProtocolContext,
+    RelayGap, RosterEditor, SessionManager, SessionManagerSnapshot, SessionState, UnixSeconds,
 };
 use nostr_double_ratchet_nostr::nostr as codec;
 use nostr_sdk::prelude::{
@@ -35,6 +35,7 @@ mod chats;
 mod config;
 mod groups;
 mod identity;
+mod invites;
 mod lifecycle;
 mod model;
 mod payloads;

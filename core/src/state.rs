@@ -9,6 +9,8 @@ pub enum Screen {
     ChatList,
     NewChat,
     NewGroup,
+    CreateInvite,
+    JoinInvite,
     Settings,
     Chat { chat_id: String },
     GroupDetails { group_id: String },
@@ -33,6 +35,8 @@ pub struct BusyState {
     pub sending_message: bool,
     pub updating_roster: bool,
     pub updating_group: bool,
+    pub creating_invite: bool,
+    pub accepting_invite: bool,
     pub syncing_network: bool,
     pub uploading_attachment: bool,
 }
@@ -218,6 +222,11 @@ pub struct NetworkStatusSnapshot {
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
+pub struct PublicInviteSnapshot {
+    pub url: String,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
 pub struct AppState {
     pub rev: u64,
     pub router: Router,
@@ -227,6 +236,7 @@ pub struct AppState {
     pub chat_list: Vec<ChatThreadSnapshot>,
     pub current_chat: Option<CurrentChatSnapshot>,
     pub group_details: Option<GroupDetailsSnapshot>,
+    pub public_invite: Option<PublicInviteSnapshot>,
     pub network_status: Option<NetworkStatusSnapshot>,
     pub preferences: PreferencesSnapshot,
     pub toast: Option<String>,
@@ -246,6 +256,7 @@ impl AppState {
             chat_list: Vec::new(),
             current_chat: None,
             group_details: None,
+            public_invite: None,
             network_status: None,
             preferences: PreferencesSnapshot {
                 send_typing_indicators: true,

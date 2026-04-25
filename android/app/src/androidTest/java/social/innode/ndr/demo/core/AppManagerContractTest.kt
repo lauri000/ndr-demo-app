@@ -370,12 +370,15 @@ class AppManagerContractTest {
                     sendingMessage = false,
                     updatingRoster = false,
                     updatingGroup = false,
+                    creatingInvite = false,
+                    acceptingInvite = false,
                     syncingNetwork = false,
                     uploadingAttachment = false,
                 ),
             chatList = emptyList(),
             currentChat = null,
             groupDetails = null,
+            publicInvite = null,
             networkStatus = null,
             preferences =
                 PreferencesSnapshot(
@@ -483,12 +486,15 @@ private object AppManagerContractDefaults {
                     sendingMessage = false,
                     updatingRoster = false,
                     updatingGroup = false,
+                    creatingInvite = false,
+                    acceptingInvite = false,
                     syncingNetwork = false,
                     uploadingAttachment = false,
                 ),
             chatList = emptyList(),
             currentChat = null,
             groupDetails = null,
+            publicInvite = null,
             networkStatus = null,
             preferences =
                 PreferencesSnapshot(

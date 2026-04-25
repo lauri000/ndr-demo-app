@@ -73,21 +73,34 @@ fun NewChatScreen(
                     style = MaterialTheme.typography.titleLarge,
                 )
                 Text(
-                    text = "Invite acceptance isn't available.",
+                    text = "Accept an invite link or share one of your own.",
                     style = MaterialTheme.typography.bodySmall,
                     color = IrisTheme.palette.muted,
                 )
-                IrisSecondaryButton(
-                    text = "Join Chat",
-                    onClick = {},
-                    enabled = false,
-                    icon = {
-                        Icon(
-                            imageVector = IrisIcons.NewChat,
-                            contentDescription = null,
-                        )
-                    },
-                )
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    IrisSecondaryButton(
+                        text = "Join Chat",
+                        onClick = { appManager.pushScreen(Screen.JoinInvite) },
+                        modifier = Modifier.testTag("newChatJoinInviteButton"),
+                        icon = {
+                            Icon(
+                                imageVector = IrisIcons.NewChat,
+                                contentDescription = null,
+                            )
+                        },
+                    )
+                    IrisSecondaryButton(
+                        text = "Create Invite",
+                        onClick = { appManager.pushScreen(Screen.CreateInvite) },
+                        modifier = Modifier.testTag("newChatCreateInviteButton"),
+                        icon = {
+                            Icon(
+                                imageVector = IrisIcons.Share,
+                                contentDescription = null,
+                            )
+                        },
+                    )
+                }
             }
 
             IrisSectionCard {

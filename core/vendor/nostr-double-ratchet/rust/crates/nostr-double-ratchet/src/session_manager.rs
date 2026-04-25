@@ -216,6 +216,44 @@ impl SessionManager {
         self.observe_public_invite(owner_pubkey, invite)
     }
 
+    pub fn accept_invite<R>(
+        &mut self,
+        ctx: &mut ProtocolContext<'_, R>,
+        invite: &Invite,
+    ) -> Result<InviteResponseEnvelope>
+    where
+        R: RngCore + CryptoRng,
+    {
+        if invite.inviter_device_pubkey == self.local_device_pubkey {
+            return Err(DomainError::InvalidState(
+                "Cannot accept an invite from this device.".to_string(),
+            )
+            .into());
+        }
+
+        let owner_pubkey = invite
+            .inviter_owner_pubkey
+            .unwrap_or_else(|| crate::owner_pubkey_from_device_pubkey(invite.inviter_device_pubkey));
+        let (session, envelope) = invite.accept_with_owner(
+            ctx,
+            self.local_device_pubkey,
+            self.local_device_secret_key,
+            Some(self.local_owner_pubkey),
+        )?;
+
+        let mut public_invite = invite.clone();
+        public_invite.inviter_ephemeral_private_key = None;
+        let record = self
+            .user_record_mut(owner_pubkey)
+            .device_record_mut(invite.inviter_device_pubkey, ctx.now);
+        record.authorized = true;
+        record.is_stale = false;
+        record.public_invite = Some(public_invite);
+        record.upsert_session(session, ctx.now);
+
+        Ok(envelope)
+    }
+
     pub fn observe_invite_response<R>(
         &mut self,
         ctx: &mut ProtocolContext<'_, R>,

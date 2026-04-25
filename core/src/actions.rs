@@ -29,6 +29,10 @@ pub enum AppAction {
         name: String,
         member_inputs: Vec<String>,
     },
+    CreatePublicInvite,
+    AcceptInvite {
+        invite_input: String,
+    },
     OpenChat {
         chat_id: String,
     },

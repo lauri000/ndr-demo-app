@@ -96,6 +96,8 @@ impl AppCore {
                 name,
                 member_inputs,
             } => self.create_group(&name, &member_inputs),
+            AppAction::CreatePublicInvite => self.create_public_invite(),
+            AppAction::AcceptInvite { invite_input } => self.accept_invite(&invite_input),
             AppAction::OpenChat { chat_id } => self.open_chat(&chat_id),
             AppAction::SendMessage { chat_id, text } => self.send_message(&chat_id, &text),
             AppAction::SendAttachment {

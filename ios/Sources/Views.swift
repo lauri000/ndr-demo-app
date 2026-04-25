@@ -87,6 +87,10 @@ struct RootView: View {
             NewChatScreen(manager: manager)
         case .newGroup:
             NewGroupScreen(manager: manager)
+        case .createInvite:
+            CreateInviteScreen(manager: manager)
+        case .joinInvite:
+            JoinInviteScreen(manager: manager)
         case .settings:
             SettingsScreen(manager: manager)
         case .chat(let chatId):
@@ -151,6 +155,8 @@ struct RootView: View {
         case .chatList: return "Chats"
         case .newChat: return "New Chat"
         case .newGroup: return "New Group"
+        case .createInvite: return "Invite"
+        case .joinInvite: return "Join Chat"
         case .settings: return "Settings"
         case .chat:
             return manager.state.currentChat?.displayName ?? "Chat"
@@ -741,12 +747,22 @@ struct NewChatScreen: View {
         IrisSectionCard {
             CardHeader(
                 title: "Join chat",
-                subtitle: "Invite joining is not available yet."
+                subtitle: "Accept an invite link or share one of your own."
             )
 
-            Button("Join chat") {}
+            HStack(spacing: 10) {
+                Button("Join chat") {
+                    manager.dispatch(.pushScreen(screen: .joinInvite))
+                }
                 .buttonStyle(IrisSecondaryButtonStyle(compact: true))
-                .disabled(true)
+                .accessibilityIdentifier("newChatJoinInviteButton")
+
+                Button("Create invite") {
+                    manager.dispatch(.pushScreen(screen: .createInvite))
+                }
+                .buttonStyle(IrisSecondaryButtonStyle(compact: true))
+                .accessibilityIdentifier("newChatCreateInviteButton")
+            }
         }
     }
 
@@ -816,6 +832,119 @@ struct NewChatScreen: View {
                 Button("Scan QR") { showingScanner = true }
                     .buttonStyle(IrisSecondaryButtonStyle())
                     .accessibilityIdentifier("newChatScanQrButton")
+            }
+        }
+    }
+}
+
+struct CreateInviteScreen: View {
+    @ObservedObject var manager: AppManager
+    @State private var shareText: String?
+
+    var body: some View {
+        IrisScrollScreen {
+            IrisSectionCard(accent: true) {
+                CardHeader(
+                    title: "Invite",
+                    subtitle: "Share this with someone to start an encrypted chat."
+                )
+
+                if manager.state.busy.creatingInvite && manager.state.publicInvite == nil {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 24)
+                } else if let invite = manager.state.publicInvite {
+                    QrCodeImage(text: invite.url)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityIdentifier("createInviteQrCode")
+
+                    MonoValue(label: "Invite link", value: invite.url, identifier: "createInviteUrl")
+
+                    HStack(spacing: 10) {
+                        Button("Copy") {
+                            manager.copyToClipboard(invite.url)
+                        }
+                        .buttonStyle(IrisSecondaryButtonStyle())
+                        .accessibilityIdentifier("createInviteCopyButton")
+
+                        Button("Share") {
+                            shareText = invite.url
+                        }
+                        .buttonStyle(IrisPrimaryButtonStyle())
+                        .accessibilityIdentifier("createInviteShareButton")
+                    }
+                }
+
+                Button(manager.state.busy.creatingInvite ? "Creating…" : "New invite") {
+                    manager.dispatch(.createPublicInvite)
+                }
+                .buttonStyle(IrisSecondaryButtonStyle())
+                .disabled(manager.state.busy.creatingInvite)
+                .accessibilityIdentifier("createInviteRefreshButton")
+            }
+        }
+        .task {
+            if manager.state.publicInvite == nil {
+                manager.dispatch(.createPublicInvite)
+            }
+        }
+        .sheet(item: Binding(
+            get: { shareText.map(SharePayload.init(text:)) },
+            set: { shareText = $0?.text }
+        )) { payload in
+            ShareSheet(text: payload.text)
+        }
+    }
+}
+
+struct JoinInviteScreen: View {
+    @ObservedObject var manager: AppManager
+    @State private var inviteInput = ""
+    @State private var showingScanner = false
+
+    private var normalizedInviteInput: String {
+        inviteInput.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        IrisScrollScreen {
+            IrisSectionCard(accent: true) {
+                CardHeader(
+                    title: "Join chat",
+                    subtitle: "Paste or scan an invite link."
+                )
+
+                TextField("Invite link", text: $inviteInput)
+                    .textFieldStyle(.plain)
+                    .irisInputField()
+                    .accessibilityIdentifier("joinInviteInput")
+
+                HStack(spacing: 10) {
+                    Button("Paste") {
+                        inviteInput = PlatformClipboard.string() ?? ""
+                    }
+                    .buttonStyle(IrisSecondaryButtonStyle())
+                    .accessibilityIdentifier("joinInvitePasteButton")
+
+                    if irisSupportsQrScanning {
+                        Button("Scan QR") { showingScanner = true }
+                            .buttonStyle(IrisSecondaryButtonStyle())
+                            .accessibilityIdentifier("joinInviteScanQrButton")
+                    }
+                }
+
+                Button(manager.state.busy.acceptingInvite ? "Joining…" : "Join chat") {
+                    manager.dispatch(.acceptInvite(inviteInput: normalizedInviteInput))
+                }
+                .buttonStyle(IrisPrimaryButtonStyle())
+                .disabled(normalizedInviteInput.isEmpty || manager.state.busy.acceptingInvite)
+                .accessibilityIdentifier("joinInviteAcceptButton")
+            }
+        }
+        .sheet(isPresented: $showingScanner) {
+            QrScannerSheet { code in
+                inviteInput = code
+                showingScanner = false
             }
         }
     }
@@ -3305,7 +3434,7 @@ private struct ShareSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Share support bundle")
+            Text("Share")
                 .font(.system(.title3, design: .rounded, weight: .bold))
 
             Text("Use the system share panel or copy the payload to the clipboard.")

@@ -29,9 +29,11 @@ import social.innode.ndr.demo.ui.theme.IrisTheme
 import social.innode.ndr.demo.ui.screens.ChatListScreen
 import social.innode.ndr.demo.ui.screens.ChatScreen
 import social.innode.ndr.demo.ui.screens.CreateAccountScreen
+import social.innode.ndr.demo.ui.screens.CreateInviteScreen
 import social.innode.ndr.demo.ui.screens.DeviceRevokedScreen
 import social.innode.ndr.demo.ui.screens.DeviceRosterScreen
 import social.innode.ndr.demo.ui.screens.GroupDetailsScreen
+import social.innode.ndr.demo.ui.screens.JoinInviteScreen
 import social.innode.ndr.demo.ui.screens.NewChatScreen
 import social.innode.ndr.demo.ui.screens.NewGroupScreen
 import social.innode.ndr.demo.ui.screens.MyProfileSheet
@@ -110,6 +112,14 @@ fun NdrApp(container: AppContainer) {
 
                     Screen.NewGroup -> {
                         NewGroupScreen(appManager = appManager, appState = appState)
+                    }
+
+                    Screen.CreateInvite -> {
+                        CreateInviteScreen(appManager = appManager, appState = appState)
+                    }
+
+                    Screen.JoinInvite -> {
+                        JoinInviteScreen(appManager = appManager, appState = appState)
                     }
 
                     Screen.Settings -> {

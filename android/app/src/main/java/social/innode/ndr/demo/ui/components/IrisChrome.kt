@@ -44,7 +44,9 @@ import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.PersonRemove
 import androidx.compose.material.icons.rounded.QrCodeScanner
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
@@ -471,4 +473,6 @@ object IrisIcons {
     val Close = Icons.Rounded.Close
     val RemoveMember = Icons.Rounded.PersonRemove
     val Logout = Icons.AutoMirrored.Rounded.Logout
+    val Refresh = Icons.Rounded.Refresh
+    val Share = Icons.Rounded.Share
 }

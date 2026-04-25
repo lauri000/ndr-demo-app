@@ -27,9 +27,9 @@ Compared against `~/src/iris-chat-flutter` on 2026-04-24. Sources used include F
 
 ## Chats, Invites, And Groups
 
-- [ ] Public chat invite creation, join-chat card, invite QR/share flow, and scan/paste invite acceptance. Flutter coverage: `test/widget/create_invite_screen_test.dart`, `test/widget/scan_invite_screen_test.dart`, `test/integration/chat_flow_test.dart`.
+- [x] Public chat invite creation, join-chat card, invite QR/share flow, and scan/paste invite acceptance. Flutter coverage: `test/widget/create_invite_screen_test.dart`, `test/widget/scan_invite_screen_test.dart`, `test/integration/chat_flow_test.dart`.
 - [x] New-chat screen layout with Join Chat, New Chat, and New Group sections in the Flutter order. Flutter coverage: `test/widget/new_chat_screen_test.dart`.
-- [ ] Invite response subscription for active invites without relying on fixed fetch windows. Flutter coverage: `test/unit/core/utils/invite_response_subscription_test.dart`.
+- [x] Invite response subscription for active invites without relying on fixed fetch windows. Flutter coverage: `test/unit/core/utils/invite_response_subscription_test.dart`.
 - [x] Group metadata notices and chat settings notices.
 - [x] Group member profile-name presentation parity in all member lists.
 - [x] Burst incoming message ordering and visibility parity with Flutter macOS e2e tests.

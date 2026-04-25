@@ -5,6 +5,7 @@ impl AppCore {
         self.state.account = self.build_account_snapshot();
         self.state.device_roster = self.build_device_roster_snapshot();
         self.state.network_status = Some(self.build_network_status_snapshot());
+        self.state.public_invite = self.build_public_invite_snapshot();
         self.state.preferences = self.preferences.clone();
 
         let default_screen = match self
@@ -260,6 +261,17 @@ impl AppCore {
             last_debug_category: last_debug.map(|entry| entry.category.clone()),
             last_debug_detail: last_debug.map(|entry| entry.detail.clone()),
         }
+    }
+
+    pub(super) fn build_public_invite_snapshot(&self) -> Option<PublicInviteSnapshot> {
+        let invite = self
+            .logged_in
+            .as_ref()?
+            .session_manager
+            .snapshot()
+            .local_invite?;
+        let url = codec::invite_url(&invite, CHAT_INVITE_ROOT_URL).ok()?;
+        Some(PublicInviteSnapshot { url })
     }
 
     pub(super) fn group_snapshot_for_chat_id(&self, chat_id: &str) -> Option<GroupSnapshot> {

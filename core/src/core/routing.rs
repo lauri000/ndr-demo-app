@@ -47,6 +47,28 @@ impl AppCore {
                 self.screen_stack = vec![Screen::NewGroup];
                 self.active_chat_id = None;
             }
+            Screen::CreateInvite => {
+                if !self.can_use_chats() {
+                    self.state.toast =
+                        Some(chat_unavailable_message(self.logged_in.as_ref()).to_string());
+                    self.emit_state();
+                    return;
+                }
+                self.screen_stack = vec![Screen::CreateInvite];
+                self.active_chat_id = None;
+                self.create_public_invite();
+                return;
+            }
+            Screen::JoinInvite => {
+                if !self.can_use_chats() {
+                    self.state.toast =
+                        Some(chat_unavailable_message(self.logged_in.as_ref()).to_string());
+                    self.emit_state();
+                    return;
+                }
+                self.screen_stack = vec![Screen::JoinInvite];
+                self.active_chat_id = None;
+            }
             Screen::Settings => {
                 self.screen_stack = vec![Screen::Settings];
                 self.active_chat_id = None;
@@ -112,6 +134,16 @@ impl AppCore {
                 | Screen::AwaitingDeviceApproval
                 | Screen::DeviceRevoked => {}
                 Screen::Settings => normalized_stack.push(Screen::Settings),
+                Screen::CreateInvite => {
+                    if self.can_use_chats() {
+                        normalized_stack.push(Screen::CreateInvite);
+                    }
+                }
+                Screen::JoinInvite => {
+                    if self.can_use_chats() {
+                        normalized_stack.push(Screen::JoinInvite);
+                    }
+                }
                 Screen::NewChat => {
                     if self.can_use_chats() {
                         normalized_stack.push(Screen::NewChat);
