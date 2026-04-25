@@ -715,6 +715,7 @@ struct ChatListScreen: View {
 }
 
 struct NewChatScreen: View {
+    @Environment(\.irisPalette) private var palette
     @ObservedObject var manager: AppManager
     @State private var peerInput = ""
     @State private var showingScanner = false
@@ -729,62 +730,37 @@ struct NewChatScreen: View {
 
     var body: some View {
         IrisScrollScreen {
-            VStack(spacing: 16) {
-                joinChatSection
-                newChatSection
-                newGroupSection
+            VStack(spacing: 18) {
+                directChatForm
+                secondaryActions
             }
         }
         .sheet(isPresented: $showingScanner) {
             QrScannerSheet { code in
-                peerInput = normalizePeerInput(input: code)
+                handleScannedCode(code)
                 showingScanner = false
             }
         }
     }
 
-    private var joinChatSection: some View {
-        IrisSectionCard {
-            CardHeader(
-                title: "Join chat",
-                subtitle: "Accept an invite link or share one of your own."
-            )
-
-            HStack(spacing: 10) {
-                Button("Join chat") {
-                    manager.dispatch(.pushScreen(screen: .joinInvite))
-                }
-                .buttonStyle(IrisSecondaryButtonStyle(compact: true))
-                .accessibilityIdentifier("newChatJoinInviteButton")
-
-                Button("Create invite") {
-                    manager.dispatch(.pushScreen(screen: .createInvite))
-                }
-                .buttonStyle(IrisSecondaryButtonStyle(compact: true))
-                .accessibilityIdentifier("newChatCreateInviteButton")
-            }
-        }
-    }
-
-    private var newChatSection: some View {
-        IrisSectionCard(accent: true) {
+    private var directChatForm: some View {
+        VStack(alignment: .leading, spacing: 12) {
             Color.clear
                 .frame(height: 0)
                 .accessibilityIdentifier("newChatPrimaryCard")
 
-            CardHeader(
-                title: "Direct chat",
-                subtitle: "Paste a user ID, a hex key, or scan a QR code to open a one-to-one conversation."
-            )
+            Text("User ID")
+                .font(.system(.headline, design: .rounded, weight: .semibold))
+                .foregroundStyle(palette.textPrimary)
 
-            TextField("User ID, hex, or nostr:…", text: $peerInput)
+            TextField("User ID, hex, or link", text: $peerInput)
                 .irisIdentifierInputModifiers()
                 .textFieldStyle(.plain)
                 .irisInputField()
                 .accessibilityIdentifier("newChatPeerInput")
 
             if !peerInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !validPeerInput {
-                Text("Not a valid nostr public key.")
+                Text("Invalid user ID.")
                     .font(.system(.footnote, design: .rounded))
                     .foregroundStyle(.red)
             }
@@ -803,18 +779,31 @@ struct NewChatScreen: View {
         }
     }
 
-    private var newGroupSection: some View {
-        IrisSectionCard {
-            CardHeader(
-                title: "New group",
-                subtitle: "Start a new group conversation."
-            )
+    private var secondaryActions: some View {
+        VStack(spacing: 8) {
+            newChatActionRow(
+                title: "Join with invite",
+                systemImage: "link",
+                identifier: "newChatJoinInviteButton"
+            ) {
+                manager.dispatch(.pushScreen(screen: .joinInvite))
+            }
 
-            Button("New group") {
+            newChatActionRow(
+                title: "Create invite",
+                systemImage: "square.and.arrow.up",
+                identifier: "newChatCreateInviteButton"
+            ) {
+                manager.dispatch(.pushScreen(screen: .createInvite))
+            }
+
+            newChatActionRow(
+                title: "New group",
+                systemImage: "person.3.fill",
+                identifier: "newChatNewGroupButton"
+            ) {
                 manager.dispatch(.pushScreen(screen: .newGroup))
             }
-            .buttonStyle(IrisSecondaryButtonStyle())
-            .accessibilityIdentifier("newChatNewGroupButton")
         }
     }
 
@@ -833,6 +822,54 @@ struct NewChatScreen: View {
                     .buttonStyle(IrisSecondaryButtonStyle())
                     .accessibilityIdentifier("newChatScanQrButton")
             }
+        }
+    }
+
+    private func newChatActionRow(
+        title: String,
+        systemImage: String,
+        identifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(.system(.body, weight: .semibold))
+                    .frame(width: 22)
+                    .foregroundStyle(palette.accent)
+                Text(title)
+                    .font(.system(.body, design: .rounded, weight: .semibold))
+                    .foregroundStyle(palette.textPrimary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(.footnote, weight: .semibold))
+                    .foregroundStyle(palette.muted)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 13)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(palette.panel)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(palette.border, lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(identifier)
+    }
+
+    private func handleScannedCode(_ code: String) {
+        let normalized = normalizePeerInput(input: code)
+        if !normalized.isEmpty, isValidPeerInput(input: normalized) {
+            peerInput = normalized
+            return
+        }
+
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            manager.dispatch(.acceptInvite(inviteInput: trimmed))
         }
     }
 }

@@ -1,14 +1,18 @@
 package social.innode.ndr.demo.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -17,9 +21,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import social.innode.ndr.demo.core.AppManager
 import social.innode.ndr.demo.rust.AppAction
@@ -29,7 +35,6 @@ import social.innode.ndr.demo.rust.isValidPeerInput
 import social.innode.ndr.demo.rust.normalizePeerInput
 import social.innode.ndr.demo.ui.components.IrisIcons
 import social.innode.ndr.demo.ui.components.IrisPrimaryButton
-import social.innode.ndr.demo.ui.components.IrisSectionCard
 import social.innode.ndr.demo.ui.components.IrisSecondaryButton
 import social.innode.ndr.demo.ui.components.IrisTopBar
 import social.innode.ndr.demo.ui.components.rememberIrisClipboard
@@ -67,55 +72,17 @@ fun NewChatScreen(
                     .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            IrisSectionCard {
+            Column(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .testTag("newChatPrimaryCard"),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 Text(
-                    text = "Join Chat",
-                    style = MaterialTheme.typography.titleLarge,
-                )
-                Text(
-                    text = "Accept an invite link or share one of your own.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = IrisTheme.palette.muted,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    IrisSecondaryButton(
-                        text = "Join Chat",
-                        onClick = { appManager.pushScreen(Screen.JoinInvite) },
-                        modifier = Modifier.testTag("newChatJoinInviteButton"),
-                        icon = {
-                            Icon(
-                                imageVector = IrisIcons.NewChat,
-                                contentDescription = null,
-                            )
-                        },
-                    )
-                    IrisSecondaryButton(
-                        text = "Create Invite",
-                        onClick = { appManager.pushScreen(Screen.CreateInvite) },
-                        modifier = Modifier.testTag("newChatCreateInviteButton"),
-                        icon = {
-                            Icon(
-                                imageVector = IrisIcons.Share,
-                                contentDescription = null,
-                            )
-                        },
-                    )
-                }
-            }
-
-            IrisSectionCard {
-                Text(
-                    text = "New Chat",
-                    style = MaterialTheme.typography.titleLarge,
-                )
-                Text(
-                    text = "Paste a user ID, hex key, or scan a QR.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = IrisTheme.palette.muted,
-                )
-                Text(
-                    text = "Peer key",
+                    text = "User ID",
                     style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
                 )
                 TextField(
                     value = peerInput,
@@ -126,12 +93,11 @@ fun NewChatScreen(
                             .testTag("newChatPeerInput"),
                     placeholder = {
                         Text(
-                            text = "User ID, hex, or nostr:...",
+                            text = "User ID, hex, or link",
                             color = IrisTheme.palette.muted,
                         )
                     },
-                    singleLine = false,
-                    minLines = 2,
+                    singleLine = true,
                     colors =
                         TextFieldDefaults.colors(
                             focusedContainerColor = IrisTheme.palette.panelAlt,
@@ -145,7 +111,7 @@ fun NewChatScreen(
 
                 if (peerInput.isNotBlank() && !isValidPeer) {
                     Text(
-                        text = "Not a valid nostr public key.",
+                        text = "Invalid user ID.",
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -197,26 +163,24 @@ fun NewChatScreen(
                 )
             }
 
-            IrisSectionCard {
-                Text(
-                    text = "New Group",
-                    style = MaterialTheme.typography.titleLarge,
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                NewChatActionRow(
+                    text = "Join with invite",
+                    icon = { Icon(imageVector = IrisIcons.NewChat, contentDescription = null) },
+                    modifier = Modifier.testTag("newChatJoinInviteButton"),
+                    onClick = { appManager.pushScreen(Screen.JoinInvite) },
                 )
-                Text(
-                    text = "Create a group conversation.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = IrisTheme.palette.muted,
+                NewChatActionRow(
+                    text = "Create invite",
+                    icon = { Icon(imageVector = IrisIcons.Share, contentDescription = null) },
+                    modifier = Modifier.testTag("newChatCreateInviteButton"),
+                    onClick = { appManager.pushScreen(Screen.CreateInvite) },
                 )
-                IrisSecondaryButton(
-                    text = "New Group",
-                    onClick = { appManager.pushScreen(Screen.NewGroup) },
+                NewChatActionRow(
+                    text = "New group",
+                    icon = { Icon(imageVector = IrisIcons.NewGroup, contentDescription = null) },
                     modifier = Modifier.testTag("newChatNewGroupButton"),
-                    icon = {
-                        Icon(
-                            imageVector = IrisIcons.NewGroup,
-                            contentDescription = null,
-                        )
-                    },
+                    onClick = { appManager.pushScreen(Screen.NewGroup) },
                 )
             }
         }
@@ -227,14 +191,61 @@ fun NewChatScreen(
             onDismiss = { showScanner = false },
             onScanned = { scanned ->
                 val normalized = normalizePeerInput(scanned)
-                if (!isValidPeerInput(normalized)) {
-                    "Scanned QR did not contain a valid public key."
-                } else {
+                if (normalized.isNotBlank() && isValidPeerInput(normalized)) {
                     peerInput = normalized
                     showScanner = false
                     null
+                } else if (scanned.isNotBlank()) {
+                    appManager.dispatch(AppAction.AcceptInvite(scanned.trim()))
+                    showScanner = false
+                    null
+                } else {
+                    "Scanned QR was empty."
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun NewChatActionRow(
+    text: String,
+    icon: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
+        color = IrisTheme.palette.panel,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, IrisTheme.palette.border),
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 13.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(
+                modifier = Modifier.width(22.dp),
+                color = Color.Transparent,
+                contentColor = IrisTheme.palette.accent,
+            ) {
+                icon()
+            }
+            Text(
+                text = text,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Icon(
+                imageVector = IrisIcons.ChevronRight,
+                contentDescription = null,
+                tint = IrisTheme.palette.muted,
+            )
+        }
     }
 }

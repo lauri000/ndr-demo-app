@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.InsertDriveFile
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.AddComment
@@ -477,4 +478,5 @@ object IrisIcons {
     val Logout = Icons.AutoMirrored.Rounded.Logout
     val Refresh = Icons.Rounded.Refresh
     val Share = Icons.Rounded.Share
+    val ChevronRight = Icons.AutoMirrored.Rounded.KeyboardArrowRight
 }
