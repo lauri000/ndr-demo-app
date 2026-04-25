@@ -1,12 +1,16 @@
 package social.innode.ndr.demo.ui.screens
 
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -14,8 +18,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Switch
@@ -25,19 +31,28 @@ import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import java.net.URL
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import social.innode.ndr.demo.core.AppManager
 import social.innode.ndr.demo.rust.AppAction
 import social.innode.ndr.demo.rust.NetworkStatusSnapshot
+import social.innode.ndr.demo.ui.components.IrisAvatar
 import social.innode.ndr.demo.ui.components.IrisIcons
 import social.innode.ndr.demo.ui.components.IrisInlineAction
 import social.innode.ndr.demo.ui.components.IrisPrimaryButton
@@ -61,6 +76,7 @@ fun MyProfileSheet(
     appManager: AppManager,
     npub: String,
     displayName: String,
+    pictureUrl: String?,
     publicKeyHex: String,
     deviceNpub: String,
     canManageDevices: Boolean,
@@ -81,6 +97,8 @@ fun MyProfileSheet(
     var pendingSecretExport by remember { mutableStateOf<SecretExportKind?>(null) }
     var showDeleteAllConfirmation by remember { mutableStateOf(false) }
     var profileName by remember(displayName) { mutableStateOf(displayName) }
+    var showProfilePicture by remember { mutableStateOf(false) }
+    val trimmedPictureUrl = pictureUrl?.trim().orEmpty()
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -96,15 +114,40 @@ fun MyProfileSheet(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             IrisSectionCard {
-                Text(
-                    text = displayName,
-                    style = MaterialTheme.typography.headlineSmall,
-                )
-                Text(
-                    text = "My profile",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = IrisTheme.palette.muted,
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IrisAvatar(
+                        label = displayName.ifBlank { npub },
+                        size = 54.dp,
+                        emphasize = true,
+                        imageUrl = trimmedPictureUrl.ifEmpty { null },
+                        modifier =
+                            Modifier
+                                .then(
+                                    if (trimmedPictureUrl.isNotEmpty()) {
+                                        Modifier
+                                            .clickable { showProfilePicture = true }
+                                            .testTag("myProfilePictureButton")
+                                    } else {
+                                        Modifier
+                                    },
+                                ),
+                    )
+                    Column {
+                        Text(
+                            text = displayName.ifBlank { "Owner profile" },
+                            style = MaterialTheme.typography.headlineSmall,
+                        )
+                        Text(
+                            text = "My profile",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = IrisTheme.palette.muted,
+                        )
+                    }
+                }
                 TextField(
                     value = profileName,
                     onValueChange = { profileName = it },
@@ -413,6 +456,13 @@ fun MyProfileSheet(
         }
     }
 
+    if (showProfilePicture && trimmedPictureUrl.isNotEmpty()) {
+        ProfilePictureDialog(
+            imageUrl = trimmedPictureUrl,
+            onDismiss = { showProfilePicture = false },
+        )
+    }
+
     if (showDeleteAllConfirmation) {
         AlertDialog(
             onDismissRequest = { showDeleteAllConfirmation = false },
@@ -497,5 +547,59 @@ fun MyProfileSheet(
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun ProfilePictureDialog(
+    imageUrl: String,
+    onDismiss: () -> Unit,
+) {
+    val bitmap =
+        produceState<android.graphics.Bitmap?>(initialValue = null, imageUrl) {
+            value =
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        URL(imageUrl).openStream().use { stream ->
+                            BitmapFactory.decodeStream(stream)
+                        }
+                    }.getOrNull()
+                }
+        }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.92f))
+                    .clickable(onClick = onDismiss)
+                    .testTag("myProfilePictureViewer"),
+            contentAlignment = Alignment.Center,
+        ) {
+            bitmap.value?.let { loadedBitmap ->
+                Image(
+                    bitmap = loadedBitmap.asImageBitmap(),
+                    contentDescription = "Profile picture",
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .padding(18.dp),
+                    contentScale = ContentScale.Fit,
+                )
+            } ?: CircularProgressIndicator(color = Color.White)
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier.align(Alignment.TopEnd),
+            ) {
+                Icon(
+                    imageVector = IrisIcons.Close,
+                    contentDescription = "Close profile picture",
+                    tint = Color.White,
+                )
+            }
+        }
     }
 }

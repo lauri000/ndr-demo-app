@@ -1764,6 +1764,7 @@ struct ProfileSheet: View {
     @State private var pendingSecretExport: SecretExportKind?
     @State private var showingDeleteAllConfirmation = false
     @State private var profileName = ""
+    @State private var profilePictureViewerURL: URL?
     let closeSheet: () -> Void
 
     var body: some View {
@@ -1775,12 +1776,7 @@ struct ProfileSheet: View {
                     if let account = manager.state.account {
                         IrisSectionCard(accent: true) {
                             HStack(spacing: 14) {
-                                IrisAvatar(
-                                    label: account.displayName.isEmpty ? account.npub : account.displayName,
-                                    size: 52,
-                                    emphasize: true,
-                                    imageURL: account.pictureUrl
-                                )
+                                profileAvatar(for: account)
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(account.displayName.isEmpty ? "Owner profile" : account.displayName)
                                         .font(.system(.title3, design: .rounded, weight: .bold))
@@ -2003,6 +1999,13 @@ struct ProfileSheet: View {
             }
             .navigationTitle("Profile")
             .irisInlineTitleDisplayMode()
+            .overlay {
+                if let profilePictureViewerURL {
+                    IrisProfilePictureViewer(url: profilePictureViewerURL) {
+                        self.profilePictureViewerURL = nil
+                    }
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: irisToolbarTrailingPlacement) {
                     Button("Done") { close() }
@@ -2049,6 +2052,74 @@ struct ProfileSheet: View {
     private func close() {
         closeSheet()
         dismiss()
+    }
+
+    @ViewBuilder
+    private func profileAvatar(for account: AccountSnapshot) -> some View {
+        let label = account.displayName.isEmpty ? account.npub : account.displayName
+        let trimmedURL = account.pictureUrl?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedURL.isEmpty, let url = URL(string: trimmedURL) {
+            Button {
+                profilePictureViewerURL = url
+            } label: {
+                IrisAvatar(
+                    label: label,
+                    size: 52,
+                    emphasize: true,
+                    imageURL: trimmedURL
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open profile picture")
+            .accessibilityIdentifier("myProfilePictureButton")
+        } else {
+            IrisAvatar(
+                label: label,
+                size: 52,
+                emphasize: true,
+                imageURL: account.pictureUrl
+            )
+        }
+    }
+}
+
+private struct IrisProfilePictureViewer: View {
+    let url: URL
+    let onClose: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.opacity(0.92)
+                .ignoresSafeArea()
+                .onTapGesture(perform: onClose)
+
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFit()
+                        .padding(22)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                default:
+                    ProgressView()
+                        .tint(.white)
+                }
+            }
+
+            Button(action: onClose) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .padding(18)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close profile picture")
+        }
+        .irisOnExitCommand(onClose)
+        .irisOnEscapeKey(onClose)
+        .accessibilityIdentifier("myProfilePictureViewer")
+        .zIndex(20)
     }
 }
 
