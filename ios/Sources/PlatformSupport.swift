@@ -1,6 +1,10 @@
 import SwiftUI
 import UserNotifications
 
+#if os(macOS)
+import ServiceManagement
+#endif
+
 #if canImport(UIKit)
 import UIKit
 import WebKit
@@ -369,5 +373,28 @@ final class SystemDesktopNotificationPoster: DesktopNotificationPosting {
             trigger: nil
         )
         center.add(request)
+    }
+}
+
+enum PlatformStartupAtLogin {
+    static var isSupported: Bool {
+        #if os(macOS)
+        true
+        #else
+        false
+        #endif
+    }
+
+    static func setEnabled(_ enabled: Bool) throws {
+        #if os(macOS)
+        let service = SMAppService.mainApp
+        if enabled {
+            if service.status != .enabled {
+                try service.register()
+            }
+        } else if service.status == .enabled {
+            try service.unregister()
+        }
+        #endif
     }
 }

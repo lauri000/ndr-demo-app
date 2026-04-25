@@ -61,6 +61,9 @@ pub enum AppAction {
     SetDesktopNotificationsEnabled {
         enabled: bool,
     },
+    SetStartupAtLoginEnabled {
+        enabled: bool,
+    },
     MarkMessagesSeen {
         chat_id: String,
         message_ids: Vec<String>,

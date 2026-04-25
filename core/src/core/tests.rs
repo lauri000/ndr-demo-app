@@ -738,6 +738,26 @@ fn desktop_notification_preference_updates_state_and_persists() {
 }
 
 #[test]
+fn startup_at_login_preference_updates_state_and_persists() {
+    let data_dir = TempDir::new().expect("temp dir");
+    let mut core = test_core(data_dir.path());
+    start_primary_test_session(&mut core, 24, true, true).expect("start session");
+
+    assert!(!core.state.preferences.startup_at_login_enabled);
+    core.handle_action(AppAction::SetStartupAtLoginEnabled { enabled: true });
+    assert!(core.state.preferences.startup_at_login_enabled);
+    assert!(
+        persisted_state(data_dir.path())
+            .preferences
+            .startup_at_login_enabled
+    );
+
+    let mut restored = test_core(data_dir.path());
+    start_primary_test_session(&mut restored, 24, true, true).expect("restore session");
+    assert!(restored.state.preferences.startup_at_login_enabled);
+}
+
+#[test]
 fn old_or_unversioned_persistence_is_ignored_after_schema_cut() {
     let _guard = relay_test_lock()
         .lock()

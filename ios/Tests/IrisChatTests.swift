@@ -57,7 +57,11 @@ private final class MockRustApp: RustAppClient {
         currentChat: nil,
         groupDetails: nil,
         networkStatus: nil,
-        preferences: PreferencesSnapshot(sendTypingIndicators: true, desktopNotificationsEnabled: true),
+        preferences: PreferencesSnapshot(
+            sendTypingIndicators: true,
+            desktopNotificationsEnabled: true,
+            startupAtLoginEnabled: false
+        ),
         toast: nil
     )) {
         self.currentState = state
@@ -106,7 +110,11 @@ private func makeAppState(
     account: AccountSnapshot? = nil,
     chatList: [ChatThreadSnapshot] = [],
     currentChat: CurrentChatSnapshot? = nil,
-    preferences: PreferencesSnapshot = PreferencesSnapshot(sendTypingIndicators: true, desktopNotificationsEnabled: true),
+    preferences: PreferencesSnapshot = PreferencesSnapshot(
+        sendTypingIndicators: true,
+        desktopNotificationsEnabled: true,
+        startupAtLoginEnabled: false
+    ),
     toast: String? = nil
 ) -> AppState {
     AppState(
@@ -211,7 +219,8 @@ final class IrisChatTests: XCTestCase {
                 chatList: [makeChatThread(unreadCount: 0)],
                 preferences: PreferencesSnapshot(
                     sendTypingIndicators: true,
-                    desktopNotificationsEnabled: false
+                    desktopNotificationsEnabled: false,
+                    startupAtLoginEnabled: false
                 )
             )
         )
@@ -228,7 +237,8 @@ final class IrisChatTests: XCTestCase {
             chatList: [makeChatThread(unreadCount: 1, preview: "new text")],
             preferences: PreferencesSnapshot(
                 sendTypingIndicators: true,
-                desktopNotificationsEnabled: false
+                desktopNotificationsEnabled: false,
+                startupAtLoginEnabled: false
             )
         )))
 

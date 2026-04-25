@@ -1836,6 +1836,19 @@ struct ProfileSheet: View {
                             )
                         )
                         .accessibilityIdentifier("myProfileDesktopNotificationsToggle")
+
+                        if PlatformStartupAtLogin.isSupported {
+                            Toggle(
+                                "Open at login",
+                                isOn: Binding(
+                                    get: { manager.state.preferences.startupAtLoginEnabled },
+                                    set: { enabled in
+                                        manager.setStartupAtLoginEnabled(enabled)
+                                    }
+                                )
+                            )
+                            .accessibilityIdentifier("myProfileStartupAtLoginToggle")
+                        }
                     }
 
                     IrisSectionCard {

@@ -1058,6 +1058,16 @@ impl AppCore {
         self.emit_state();
     }
 
+    pub(super) fn set_startup_at_login_enabled(&mut self, enabled: bool) {
+        if self.preferences.startup_at_login_enabled == enabled {
+            return;
+        }
+        self.preferences.startup_at_login_enabled = enabled;
+        self.rebuild_state();
+        self.persist_best_effort();
+        self.emit_state();
+    }
+
     pub(super) fn mark_messages_seen(&mut self, chat_id: &str, message_ids: &[String]) {
         if message_ids.is_empty() {
             return;

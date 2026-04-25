@@ -39,6 +39,7 @@ impl AppCore {
             preferences: PersistedPreferences {
                 send_typing_indicators: self.preferences.send_typing_indicators,
                 desktop_notifications_enabled: self.preferences.desktop_notifications_enabled,
+                startup_at_login_enabled: self.preferences.startup_at_login_enabled,
             },
             threads: self
                 .threads

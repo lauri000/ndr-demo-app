@@ -395,6 +395,8 @@ impl AppCore {
             self.preferences.send_typing_indicators = persisted.preferences.send_typing_indicators;
             self.preferences.desktop_notifications_enabled =
                 persisted.preferences.desktop_notifications_enabled;
+            self.preferences.startup_at_login_enabled =
+                persisted.preferences.startup_at_login_enabled;
             if allow_protocol_restore {
                 self.pending_outbound = persisted.pending_outbound.clone();
                 for pending in &mut self.pending_outbound {

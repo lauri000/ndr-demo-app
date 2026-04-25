@@ -201,6 +201,15 @@ final class AppManager: ObservableObject {
         rust.dispatch(action: action)
     }
 
+    func setStartupAtLoginEnabled(_ enabled: Bool) {
+        do {
+            try PlatformStartupAtLogin.setEnabled(enabled)
+            rust.dispatch(action: .setStartupAtLoginEnabled(enabled: enabled))
+        } catch {
+            showToast("Startup setting unavailable")
+        }
+    }
+
     func createAccount(name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
