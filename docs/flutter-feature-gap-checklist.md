@@ -52,7 +52,7 @@ Compared against `~/src/iris-chat-flutter` on 2026-04-24. Sources used include F
 - [ ] Desktop notifications and notification preference.
 - [ ] Mobile push subscription/runtime/filtering, including suppression for typing indicators. Flutter coverage: `test/unit/core/services/mobile_push_*`, `integration_test/mobile_push_device_delivery_test.dart`.
 - [ ] Startup-at-login preference on supported desktop platforms. Flutter coverage: `test/unit/core/services/startup_launch_service_test.dart`.
-- [ ] Connectivity/offline indicator UI.
+- [x] Connectivity/offline indicator UI.
 - [x] Relay connection status/debug visibility beyond support bundle data.
 
 ## Media And Hashtree

@@ -23,6 +23,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import social.innode.ndr.demo.account.AccountBootstrapState
 import social.innode.ndr.demo.core.AppContainer
 import social.innode.ndr.demo.rust.AppAction
+import social.innode.ndr.demo.rust.NetworkStatusSnapshot
 import social.innode.ndr.demo.rust.Screen
 import social.innode.ndr.demo.ui.theme.IrisTheme
 import social.innode.ndr.demo.ui.screens.ChatListScreen
@@ -141,20 +142,25 @@ fun NdrApp(container: AppContainer) {
             }
         }
 
-        if (appState.networkStatus?.syncing == true) {
-            NetworkSyncPill(
+        val networkStatusText = networkStatusIndicatorText(appState.networkStatus)
+        if (networkStatusText != null) {
+            NetworkStatusPill(
+                text = networkStatusText,
                 modifier =
                     Modifier
                         .align(Alignment.TopCenter)
                         .padding(top = 74.dp)
-                        .testTag("networkSyncPill"),
+                        .testTag("networkStatusPill"),
             )
         }
     }
 }
 
 @Composable
-private fun NetworkSyncPill(modifier: Modifier = Modifier) {
+private fun NetworkStatusPill(
+    text: String,
+    modifier: Modifier = Modifier,
+) {
     Surface(
         modifier = modifier,
         color = IrisTheme.palette.panel,
@@ -171,11 +177,20 @@ private fun NetworkSyncPill(modifier: Modifier = Modifier) {
                 tint = IrisTheme.palette.accent,
             )
             Text(
-                text = "Syncing network",
+                text = text,
                 modifier = Modifier.padding(start = 8.dp),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurface,
             )
         }
+    }
+}
+
+private fun networkStatusIndicatorText(status: NetworkStatusSnapshot?): String? {
+    status ?: return null
+    return when {
+        status.syncing -> "Syncing network"
+        status.pendingOutboundCount > 0u || status.pendingGroupControlCount > 0u -> "Waiting for network"
+        else -> null
     }
 }

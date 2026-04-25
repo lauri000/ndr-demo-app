@@ -200,11 +200,11 @@ struct NavigationShell<Content: View>: View {
                 trailing: trailing
             )
 
-            if networkStatus?.syncing == true {
-                NetworkSyncPill()
+            if let statusText = networkStatusIndicatorText(networkStatus) {
+                NetworkStatusPill(text: statusText)
                     .padding(.top, 8)
                     .transition(.opacity)
-                    .accessibilityIdentifier("networkSyncPill")
+                    .accessibilityIdentifier("networkStatusPill")
             }
 
             content()
@@ -213,15 +213,16 @@ struct NavigationShell<Content: View>: View {
     }
 }
 
-private struct NetworkSyncPill: View {
+private struct NetworkStatusPill: View {
     @Environment(\.irisPalette) private var palette
+    let text: String
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "arrow.triangle.2.circlepath")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(palette.accent)
-            Text("Syncing network")
+            Text(text)
                 .font(.system(.caption, design: .rounded, weight: .semibold))
                 .foregroundStyle(palette.textPrimary)
         }
@@ -232,6 +233,17 @@ private struct NetworkSyncPill: View {
                 .fill(palette.panel)
         )
     }
+}
+
+private func networkStatusIndicatorText(_ status: NetworkStatusSnapshot?) -> String? {
+    guard let status else { return nil }
+    if status.syncing {
+        return "Syncing network"
+    }
+    if status.pendingOutboundCount > 0 || status.pendingGroupControlCount > 0 {
+        return "Waiting for network"
+    }
+    return nil
 }
 
 private struct OwnerPresentation {
