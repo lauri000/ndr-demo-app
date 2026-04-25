@@ -2,6 +2,19 @@ use super::*;
 
 impl AppCore {
     pub(super) fn set_local_profile_name(&mut self, name: &str) {
+        let picture_url = self
+            .logged_in
+            .as_ref()
+            .and_then(|logged_in| {
+                self.owner_profiles
+                    .get(&logged_in.owner_pubkey.to_string())
+                    .and_then(|profile| profile.picture.as_deref())
+            })
+            .map(str::to_string);
+        self.set_local_profile_metadata(name, picture_url.as_deref());
+    }
+
+    pub(super) fn set_local_profile_metadata(&mut self, name: &str, picture_url: Option<&str>) {
         let Some(local_owner_hex) = self
             .logged_in
             .as_ref()
@@ -10,7 +23,7 @@ impl AppCore {
             return;
         };
 
-        let Some(record) = build_owner_profile_record(name) else {
+        let Some(record) = build_owner_profile_record(name, picture_url) else {
             return;
         };
 
@@ -19,7 +32,7 @@ impl AppCore {
         self.persist_best_effort();
     }
 
-    pub(super) fn update_profile_metadata(&mut self, name: &str) {
+    pub(super) fn update_profile_metadata(&mut self, name: &str, picture_url: Option<&str>) {
         let trimmed = name.trim();
         if trimmed.is_empty() {
             self.state.toast = Some("Display name is required.".to_string());
@@ -36,8 +49,18 @@ impl AppCore {
             self.emit_state();
             return;
         }
+        let normalized_picture_url = match normalize_profile_field(picture_url.map(str::to_string))
+        {
+            Some(url) if normalize_profile_url(Some(url.clone())).is_none() => {
+                self.state.toast =
+                    Some("Profile picture must be an http or https URL.".to_string());
+                self.emit_state();
+                return;
+            }
+            value => value,
+        };
 
-        self.set_local_profile_name(trimmed);
+        self.set_local_profile_metadata(trimmed, normalized_picture_url.as_deref());
         self.republish_local_identity_artifacts();
         self.rebuild_state();
         self.emit_state();

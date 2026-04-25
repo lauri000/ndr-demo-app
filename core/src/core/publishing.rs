@@ -234,9 +234,9 @@ impl AppCore {
 
         self.runtime.spawn(async move {
             if let (Some(keys), Some(profile)) = (owner_keys.clone(), local_profile) {
-                if let Some(label) = profile.preferred_label() {
+                if profile.preferred_label().is_some() {
                     let event =
-                        EventBuilder::new(Kind::Metadata, build_profile_metadata_json(&label))
+                        EventBuilder::new(Kind::Metadata, build_profile_metadata_json(&profile))
                             .sign_with_keys(&keys);
                     match event {
                         Ok(event) => {

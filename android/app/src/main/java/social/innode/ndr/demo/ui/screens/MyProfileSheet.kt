@@ -97,6 +97,7 @@ fun MyProfileSheet(
     var pendingSecretExport by remember { mutableStateOf<SecretExportKind?>(null) }
     var showDeleteAllConfirmation by remember { mutableStateOf(false) }
     var profileName by remember(displayName) { mutableStateOf(displayName) }
+    var profilePictureUrl by remember(pictureUrl) { mutableStateOf(pictureUrl.orEmpty()) }
     var showProfilePicture by remember { mutableStateOf(false) }
     val trimmedPictureUrl = pictureUrl?.trim().orEmpty()
 
@@ -156,12 +157,28 @@ fun MyProfileSheet(
                     enabled = canManageDevices,
                     modifier = Modifier.fillMaxWidth().testTag("myProfileDisplayNameInput"),
                 )
+                TextField(
+                    value = profilePictureUrl,
+                    onValueChange = { profilePictureUrl = it },
+                    label = { Text("Profile picture URL") },
+                    singleLine = true,
+                    enabled = canManageDevices,
+                    modifier = Modifier.fillMaxWidth().testTag("myProfilePictureUrlInput"),
+                )
                 IrisSecondaryButton(
                     text = "Save profile",
-                    onClick = { appManager.updateProfileMetadata(profileName) },
+                    onClick = {
+                        appManager.updateProfileMetadata(
+                            name = profileName,
+                            pictureUrl = profilePictureUrl,
+                        )
+                    },
                     enabled = canManageDevices &&
                         profileName.trim().isNotEmpty() &&
-                        profileName.trim() != displayName.trim(),
+                        (
+                            profileName.trim() != displayName.trim() ||
+                                profilePictureUrl.trim() != pictureUrl.orEmpty().trim()
+                        ),
                     modifier = Modifier.testTag("myProfileSaveProfileButton"),
                 )
                 Text(

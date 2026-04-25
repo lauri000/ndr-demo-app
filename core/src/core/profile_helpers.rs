@@ -22,7 +22,10 @@ pub(super) fn normalize_profile_url(value: Option<String>) -> Option<String> {
     (value.starts_with("https://") || value.starts_with("http://")).then_some(value)
 }
 
-pub(super) fn build_owner_profile_record(name: &str) -> Option<OwnerProfileRecord> {
+pub(super) fn build_owner_profile_record(
+    name: &str,
+    picture_url: Option<&str>,
+) -> Option<OwnerProfileRecord> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return None;
@@ -31,7 +34,7 @@ pub(super) fn build_owner_profile_record(name: &str) -> Option<OwnerProfileRecor
     Some(OwnerProfileRecord {
         name: Some(trimmed.to_string()),
         display_name: Some(trimmed.to_string()),
-        picture: None,
+        picture: normalize_profile_url(picture_url.map(str::to_string)),
         updated_at_secs: unix_now().get(),
     })
 }
@@ -56,11 +59,17 @@ pub(super) fn parse_owner_profile_record(
     })
 }
 
-pub(super) fn build_profile_metadata_json(name: &str) -> String {
+pub(super) fn build_profile_metadata_json(profile: &OwnerProfileRecord) -> String {
+    let name = profile
+        .name
+        .clone()
+        .or_else(|| profile.display_name.clone())
+        .unwrap_or_default();
+    let display_name = profile.display_name.clone().or_else(|| Some(name.clone()));
     serde_json::to_string(&NostrProfileMetadata {
-        name: Some(name.to_string()),
-        display_name: Some(name.to_string()),
-        picture: None,
+        name: (!name.is_empty()).then_some(name.clone()),
+        display_name,
+        picture: profile.picture.clone(),
     })
     .unwrap_or_else(|_| format!(r#"{{"name":"{name}","display_name":"{name}"}}"#))
 }

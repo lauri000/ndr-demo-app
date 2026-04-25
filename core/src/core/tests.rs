@@ -3379,7 +3379,7 @@ fn update_profile_metadata_changes_local_profile_and_republishes() {
     let mut core = test_core(data_dir.path());
     core.create_account("Alice");
 
-    core.update_profile_metadata("Alicia");
+    core.update_profile_metadata("Alicia", Some("https://example.com/alicia.png"));
 
     assert_eq!(
         core.state.account.as_ref().expect("account").display_name,
@@ -3413,6 +3413,19 @@ fn update_profile_metadata_changes_local_profile_and_republishes() {
         serde_json::from_str(&metadata_event.content).expect("metadata json");
     assert_eq!(metadata.name.as_deref(), Some("Alicia"));
     assert_eq!(metadata.display_name.as_deref(), Some("Alicia"));
+    assert_eq!(
+        metadata.picture.as_deref(),
+        Some("https://example.com/alicia.png")
+    );
+    assert_eq!(
+        core.state
+            .account
+            .as_ref()
+            .expect("account")
+            .picture_url
+            .as_deref(),
+        Some("https://example.com/alicia.png")
+    );
 }
 
 #[test]

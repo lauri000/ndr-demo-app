@@ -122,12 +122,20 @@ class AppManager(
         rust.dispatch(AppAction.CreateAccount(name.trim()))
     }
 
-    fun updateProfileMetadata(name: String) {
+    fun updateProfileMetadata(
+        name: String,
+        pictureUrl: String?,
+    ) {
         val trimmed = name.trim()
         if (trimmed.isEmpty()) {
             return
         }
-        rust.dispatch(AppAction.UpdateProfileMetadata(trimmed))
+        rust.dispatch(
+            AppAction.UpdateProfileMetadata(
+                name = trimmed,
+                pictureUrl = pictureUrl?.trim()?.ifEmpty { null },
+            ),
+        )
     }
 
     fun restoreSession(nsecOrHex: String) {

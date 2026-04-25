@@ -1764,6 +1764,7 @@ struct ProfileSheet: View {
     @State private var pendingSecretExport: SecretExportKind?
     @State private var showingDeleteAllConfirmation = false
     @State private var profileName = ""
+    @State private var profilePictureURL = ""
     @State private var profilePictureViewerURL: URL?
     let closeSheet: () -> Void
 
@@ -1774,67 +1775,17 @@ struct ProfileSheet: View {
 
                 IrisScrollScreen {
                     if let account = manager.state.account {
-                        IrisSectionCard(accent: true) {
-                            HStack(spacing: 14) {
-                                profileAvatar(for: account)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(account.displayName.isEmpty ? "Owner profile" : account.displayName)
-                                        .font(.system(.title3, design: .rounded, weight: .bold))
-                                        .foregroundStyle(palette.textPrimary)
-                                    Text(account.npub)
-                                        .font(.system(.footnote, design: .monospaced))
-                                        .foregroundStyle(palette.muted)
-                                        .lineLimit(2)
-                                        .accessibilityIdentifier("myProfileNpubValue")
-                                }
-                            }
-                            .onAppear {
-                                profileName = account.displayName
-                            }
-                            .irisOnChange(of: account.displayName) { value in
-                                profileName = value
-                            }
-
-                            TextField("Display name", text: $profileName)
-                                .textFieldStyle(.roundedBorder)
-                                .disabled(!account.hasOwnerSigningAuthority)
-                                .accessibilityIdentifier("myProfileDisplayNameInput")
-
-                            Button("Save profile") {
-                                manager.updateProfileMetadata(name: profileName)
-                            }
-                            .buttonStyle(IrisSecondaryButtonStyle())
-                            .disabled(
-                                !account.hasOwnerSigningAuthority ||
-                                    profileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                                    profileName.trimmingCharacters(in: .whitespacesAndNewlines) ==
-                                    account.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-                            )
-                            .accessibilityIdentifier("myProfileSaveProfileButton")
-
-                            Button {
+                        ProfileEditorCard(
+                            manager: manager,
+                            account: account,
+                            profileName: $profileName,
+                            profilePictureURL: $profilePictureURL,
+                            openProfilePicture: { profilePictureViewerURL = $0 },
+                            manageDevices: {
                                 close()
                                 manager.dispatch(.pushScreen(screen: .deviceRoster))
-                            } label: {
-                                Label("Manage devices", systemImage: "laptopcomputer.and.iphone")
                             }
-                            .buttonStyle(IrisSecondaryButtonStyle())
-                            .accessibilityIdentifier("myProfileManageDevicesButton")
-
-                            QrCodeImage(text: account.npub)
-                                .frame(height: 220)
-                                .frame(maxWidth: .infinity)
-                                .accessibilityIdentifier("myProfileQrCode")
-
-                            MonoValue(label: "Device", value: account.deviceNpub)
-
-                            VStack(spacing: 10) {
-                                Button("Copy owner npub") { manager.copyToClipboard(account.npub) }
-                                    .buttonStyle(IrisSecondaryButtonStyle())
-                                Button("Copy device npub") { manager.copyToClipboard(account.deviceNpub) }
-                                    .buttonStyle(IrisSecondaryButtonStyle())
-                            }
-                        }
+                        )
                     }
 
                     if manager.trustedTestBuildEnabled() {
@@ -2054,32 +2005,114 @@ struct ProfileSheet: View {
         dismiss()
     }
 
+}
+
+private struct ProfileEditorCard: View {
+    @Environment(\.irisPalette) private var palette
+    @ObservedObject var manager: AppManager
+    let account: AccountSnapshot
+    @Binding var profileName: String
+    @Binding var profilePictureURL: String
+    let openProfilePicture: (URL) -> Void
+    let manageDevices: () -> Void
+
+    var body: some View {
+        IrisSectionCard(accent: true) {
+            HStack(spacing: 14) {
+                profileAvatar
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(account.displayName.isEmpty ? "Owner profile" : account.displayName)
+                        .font(.system(.title3, design: .rounded, weight: .bold))
+                        .foregroundStyle(palette.textPrimary)
+                    Text(account.npub)
+                        .font(.system(.footnote, design: .monospaced))
+                        .foregroundStyle(palette.muted)
+                        .lineLimit(2)
+                        .accessibilityIdentifier("myProfileNpubValue")
+                }
+            }
+            .onAppear {
+                profileName = account.displayName
+                profilePictureURL = account.pictureUrl ?? ""
+            }
+            .irisOnChange(of: account.displayName) { value in
+                profileName = value
+            }
+            .irisOnChange(of: account.pictureUrl) { value in
+                profilePictureURL = value ?? ""
+            }
+
+            TextField("Display name", text: $profileName)
+                .textFieldStyle(.roundedBorder)
+                .disabled(!account.hasOwnerSigningAuthority)
+                .accessibilityIdentifier("myProfileDisplayNameInput")
+
+            TextField("Profile picture URL", text: $profilePictureURL)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+                .disabled(!account.hasOwnerSigningAuthority)
+                .accessibilityIdentifier("myProfilePictureUrlInput")
+
+            Button("Save profile") {
+                manager.updateProfileMetadata(name: profileName, pictureURL: profilePictureURL)
+            }
+            .buttonStyle(IrisSecondaryButtonStyle())
+            .disabled(!account.hasOwnerSigningAuthority || normalizedProfileName.isEmpty || !profileMetadataChanged)
+            .accessibilityIdentifier("myProfileSaveProfileButton")
+
+            Button {
+                manageDevices()
+            } label: {
+                Label("Manage devices", systemImage: "laptopcomputer.and.iphone")
+            }
+            .buttonStyle(IrisSecondaryButtonStyle())
+            .accessibilityIdentifier("myProfileManageDevicesButton")
+
+            QrCodeImage(text: account.npub)
+                .frame(height: 220)
+                .frame(maxWidth: .infinity)
+                .accessibilityIdentifier("myProfileQrCode")
+
+            MonoValue(label: "Device", value: account.deviceNpub)
+
+            VStack(spacing: 10) {
+                Button("Copy owner npub") { manager.copyToClipboard(account.npub) }
+                    .buttonStyle(IrisSecondaryButtonStyle())
+                Button("Copy device npub") { manager.copyToClipboard(account.deviceNpub) }
+                    .buttonStyle(IrisSecondaryButtonStyle())
+            }
+        }
+    }
+
     @ViewBuilder
-    private func profileAvatar(for account: AccountSnapshot) -> some View {
+    private var profileAvatar: some View {
         let label = account.displayName.isEmpty ? account.npub : account.displayName
         let trimmedURL = account.pictureUrl?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !trimmedURL.isEmpty, let url = URL(string: trimmedURL) {
             Button {
-                profilePictureViewerURL = url
+                openProfilePicture(url)
             } label: {
-                IrisAvatar(
-                    label: label,
-                    size: 52,
-                    emphasize: true,
-                    imageURL: trimmedURL
-                )
+                IrisAvatar(label: label, size: 52, emphasize: true, imageURL: trimmedURL)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Open profile picture")
             .accessibilityIdentifier("myProfilePictureButton")
         } else {
-            IrisAvatar(
-                label: label,
-                size: 52,
-                emphasize: true,
-                imageURL: account.pictureUrl
-            )
+            IrisAvatar(label: label, size: 52, emphasize: true, imageURL: account.pictureUrl)
         }
+    }
+
+    private var profileMetadataChanged: Bool {
+        normalizedProfileName != account.displayName.trimmingCharacters(in: .whitespacesAndNewlines) ||
+            normalizedProfilePictureURL != (account.pictureUrl ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var normalizedProfileName: String {
+        profileName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var normalizedProfilePictureURL: String {
+        profilePictureURL.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

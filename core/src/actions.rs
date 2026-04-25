@@ -7,6 +7,7 @@ pub enum AppAction {
     },
     UpdateProfileMetadata {
         name: String,
+        picture_url: Option<String>,
     },
     RestoreSession {
         owner_nsec: String,
